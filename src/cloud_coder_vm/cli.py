@@ -1,6 +1,7 @@
 """Command line of the VM agent (cloud-coder-vm.pyz)."""
 
 import argparse
+import base64
 import json
 import os
 import subprocess
@@ -70,6 +71,7 @@ def cmd_launch(args) -> int:
             session_name=args.session,
             new=args.new,
             start_claude=not args.no_claude,
+            prompt=base64.b64decode(args.prompt_b64).decode() if args.prompt_b64 else None,
         )
     except launch.LaunchError as e:
         print(json.dumps({"error": str(e)}))
@@ -116,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--session")
     p.add_argument("--new", action="store_true")
     p.add_argument("--no-claude", action="store_true", help="prepare repo and tmux only")
+    p.add_argument("--prompt-b64", help="first prompt for Claude Code, base64 encoded (UTF-8)")
     p.set_defaults(func=cmd_launch)
 
     p = sub.add_parser("install-system", help="(root) install units and files")

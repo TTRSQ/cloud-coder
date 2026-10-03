@@ -3,6 +3,7 @@
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from cloud_coder import config as config_mod
 from cloud_coder import connect, gce
@@ -46,6 +47,16 @@ def resolve_config(args) -> Config:
     return cfg
 
 
+def read_prompt(args) -> str | None:
+    if args.prompt is not None:
+        return args.prompt
+    if args.prompt_file is None:
+        return None
+    if args.prompt_file == "-":
+        return sys.stdin.read()
+    return Path(args.prompt_file).expanduser().read_text()
+
+
 def build_parser() -> argparse.ArgumentParser:
     common = _common_parser()
     parser = argparse.ArgumentParser(
@@ -71,7 +82,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="start another session for the repo in a new git worktree",
     )
     p.add_argument("--session", help="connect to this session name (see `status`)")
-    p.add_argument("--no-attach", action="store_true", help="prepare but do not attach")
+    p.add_argument(
+        "--no-attach",
+        "--detach",
+        dest="no_attach",
+        action="store_true",
+        help="prepare (and send the prompt) but do not attach",
+    )
+    prompt = p.add_mutually_exclusive_group()
+    prompt.add_argument(
+        "-p",
+        "--prompt",
+        help="first prompt for Claude Code; for a running session it is sent only when "
+        "Claude Code is READY or IDLE",
+    )
+    prompt.add_argument("--prompt-file", help="read the prompt from a file ('-' for stdin)")
     p.add_argument("--no-claude", action="store_true", help="do not start Claude Code")
 
     sub.add_parser(
@@ -93,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
             return connect.connect(
                 cfg,
                 args.repo,
+                prompt=read_prompt(args),
                 new=args.new,
                 session=args.session,
                 attach=not args.no_attach,
@@ -106,7 +132,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "stop":
             print(f"VM {cfg.instance}: {gce.stop(cfg)}")
             return 0
-    except (config_mod.ConfigError, gce.GcloudError, RuntimeError, TimeoutError) as e:
+    except (config_mod.ConfigError, gce.GcloudError, RuntimeError, TimeoutError, OSError) as e:
         print(f"cloud-coder: error: {e}", file=sys.stderr)
         return 1
     return 2

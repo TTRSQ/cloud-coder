@@ -37,7 +37,12 @@ def next_state(current: str | None, payload: dict) -> str | None:
     Returning ``current`` means the event does not change the state.
     """
     event = payload.get("hook_event_name")
-    if event in ("SessionStart", "UserPromptSubmit"):
+    if event == "SessionStart":
+        # A brand-new process with a new conversation has no background tasks and no
+        # crons yet, and is waiting for input: idle until a prompt is submitted.
+        # resume (restores crons), clear, compact and fork stay on the safe side.
+        return IDLE if payload.get("source") == "startup" else BUSY
+    if event == "UserPromptSubmit":
         return BUSY
     if event == "Stop":
         tasks = payload.get("background_tasks")
@@ -46,6 +51,10 @@ def next_state(current: str | None, payload: dict) -> str | None:
         # stay on the safe side and keep the VM up.
         if tasks is None or crons is None or tasks or crons:
             return BUSY
+        return READY
+    if event == "StopFailure":
+        # The turn ended on an API error. No task registry is reported, so do not go
+        # straight to IDLE: idle_prompt (which waits for background agents) decides.
         return READY
     if event == "Notification":
         if payload.get("notification_type") == "idle_prompt" and current == READY:

@@ -13,9 +13,17 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from cloud_coder_vm import idle_check, paths, process_table, session_registry, workspace_trust
+from cloud_coder_vm import (
+    idle_check,
+    paths,
+    process_table,
+    session_registry,
+    session_state,
+    workspace_trust,
+)
 from cloud_coder_vm.session_registry import LogicalSession
-from cloud_coder_vm.state_lock import state_lock
+from cloud_coder_vm.session_state import IDLE, READY
+from cloud_coder_vm.state_lock import state_lock, write_atomic
 from cloud_coder_vm.system_files import VmConfig
 from cloud_coder_vm.tmux_panes import PANE_FORMAT, parse_list_panes
 
@@ -143,9 +151,13 @@ def transcript_exists(home: Path, claude_session_id: str) -> bool:
     return any((home / ".claude/projects").glob(f"*/{claude_session_id}.jsonl"))
 
 
-def claude_command(home: Path, session: LogicalSession, resume: bool) -> str:
+def claude_command(
+    home: Path, session: LogicalSession, resume: bool, prompt_file: Path | None = None
+) -> str:
+    """Shell command typed into the pane. The first prompt is read from a file so that
+    multi-line text and shell metacharacters reach Claude Code unchanged."""
     id_flag = "--resume" if resume else "--session-id"
-    return shlex.join(
+    command = shlex.join(
         [
             f"CLOUD_CODER_SESSION={session.name}",
             str(paths.claude_bin(home)),
@@ -155,6 +167,41 @@ def claude_command(home: Path, session: LogicalSession, resume: bool) -> str:
             session.name,
         ]
     )
+    if prompt_file is None:
+        return command
+    quoted = shlex.quote(str(prompt_file))
+    return f'{command} -- "$(cat {quoted}; rm -f {quoted})"'
+
+
+def write_prompt_file(session: LogicalSession, prompt: str) -> Path:
+    path = paths.PROMPT_DIR / f"{session.name}.txt"
+    write_atomic(path, prompt, mode=0o600)
+    return path
+
+
+def send_prompt_to_running(pane_id: str, claude_pid: int, prompt: str) -> None:
+    """Type a prompt into a running Claude Code, only when it is waiting for input."""
+    states = session_state.load_all(paths.SESSION_STATE_DIR)
+    state = next(
+        (
+            s
+            for s in states
+            if s.claude_pid == claude_pid or (s.claude_pid is None and s.tmux_pane == pane_id)
+        ),
+        None,
+    )
+    if state is None:
+        raise LaunchError(
+            "Claude Code in this session has not reported its state yet; prompt not sent"
+        )
+    if state.state not in (READY, IDLE):
+        raise LaunchError(f"Claude Code in this session is {state.state}; prompt not sent")
+    buffer = f"cloud-coder-{os.getpid()}"
+    subprocess.run(["tmux", "load-buffer", "-b", buffer, "-"], input=prompt, text=True, check=True)
+    # Bracketed paste (-p) keeps newlines inside the prompt instead of submitting each line.
+    _check(["tmux", "paste-buffer", "-p", "-d", "-b", buffer, "-t", pane_id])
+    time.sleep(0.3)
+    _check(["tmux", "send-keys", "-t", pane_id, "Enter"])
 
 
 def _cmdline(pid: int) -> list[str]:
@@ -165,8 +212,8 @@ def _cmdline(pid: int) -> list[str]:
     return [a.decode(errors="replace") for a in raw.split(b"\0") if a]
 
 
-def ensure_claude(session: LogicalSession, home: Path) -> dict:
-    """Start Claude Code in the session unless one already runs there."""
+def ensure_claude(session: LogicalSession, home: Path, prompt: str | None = None) -> dict:
+    """Start Claude Code in the session unless one already runs there; then hand it ``prompt``."""
     panes = parse_list_panes(
         _check(["tmux", "list-panes", "-s", "-t", f"={session.name}", "-F", PANE_FORMAT])
     )
@@ -182,7 +229,11 @@ def ensure_claude(session: LogicalSession, home: Path) -> dict:
                 continue
             if process_table.is_claude(proc):
                 remote = "--remote-control" in _cmdline(proc.pid) or "--rc" in _cmdline(proc.pid)
-                return {"claude": "running", "remote_control": remote, "pane": pane.pane_id}
+                result = {"claude": "running", "remote_control": remote, "pane": pane.pane_id}
+                if prompt is not None:
+                    send_prompt_to_running(pane.pane_id, proc.pid, prompt)
+                    result["prompt"] = "sent"
+                return result
             others.append(proc)
             stack.extend(children.get(proc.pid, []))
         if free_pane is None and len(others) == 1 and process_table.is_shell(others[0]):
@@ -203,9 +254,18 @@ def ensure_claude(session: LogicalSession, home: Path) -> dict:
             ]
         ).strip()
     resume = transcript_exists(home, session.claude_session_id)
-    _check(["tmux", "send-keys", "-t", free_pane, "-l", claude_command(home, session, resume)])
+    prompt_file = write_prompt_file(session, prompt) if prompt is not None else None
+    command = claude_command(home, session, resume, prompt_file)
+    _check(["tmux", "send-keys", "-t", free_pane, "-l", command])
     _check(["tmux", "send-keys", "-t", free_pane, "Enter"])
-    return {"claude": "resumed" if resume else "started", "remote_control": True, "pane": free_pane}
+    result = {
+        "claude": "resumed" if resume else "started",
+        "remote_control": True,
+        "pane": free_pane,
+    }
+    if prompt is not None:
+        result["prompt"] = "passed-at-start"
+    return result
 
 
 def launch(
@@ -217,7 +277,12 @@ def launch(
     session_name: str | None = None,
     new: bool = False,
     start_claude: bool = True,
+    prompt: str | None = None,
 ) -> dict:
+    if prompt is not None and not prompt.strip():
+        raise LaunchError("the prompt is empty")
+    if prompt is not None and not start_claude:
+        raise LaunchError("a prompt needs Claude Code; drop --no-claude")
     workspace = home / config.workspace
     registry_file = paths.registry_path(home)
     with state_lock():
@@ -252,5 +317,5 @@ def launch(
             )
         result["tmux"] = ensure_tmux_session(session)
         if start_claude:
-            result.update(ensure_claude(session, home))
+            result.update(ensure_claude(session, home, prompt))
     return result

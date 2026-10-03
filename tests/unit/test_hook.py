@@ -15,7 +15,9 @@ def test_lifecycle_records_state_by_pane(tmp_path):
     (tmp_path / "s").mkdir()
     run(tmp_path, {"hook_event_name": "SessionStart", "session_id": "A", "source": "startup"})
     st = session_state.load(tmp_path / "s", "pane-4")
-    assert (st.state, st.session_id, st.claude_pid, st.claude_starttime) == ("BUSY", "A", 321, 4242)
+    assert (st.state, st.session_id, st.claude_pid, st.claude_starttime) == ("IDLE", "A", 321, 4242)
+    run(tmp_path, {"hook_event_name": "UserPromptSubmit", "session_id": "A"})
+    assert session_state.load(tmp_path / "s", "pane-4").state == "BUSY"
     run(
         tmp_path,
         {"hook_event_name": "Stop", "session_id": "A", "background_tasks": [], "session_crons": []},
@@ -51,3 +53,25 @@ def test_without_tmux_keys_by_session_id(tmp_path):
     (tmp_path / "s").mkdir()
     run(tmp_path, {"hook_event_name": "UserPromptSubmit", "session_id": "Z"}, env={})
     assert session_state.load(tmp_path / "s", "session-Z").state == "BUSY"
+
+
+def test_late_session_start_does_not_undo_a_prompt_of_the_same_process(tmp_path):
+    (tmp_path / "s").mkdir()
+    run(tmp_path, {"hook_event_name": "UserPromptSubmit", "session_id": "A"})
+    run(tmp_path, {"hook_event_name": "SessionStart", "session_id": "A", "source": "startup"})
+    assert session_state.load(tmp_path / "s", "pane-4").state == "BUSY"
+
+
+def test_session_start_of_a_new_process_replaces_a_crashed_ones_record(tmp_path):
+    (tmp_path / "s").mkdir()
+    old = Process(111, 300, "claude", "", 1)
+    apply_event(
+        {"hook_event_name": "UserPromptSubmit", "session_id": "A"},
+        ENV,
+        tmp_path / "s",
+        tmp_path / "reg.json",
+        old,
+    )
+    run(tmp_path, {"hook_event_name": "SessionStart", "session_id": "A", "source": "resume"})
+    st = session_state.load(tmp_path / "s", "pane-4")
+    assert (st.state, st.claude_pid, st.last_event) == ("BUSY", 321, "SessionStart")

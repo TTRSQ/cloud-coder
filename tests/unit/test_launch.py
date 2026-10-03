@@ -63,3 +63,20 @@ def test_claude_command_new_vs_resume():
         "--session-id id-cc-a-1 --remote-control cc-a-1"
     )
     assert "--resume id-cc-a-1" in claude_command(Path("/home/coder"), s, resume=True)
+
+
+def test_claude_command_reads_first_prompt_from_file_verbatim(tmp_path):
+    import subprocess
+
+    s = entry("cc-a-1", "a", 1)
+    prompt = "line 1 'single' \"double\" $HOME `id`\n-starts-with-dash\n日本語"
+    prompt_file = tmp_path / "p 1.txt"
+    prompt_file.write_text(prompt)
+    command = claude_command(Path("/home/coder"), s, resume=False, prompt_file=prompt_file)
+    assert command.endswith(f"-- \"$(cat '{prompt_file}'; rm -f '{prompt_file}')\"")
+    # run the same shell expansion with printf standing in for claude
+    probe = command.replace("/home/coder/.local/bin/claude", "printf '%s\\0'")
+    out = subprocess.run(["bash", "-c", probe], capture_output=True, text=True, check=True)
+    argv = out.stdout.split("\0")[:-1]
+    assert argv[-2:] == ["--", prompt]
+    assert not prompt_file.exists()

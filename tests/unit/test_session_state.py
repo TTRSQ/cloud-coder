@@ -15,9 +15,23 @@ IDLE_PROMPT = {"hook_event_name": "Notification", "notification_type": "idle_pro
 
 
 @pytest.mark.parametrize("current", [None, BUSY, READY, IDLE])
-@pytest.mark.parametrize("event", ["SessionStart", "UserPromptSubmit"])
-def test_start_and_prompt_make_busy(current, event):
-    assert next_state(current, {"hook_event_name": event}) == BUSY
+def test_prompt_makes_busy(current):
+    assert next_state(current, {"hook_event_name": "UserPromptSubmit"}) == BUSY
+
+
+def test_fresh_startup_waiting_for_input_is_idle():
+    assert next_state(None, {"hook_event_name": "SessionStart", "source": "startup"}) == IDLE
+
+
+@pytest.mark.parametrize("source", ["resume", "clear", "compact", "fork", None])
+def test_other_session_starts_are_busy(source):
+    # resume restores session crons; the others may carry over in-flight work
+    assert next_state(None, {"hook_event_name": "SessionStart", "source": source}) == BUSY
+
+
+def test_stop_failure_is_ready_not_idle():
+    assert next_state(BUSY, {"hook_event_name": "StopFailure", "error": "rate_limit"}) == READY
+    assert next_state(READY, IDLE_PROMPT) == IDLE
 
 
 def test_stop_without_background_work_is_ready():

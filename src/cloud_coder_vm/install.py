@@ -18,6 +18,7 @@ HOOK_EVENTS: list[tuple[str, str | None]] = [
     ("SessionStart", None),
     ("UserPromptSubmit", None),
     ("Stop", None),
+    ("StopFailure", None),
     ("Notification", "idle_prompt"),
     ("SessionEnd", None),
 ]

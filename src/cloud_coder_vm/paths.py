@@ -15,6 +15,7 @@ SESSION_STATE_DIR = RUNTIME_DIR / "sessions"
 STATE_LOCK = RUNTIME_DIR / "state.lock"
 IDLE_SINCE = RUNTIME_DIR / "idle_since"
 HOOK_LOG = RUNTIME_DIR / "hook.log"
+PROMPT_DIR = RUNTIME_DIR / "prompts"
 
 TMPFILES_CONF = Path("/etc/tmpfiles.d/cloud-coder.conf")
 SYSTEMD_DIR = Path("/etc/systemd/system")

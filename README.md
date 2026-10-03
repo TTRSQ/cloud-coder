@@ -57,13 +57,21 @@ cloud-coder connect                                 # 直近のセッション�
 cloud-coder connect REPO                            # REPO の直近のセッションへ戻る
 cloud-coder connect REPO --new                      # REPO で別の Claude Code を git worktree 上に起動する
 cloud-coder connect --session cc-REPO-2             # セッション名を指定して戻る
+cloud-coder connect REPO --new -p "テストを直して" --detach   # タスクを渡して放置 (終われば自動停止)
+cloud-coder connect REPO --prompt-file task.md       # プロンプトをファイルから (- で標準入力)
 cloud-coder status                                  # VM / セッション / 自動停止の可否
 cloud-coder stop                                    # VM を停止する (disk は残る)
 cloud-coder up                                      # VM の作成・起動と agent のインストールだけ行う
 ```
 
 - tmux から抜けるときは detach (`Ctrl-b d`) します。SSH が切れても tmux 内の Claude Code や他のプロセスは動き続けます。
-- `connect` のオプション: `--no-attach` (attach しない)、`--no-claude` (Claude Code を起動しない)。
+- `connect` のオプション: `--no-attach` / `--detach` (attach しない)、`--no-claude` (Claude Code を起動しない)、`-p` / `--prompt` / `--prompt-file` (最初のプロンプト)。
+
+### プロンプトを渡す
+
+- Claude Code を新しく起動 / resume するときは、`claude ... --remote-control <名前> -- "<prompt>"` の位置引数として最初のプロンプトを渡します。プロンプトは base64 で VM に送り、一時ファイル経由で展開するので、複数行・引用符・`$` などもそのまま届きます。
+- 既に Claude Code が動いているセッションには、その Claude Code が `READY` か `IDLE` のときだけ tmux の bracketed paste で入力して Enter を送ります。`BUSY` やまだ状態を報告していない場合は何も入力せずにエラー終了します (作業中の入力を壊さないため)。
+- `--detach` と組み合わせると、タスクを投げて放置し、終わって idle になったら VM が自動停止する、という使い方が CLI だけでできます。
 - private repository を SSH URL で clone する場合、`connect` はローカルの ssh-agent を VM に転送します (`ssh -A`)。鍵を agent に登録しておいてください。
 
 ### セッション
@@ -102,14 +110,21 @@ Claude Code の状態は hook で更新されます。
 
 | イベント | 状態 |
 | --- | --- |
-| `SessionStart` / `UserPromptSubmit` | `BUSY` (grace period を取り消す) |
+| `SessionStart` (`source` が `startup`) | `IDLE` (新しい会話で入力待ち) |
+| `SessionStart` (`resume` / `clear` / `compact` / `fork`) | `BUSY` |
+| `UserPromptSubmit` | `BUSY` (grace period を取り消す) |
 | `Stop` で `background_tasks` と `session_crons` が空 | `READY` |
+| `StopFailure` (API エラーでターンが終了) | `READY` |
 | `Stop` で上記のどちらかが空でない、または欠けている | `BUSY` |
 | `Notification` (`idle_prompt`) かつ `READY` | `IDLE` |
 | `SessionEnd` | 状態を削除 |
 
 - 状態は Claude Code のプロセスごとに `/run/cloud-coder/sessions/` (tmpfs) へ保存され、tmux pane とプロセス ID で実態と突き合わせます。プロセスが消えた状態ファイル (クラッシュ等で `SessionEnd` が来なかったもの) は無視して削除します。
 - まだ状態を報告していない Claude Code (起動直後やログイン前) は busy 扱いです。
+- 新規起動 (`startup`) は、プロセスも会話も新しく background task も cron も存在しないので、プロンプトが送られるまで `IDLE` とします。起動しただけで放置したセッションが VM を止めなくなるのを防ぐためです。tmux の他の pane の判定はそのまま効き、プロンプトが送られれば `UserPromptSubmit` で `BUSY` に戻ります。同じプロセスで既に記録済みのイベントを、遅れて届いた `SessionStart` で上書きすることはありません。
+- `resume` は cron (`CronCreate`) を復元するため安全側で `BUSY` にしています。resume しただけで放置すると自動停止しないので、`--prompt` を渡すか一度プロンプトを送ってください。
+- `Esc` でターンを中断した場合は `Stop` もほかの hook も発火しないため、次のプロンプトまで `BUSY` のまま残ります。
+- 未送信の入力をプロンプト欄に入れたまま grace period を超えて放置すると、新規起動のセッションは停止対象になります。
 - `connect` も grace period を取り消します。判定と新規セッションの作成は `/run/cloud-coder/state.lock` の flock で直列化しています。
 - `idle_prompt` は Claude Code が応答を終えて約 60 秒間入力が無いときに送られます。ターミナルに attach している間は送られないことがあるので、離れるときは detach してください。
 - tmux の外 (SSH で直接実行したプロセスなど) は判定の対象外です。

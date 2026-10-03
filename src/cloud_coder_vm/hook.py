@@ -49,6 +49,18 @@ def apply_event(
     if event == "SessionEnd" and current is not None and current.session_id != session_id:
         return current.state  # end of a session this pane already replaced (/clear, /resume)
 
+    if (
+        event == "SessionStart"
+        and current is not None
+        and current.session_id == session_id
+        and current.last_event != "SessionStart"
+        and claude_proc is not None
+        and current.claude_pid == claude_proc.pid
+    ):
+        # SessionStart hooks run in the background; never let a late one undo a
+        # prompt or stop that was already recorded for this same conversation.
+        return current.state
+
     new = session_state.next_state(current.state if current else None, payload)
     if new is None:
         session_state.remove(state_dir, key)

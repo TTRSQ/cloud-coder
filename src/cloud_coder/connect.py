@@ -1,5 +1,6 @@
 """`up`, `connect` and `status` flows: VM -> SSH -> agent -> repo/tmux/Claude -> attach."""
 
+import base64
 import json
 import shlex
 import sys
@@ -24,7 +25,13 @@ def is_repo_url(value: str) -> bool:
     return "/" in value or ":" in value
 
 
-def launch_command(repo: str | None, session: str | None, new: bool, no_claude: bool) -> str:
+def launch_command(
+    repo: str | None,
+    session: str | None,
+    new: bool,
+    no_claude: bool,
+    prompt: str | None = None,
+) -> str:
     args = ["python3", str(paths.AGENT_PYZ), "launch"]
     if repo:
         args += ["--repo-url" if is_repo_url(repo) else "--repo", repo]
@@ -34,6 +41,9 @@ def launch_command(repo: str | None, session: str | None, new: bool, no_claude: 
         args.append("--new")
     if no_claude:
         args.append("--no-claude")
+    if prompt is not None:
+        # base64 keeps newlines and shell metacharacters intact through ssh
+        args += ["--prompt-b64", base64.b64encode(prompt.encode()).decode()]
     return shlex.join(args)
 
 
@@ -52,10 +62,12 @@ def connect(
     session: str | None = None,
     attach: bool = True,
     no_claude: bool = False,
+    prompt: str | None = None,
     machine_type_requested: bool = False,
 ) -> int:
     up(cfg, machine_type_requested)
-    result = ssh.run(cfg, launch_command(repo, session, new, no_claude), forward_agent=True)
+    command = launch_command(repo, session, new, no_claude, prompt)
+    result = ssh.run(cfg, command, forward_agent=True)
     if result.returncode != 0 and not result.stdout.strip():
         _log(result.stderr.strip())
         return 1
@@ -66,6 +78,7 @@ def connect(
     _log(
         f"session {launched['session']} in {launched['workdir']}: repo {launched['repo']}, "
         f"tmux {launched['tmux']}, claude {launched.get('claude', 'not started')}"
+        + (f", prompt {launched['prompt']}" if "prompt" in launched else "")
     )
     print(json.dumps(launched))
     if not attach:
