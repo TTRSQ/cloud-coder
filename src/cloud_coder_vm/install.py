@@ -220,7 +220,7 @@ def install_dotfiles(config: VmConfig, home: Path) -> str:
             flush=True,
         )
         return "install failed"
-    write_atomic(stamp, f"{config.dotfiles_repo}\n")
+    write_atomic(stamp, "")  # only its existence is checked
     return "installed"
 
 

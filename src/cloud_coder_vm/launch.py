@@ -57,12 +57,11 @@ class Layout:
 
 
 def main_checkout(layout: Layout, repo: str) -> Path:
-    """The one clone of ``repo`` that sessions and worktrees use: an existing clone under
-    the legacy workspace wins, so its branches and stashes stay with new worktrees."""
-    current, legacy = layout.workspace / repo, layout.legacy_workspace / repo
-    if not current.exists() and legacy.is_dir():
-        return legacy
-    return current
+    """The one clone of ``repo`` that sessions and worktrees use. A clone under the legacy
+    workspace wins: cloud-coder never creates new ones there, so the answer cannot change
+    when a directory later appears under the current workspace."""
+    legacy = layout.legacy_workspace / repo
+    return legacy if legacy.is_dir() else layout.workspace / repo
 
 
 def worktree_dir(layout: Layout, repo: str, index: int) -> Path:
@@ -154,11 +153,12 @@ def ensure_repo(session: LogicalSession, layout: Layout, created: bool = False) 
     """Clone / add a worktree only when the directory is missing. Returns what was done."""
     main = main_checkout(layout, session.repo)
     workdir = Path(session.workdir)
+    if created and workdir != main and workdir.exists():
+        raise LaunchError(f"{workdir} already exists and was not created by cloud-coder")
+    if created and main.exists():
+        # a new session builds on a clone it did not make in this run: same repository only
+        check_origin(main, session.repo_url)
     if workdir.exists():
-        if created and workdir != main:
-            raise LaunchError(f"{workdir} already exists and was not created by cloud-coder")
-        if created:
-            check_origin(main, session.repo_url)
         return "existing"
     actions = []
     if not main.exists():
@@ -403,7 +403,10 @@ def launch(
         }
         try:
             result["repo"] = ensure_repo(session, layout, target.created)
-            if config.auto_trust_workspace:
+            # A new session named only by repo name runs in a directory nobody verified as
+            # cloud-coder's; Claude Code's own trust dialog decides there.
+            unverified = target.created and session.repo_url is None
+            if config.auto_trust_workspace and not unverified:
                 workdir = Path(session.workdir)
                 trusted = {main_checkout(layout, session.repo), workdir}
                 try:

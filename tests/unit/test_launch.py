@@ -182,3 +182,25 @@ def test_existing_clone_is_adopted_only_for_the_same_repository(tmp_path):
     assert ensure_repo(session(None), layout, created=True) == "existing"  # named by the user
     with pytest.raises(LaunchError, match="origin"):
         ensure_repo(session("git@github.com:other/app.git"), layout, created=True)
+
+
+def test_legacy_clone_stays_the_main_checkout_when_a_current_one_appears(tmp_path):
+    from cloud_coder_vm.launch import main_checkout
+
+    layout = tmp_layout(tmp_path)
+    make_clone(tmp_path / "workspace" / "app", "git@github.com:me/app.git")
+    make_clone(tmp_path / "git" / "app", "git@github.com:other/app.git")  # cloned by hand
+    assert main_checkout(layout, "app") == tmp_path / "workspace" / "app"
+    assert main_checkout(layout, "lib") == tmp_path / "git" / "lib"
+
+
+def test_new_worktree_is_refused_from_a_clone_of_another_repository(tmp_path):
+    from cloud_coder_vm.launch import ensure_repo
+
+    layout = tmp_layout(tmp_path)
+    make_clone(tmp_path / "git" / "app", "git@github.com:other/app.git")
+    wt = tmp_path / "git" / "wt" / "app-2"
+    s2 = LogicalSession("cc-app-2", "app", "git@github.com:me/app.git", str(wt), "id", 0.0, 0.0)
+    with pytest.raises(LaunchError, match="origin"):
+        ensure_repo(s2, layout, created=True)
+    assert not wt.exists()

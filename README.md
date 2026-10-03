@@ -88,7 +88,7 @@ cloud-coder up                                      # VM の作成・起動と a
 
 - 置き場所は `vm.workspace` (clone、既定 `git`) と `vm.worktrees` (worktree、既定 `git/wt`) で変えられます。`~/git/wt` は worktree を `WORKTREE_BASE_DIR=~/git/wt` に作る運用に合わせています。
 - 以前の既定だった `~/workspace` にある clone やセッションはそのまま使えます。対応表は絶対パスを記録しているので、既存のセッションは元の場所で動き続けます。`~/workspace/<repo>` に clone があるリポジトリは、`--new` の worktree (`~/git/wt/<repo>-N`) もその clone から作り、`~/git` に 2 つ目の clone は作りません。cloud-coder が `~/workspace` を移動・削除することはありません。
-- clone 先に既にディレクトリがあるときは、その `origin` が指定した URL と同じリポジトリの場合だけ使います (違えばエラー。手で clone したものを別リポジトリとして使ったり trust したりしないため)。名前だけで `connect <repo>` した場合はそのディレクトリを使います。
+- 新しいセッションが既にある clone を使うとき (clone 先にディレクトリがある場合や、`--new` の worktree の元になる clone) は、その `origin` が指定した URL と同じリポジトリの場合だけ使います (違えばエラー。手で clone したものを別リポジトリとして使ったり trust したりしないため)。URL ではなく名前だけで `connect <repo>` した場合はそのディレクトリを使いますが、cloud-coder が作ったか確かめられないので trust の自動承認はしません (Claude Code の trust 画面が出ます)。
 
 - Claude Code は `claude --session-id <uuid> --remote-control <セッション名>` で起動されます。Remote Control で claude.ai / Claude アプリからも操作できます。
 - 対応表は VM の `~/.local/share/cloud-coder/sessions.json` (Persistent Disk) に保存されます。`/clear` などで Claude Code の session ID が変わると hook が対応表を更新します。
