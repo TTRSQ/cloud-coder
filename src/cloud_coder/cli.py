@@ -41,9 +41,10 @@ def resolve_config(args) -> Config:
         iap=args.iap,
     )
     if cfg.project is None:
-        cfg = config_mod.with_overrides(cfg, project=gce.default_project())
-    if cfg.project is None:
-        raise config_mod.ConfigError("no GCP project: set gcp.project or pass --project")
+        raise config_mod.ConfigError(
+            f"no GCP project: set gcp.project in {config_mod.config_path(args.config)} "
+            "or pass --project"
+        )
     return cfg
 
 
@@ -110,6 +111,10 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         cfg = resolve_config(args)
+        print(
+            f"cloud-coder: target project={cfg.project} zone={cfg.zone} instance={cfg.instance}",
+            file=sys.stderr,
+        )
         requested = args.machine_type is not None
         if args.command == "up":
             connect.up(cfg, requested)

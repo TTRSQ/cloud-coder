@@ -30,18 +30,17 @@ cloud-coder --help
 
 ```bash
 gcloud auth login
-gcloud config set project <project>   # config.yaml に gcp.project を書くなら不要
 ```
 
-`gcp.project` も `--project` も無いときは `gcloud config get-value project` の値を使います。
+cloud-coder は `gcloud config` の既定 project を使いません。対象 project は次の config.yaml の `gcp.project` (または `--project`) で指定します。
 
 ### 3. config.yaml を書く
 
-`~/.config/cloud-coder/config.yaml` に置きます。ファイルが無ければすべて既定値で動きます。よく変えるのは次のキーです (全項目と既定値は [README の設定](README.md#設定))。
+`~/.config/cloud-coder/config.yaml` に置きます。`gcp.project` は必須で、無ければ各コマンドはエラーで止まります。他のキーは省略すると既定値になります。よく変えるのは次のキーです (全項目と既定値は [README の設定](README.md#設定))。
 
 ```yaml
 gcp:
-  project: my-project          # 省略時は gcloud の既定 project
+  project: my-project          # 必須
   zone: asia-northeast1-b
   machine_type: t2d-standard-8 # VM 作成時に使う
   disk_size_gb: 100            # VM 作成時に使う
@@ -53,7 +52,7 @@ claude:
 ```
 
 - 知らないセクションやキーを書くとエラーになります (`unknown config section ...` / `unknown config key ...`)。
-- `gcp.project` / `gcp.zone` / `gcp.instance` は操作対象の VM を決める値で、毎回使われます。VM を作った後に変えると別の VM として扱われ、次の `up` / `connect` で新しい VM が作られます (元の VM と disk は残り、課金も続きます)。`gcp.project` を書いていない場合に `gcloud config set project` で既定 project を切り替えたときや、`--project` / `--zone` / `--instance` を付けたときも同じです。不要になった VM は[片付け](#片付ける)てください。
+- `gcp.project` / `gcp.zone` / `gcp.instance` は操作対象の VM を決める値で、毎回使われます。VM を作った後に変えると別の VM として扱われ、次の `up` / `connect` で新しい VM が作られます (元の VM と disk は残り、課金も続きます)。`--project` / `--zone` / `--instance` を付けたときも同じです。各コマンドは最初に `cloud-coder: target project=... zone=... instance=...` を標準エラー出力に表示するので、意図した VM か確認できます。不要になった VM は[片付け](#片付ける)てください。
 - `gcp.machine_type` / `disk_size_gb` / `disk_type` / `image_family` / `image_project` は VM を作るときにだけ使われます。作成後の変更は[マシンスペックを変える](#マシンスペックを変える)を参照してください。
 - `vm.*` / `git.*` / `claude.*` は、次の `up` / `connect` で VM に送られて反映されます。
 

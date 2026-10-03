@@ -204,11 +204,11 @@ tmux の外で SSH にログインしている間は自動停止しません。�
 
 ## 設定
 
-`~/.config/cloud-coder/config.yaml` (環境変数 `CLOUD_CODER_CONFIG` か `--config` で変更可)。すべて省略可能で、既定値は以下のとおりです。
+`~/.config/cloud-coder/config.yaml` (環境変数 `CLOUD_CODER_CONFIG` か `--config` で変更可)。`gcp.project` は必須 (`--project` でも指定可)、それ以外は省略可能で、既定値は以下のとおりです。`gcloud` の既定 project は使いません。
 
 ```yaml
 gcp:
-  project: null              # 省略時は `gcloud config get-value project`
+  project: null              # 必須。未設定ならエラー (gcloud の既定 project は使わない)
   zone: asia-northeast1-b
   instance: cloud-coder
   machine_type: t2d-standard-8
@@ -238,6 +238,7 @@ claude:
 ```
 
 各コマンドは `--project` `--zone` `--instance` `--machine-type` `--disk-size-gb` `--disk-type` `--iap/--no-iap` で上書きできます。
+各コマンドは最初に操作対象 (project / zone / instance) を標準エラー出力に表示します。
 machine type / disk は VM 作成時に使われます。既存 VM に `--machine-type` を指定した場合、VM が停止中なら `set-machine-type` で変更してから起動します。
 
 作成される VM には `cloud-coder=worker` のラベルが付き、SSH 鍵は project ではなくこの VM の metadata にだけ追加されます (`block-project-ssh-keys`)。VM には service account を付けません。

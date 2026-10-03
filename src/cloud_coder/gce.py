@@ -161,11 +161,3 @@ def stop(cfg: Config) -> str:
         return vm.status
     _checked(cfg, "compute", "instances", "stop", cfg.instance, f"--zone={cfg.zone}")
     return "stopped"
-
-
-def default_project() -> str | None:
-    result = subprocess.run(
-        ["gcloud", "config", "get-value", "project"], capture_output=True, text=True
-    )
-    value = result.stdout.strip()
-    return value or None
