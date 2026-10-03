@@ -8,6 +8,8 @@ Claude Code の hook と tmux の状態から VM 全体が idle になったこ�
 cloud-coder connect git@github.com:OWNER/REPO.git
 ```
 
+初回セットアップや日々の操作など、やりたいこと別の手順は [how-to-use.md](how-to-use.md) にまとめています。
+
 ## 仕組み
 
 ```mermaid
