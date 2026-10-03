@@ -37,11 +37,14 @@ def is_under(directory: Path, root: Path) -> bool:
     return directory != root and directory.is_relative_to(root)
 
 
-def trust(config_path: Path, directories: list[Path], workspace_root: Path) -> bool:
-    """Trust ``directories`` (each must be inside ``workspace_root``). Returns True if written."""
+def trust(config_path: Path, directories: list[Path], roots: list[Path]) -> bool:
+    """Trust ``directories``; each must be strictly inside one of ``roots`` (the directories
+    cloud-coder clones into). Returns True if the file was written."""
     for directory in directories:
-        if not is_under(directory, workspace_root):
-            raise ValueError(f"refusing to trust {directory}: not inside {workspace_root}")
+        is_root = any(directory.resolve() == root.resolve() for root in roots)
+        if is_root or not any(is_under(directory, root) for root in roots):
+            names = ", ".join(str(r) for r in roots)
+            raise ValueError(f"refusing to trust {directory}: not inside {names}")
     # Update the real file if ~/.claude.json is a symlink, instead of replacing the link.
     config_path = config_path.resolve()
     try:

@@ -26,6 +26,13 @@ IDLE_TIMER = "cloud-coder-idle-check.timer"
 HOOK_COMMAND = f"/usr/bin/python3 {AGENT_PYZ} hook"
 
 
+# Hooks live in Claude Code's managed settings, so ~/.claude/settings.json (often a
+# dotfiles symlink) is never written. https://code.claude.com/docs/en/managed-settings
+MANAGED_SETTINGS_FILE = Path("/etc/claude-code/managed-settings.d/50-cloud-coder.json")
+# where clones lived before workspace defaulted to ~/git; sessions there keep working
+LEGACY_WORKSPACE = "workspace"
+
+
 def registry_path(home: Path) -> Path:
     return home / ".local/share/cloud-coder/sessions.json"
 

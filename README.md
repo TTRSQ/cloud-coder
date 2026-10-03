@@ -83,8 +83,11 @@ cloud-coder up                                      # VM の作成・起動と a
 
 | セッション | 作業ディレクトリ |
 | --- | --- |
-| `cc-<repo>-1` | `~/workspace/<repo>` (clone) |
-| `cc-<repo>-N` (`--new`) | `~/workspace/<repo>.worktrees/N` (branch `cloud-coder/cc-<repo>-N` の git worktree) |
+| `cc-<repo>-1` | `~/git/<repo>` (clone) |
+| `cc-<repo>-N` (`--new`) | `~/git/wt/<repo>-N` (branch `cloud-coder/cc-<repo>-N` の git worktree) |
+
+- 置き場所は `vm.workspace` (clone、既定 `git`) と `vm.worktrees` (worktree、既定 `git/wt`) で変えられます。`~/git/wt` は worktree を `WORKTREE_BASE_DIR=~/git/wt` に作る運用に合わせています。
+- 以前の既定だった `~/workspace` にある clone やセッションはそのまま使えます。対応表は絶対パスを記録しているので、既存のセッションは元の場所で動き続け、新しい clone だけが `~/git` に作られます。cloud-coder が `~/workspace` を移動・削除することはありません。
 
 - Claude Code は `claude --session-id <uuid> --remote-control <セッション名>` で起動されます。Remote Control で claude.ai / Claude アプリからも操作できます。
 - 対応表は VM の `~/.local/share/cloud-coder/sessions.json` (Persistent Disk) に保存されます。`/clear` などで Claude Code の session ID が変わると hook が対応表を更新します。
@@ -120,6 +123,20 @@ gh auth setup-git    # git の HTTPS credential helper に gh を使う
 
 認証情報は VM の `~/.config/gh` (Persistent Disk) に保存されます。
 
+### Claude Code の設定リポジトリ (dotfiles)
+
+`claude.dotfiles_repo` を指定すると、VM の `~/git/<repo>` に clone して `claude.dotfiles_install` (既定 `./install.sh`) を実行します。`~/.claude` の `CLAUDE.md` / `settings.json` / `hooks/` などをリンクする設定リポジトリを想定しています。
+
+```yaml
+claude:
+  dotfiles_repo: https://github.com/OWNER/dotClaude.git
+```
+
+- clone は初回だけです。既に clone 済みなら pull も reset もせず (VM 上での編集を残すため)、install コマンドだけを agent の更新時に再実行します。更新を取り込むときは VM 上で `git -C ~/git/dotClaude pull` してください。
+- private repository は HTTPS + gh の認証で clone します。先に「GitHub の認証」を済ませてください。gh の token がそのリポジトリを読めない場合 (fine-grained token の対象外など) は警告を出して先へ進み、次の `connect` で再試行します。
+- hook が `jq` を使う設定リポジトリのために、`jq` は常に入れます。
+- API キーなどを置く `~/.claude/.env` はコピーしません。必要なら VM に入って手で作成してください。
+
 ### 初回の Claude Code 設定
 
 初回の attach 時に Claude Code のテーマ選択と `/login` を tmux 内で行ってください。Remote Control の初回確認が出た場合も同様です。
@@ -127,8 +144,8 @@ gh auth setup-git    # git の HTTPS credential helper に gh を使う
 
 ### workspace trust の自動承認
 
-`cloud-coder` が自分で作るディレクトリ (`~/workspace` 配下の clone と `--new` の worktree) に限り、Claude Code 起動前に `~/.claude.json` の `projects["<dir>"].hasTrustDialogAccepted` を `true` にし、初回の trust 画面を出さないようにします ([公式 docs](https://code.claude.com/docs/en/permissions) が手動で trust する方法として示しているキーです)。
-既存の内容は保持したまま、一時ファイルへの書き込みと rename で原子的に更新します。`~/workspace` の外や HOME は trust しません。
+`cloud-coder` が自分で作るディレクトリ (`vm.workspace` 配下の clone と `vm.worktrees` 配下の worktree。以前の `~/workspace` も含む) に限り、Claude Code 起動前に `~/.claude.json` の `projects["<dir>"].hasTrustDialogAccepted` を `true` にし、初回の trust 画面を出さないようにします ([公式 docs](https://code.claude.com/docs/en/permissions) が手動で trust する方法として示しているキーです)。
+既存の内容は保持したまま、一時ファイルへの書き込みと rename で原子的に更新します。これらのディレクトリの外や、`~/git` / `~/git/wt` そのもの、HOME は trust しません。
 無効にする場合は config で `claude.auto_trust_workspace: false` を指定してください。
 
 ## 自動停止
@@ -138,7 +155,12 @@ VM 上の systemd timer が 1 分ごとに VM 全体を評価します。次を�
 - 全 Claude Code セッションが `IDLE`
 - tmux の全 pane がシェルのプロンプト待ち (フォアグラウンドのコマンドも、シェル配下のバックグラウンドジョブもない)
 
-Claude Code の状態は hook で更新されます。
+Claude Code の状態は hook で更新されます。hook は Claude Code の managed settings (`/etc/claude-code/managed-settings.d/50-cloud-coder.json`) に置き、`~/.claude/settings.json` は一切書き換えません (dotfiles でシンボリックリンクにしている場合を壊さないため)。
+
+- managed settings の hook は、ユーザーや project の settings の hook と併用されます ([Hook locations](https://code.claude.com/docs/en/hooks#hook-locations): "user, project, and local settings add their own hooks without removing managed ones")。置き場所は [Linux の managed settings ディレクトリ](https://code.claude.com/docs/en/managed-settings) です。
+- このファイルは `hooks` だけを持ち、permission などユーザー設定を制限するキーは入れません。
+- 組織の [server-managed settings](https://code.claude.com/docs/en/server-managed-settings) が届くアカウント (Team / Enterprise の一部) では、managed settings の既定 (`first-wins`) によりこのファイルが読まれず、自動停止が働かないことがあります。`/status` で managed settings の出どころを確認できます。
+- 以前の版が `~/.claude/settings.json` に追加した hook は、インストール時に取り除きます (cloud-coder の hook だけ。他の設定は保持)。`settings.json` がシンボリックリンクなら書き換えず、警告だけ出します。
 
 | イベント | 状態 |
 | --- | --- |
@@ -194,7 +216,8 @@ ssh:
   user: coder                # VM 上のユーザー。HOME を固定するため端末によらず同じ名前を使う
   iap: false                 # true で --tunnel-through-iap
 vm:
-  workspace: workspace       # HOME からの相対パス
+  workspace: git             # clone 先 (HOME からの相対パス)
+  worktrees: git/wt          # --new の worktree 先 (HOME からの相対パス)
   idle_grace_minutes: 10
   swap_gb: 0                 # 1 以上で /swapfile を作成する (既存の swapfile は変更しない)
   tools: [gh, node, rust, docker, uv]   # [] で何も入れない
@@ -205,6 +228,9 @@ git:
   github_https: true         # GitHub の SSH URL を HTTPS に読み替える
 claude:
   auto_trust_workspace: true
+  dotfiles_repo: null        # Claude Code の設定リポジトリ (例: https://github.com/OWNER/dotClaude.git)
+  dotfiles_branch: null      # null で既定ブランチ
+  dotfiles_install: ./install.sh   # clone の中で実行するコマンド (冪等であること)
 ```
 
 各コマンドは `--project` `--zone` `--instance` `--machine-type` `--disk-size-gb` `--disk-type` `--iap/--no-iap` で上書きできます。
@@ -237,7 +263,7 @@ VM が小さい場合や、多数の subagent が同時に重い処理を走ら�
 - 重い処理 (test 全体、build、大きなダウンロード) は共有 lock で直列化する。
 
   ```bash
-  flock ~/workspace/.heavy.lock uv run pytest
+  flock ~/git/wt/.heavy.lock uv run pytest
   ```
 
 - ローカル (VM) では変更に関係する test だけを走らせ、全体は CI に任せる (`gh pr checks --watch` で待つ)。

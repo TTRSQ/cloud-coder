@@ -2,10 +2,11 @@ from pathlib import Path
 
 import pytest
 
-from cloud_coder_vm.launch import LaunchError, claude_command, resolve_target
+from cloud_coder_vm.launch import LaunchError, Layout, claude_command, resolve_target
 from cloud_coder_vm.session_registry import LogicalSession
 
-WS = Path("/home/coder/workspace")
+WS = Path("/home/coder/git")
+LAYOUT = Layout(WS, WS / "wt", Path("/home/coder/workspace"))
 
 
 def entry(name, repo, t, url=None):
@@ -15,7 +16,7 @@ def entry(name, repo, t, url=None):
 def resolve(sessions, **kw):
     args = {"repo_url": None, "repo": None, "session_name": None, "new": False, "now": 100.0}
     args.update(kw)
-    return resolve_target(sessions, WS, **args)
+    return resolve_target(sessions, LAYOUT, **args)
 
 
 def test_first_connect_creates_session_in_main_checkout():
@@ -36,7 +37,7 @@ def test_new_creates_worktree_session_and_never_reuses():
     s = {"cc-app-1": entry("cc-app-1", "app", 1, url="u")}
     t = resolve(s, repo="app", new=True)
     assert t.created and t.session.name == "cc-app-2"
-    assert t.session.workdir == str(WS / "app.worktrees" / "2")
+    assert t.session.workdir == "/home/coder/git/wt/app-2"
     assert t.session.repo_url == "u"
     assert t.session.claude_session_id != s["cc-app-1"].claude_session_id
 
@@ -104,3 +105,23 @@ def test_same_repo_name_from_another_owner_is_refused():
     assert not resolve(s, repo_url="https://github.com/me/app").created  # same repo
     with pytest.raises(LaunchError, match="cloned from"):
         resolve(s, repo_url="git@github.com:someone-else/app.git")
+
+
+def test_layout_defaults(tmp_path):
+    from cloud_coder_vm.launch import ensure_repo
+    from cloud_coder_vm.session_registry import LogicalSession
+
+    layout = Layout(tmp_path / "git", tmp_path / "git" / "wt", tmp_path / "workspace")
+    assert layout.trust_roots() == [tmp_path / "git", tmp_path / "git/wt", tmp_path / "workspace"]
+    # a legacy session whose directory still exists is used as is, nothing is cloned
+    legacy = tmp_path / "workspace" / "app"
+    legacy.mkdir(parents=True)
+    s = LogicalSession("cc-app-1", "app", None, str(legacy), "id", 0.0, 0.0)
+    assert ensure_repo(s, layout) == "existing"
+    assert not (tmp_path / "git").exists()
+    # a new --new session must not adopt a directory someone else made
+    taken = tmp_path / "git" / "wt" / "app-2"
+    taken.mkdir(parents=True)
+    s2 = LogicalSession("cc-app-2", "app", None, str(taken), "id2", 0.0, 0.0)
+    with pytest.raises(LaunchError, match="not created by cloud-coder"):
+        ensure_repo(s2, layout, created=True)

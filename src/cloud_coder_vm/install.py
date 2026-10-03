@@ -1,7 +1,7 @@
 """Install / update cloud-coder on the VM. Idempotent; safe to run on every connect.
 
 ``install-system`` runs as root (systemd units, tmpfiles, packages).
-``install-user`` runs as the VM user (Claude Code, hooks, workspace).
+``install-user`` runs as the VM user (Claude Code, tools, workspace, dotfiles).
 """
 
 import copy
@@ -11,7 +11,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from cloud_coder_vm import dev_tools, paths, system_files
+from cloud_coder_vm import dev_tools, paths, session_registry, system_files
 from cloud_coder_vm.state_lock import write_atomic
 from cloud_coder_vm.system_files import VmConfig
 
@@ -24,14 +24,26 @@ HOOK_EVENTS: list[tuple[str, str | None]] = [
     ("SessionEnd", None),
 ]
 # Always installed: what cloud-coder itself and most toolchains (cargo, node-gyp) need.
-BASE_APT_PACKAGES = ["tmux", "git", "curl", "ca-certificates", "build-essential"]
+BASE_APT_PACKAGES = ["tmux", "git", "curl", "ca-certificates", "build-essential", "jq"]
 CLAUDE_INSTALLER = "curl -fsSL https://claude.ai/install.sh | bash"
 
 
-def merge_hooks(settings: dict, command: str = paths.HOOK_COMMAND) -> dict:
-    """Return settings with exactly one cloud-coder handler per event, keeping all others."""
-    merged = copy.deepcopy(settings)
-    hooks = merged.setdefault("hooks", {})
+def cloud_coder_hooks(command: str = paths.HOOK_COMMAND) -> dict:
+    hooks: dict = {}
+    for event, matcher in HOOK_EVENTS:
+        group: dict = {"hooks": [{"type": "command", "command": command, "timeout": 10}]}
+        if matcher:
+            group = {"matcher": matcher, **group}
+        hooks.setdefault(event, []).append(group)
+    return hooks
+
+
+def without_cloud_coder_hooks(settings: dict, command: str = paths.HOOK_COMMAND) -> dict:
+    """Settings minus the handlers earlier versions merged into ~/.claude/settings.json."""
+    cleaned = copy.deepcopy(settings)
+    hooks = cleaned.get("hooks")
+    if not isinstance(hooks, dict):
+        return cleaned
     for event in list(hooks):
         groups = []
         for group in hooks[event]:
@@ -42,12 +54,29 @@ def merge_hooks(settings: dict, command: str = paths.HOOK_COMMAND) -> dict:
             hooks[event] = groups
         else:
             del hooks[event]
-    for event, matcher in HOOK_EVENTS:
-        group: dict = {"hooks": [{"type": "command", "command": command, "timeout": 10}]}
-        if matcher:
-            group = {"matcher": matcher, **group}
-        hooks.setdefault(event, []).append(group)
-    return merged
+    if not hooks:
+        del cleaned["hooks"]
+    return cleaned
+
+
+def remove_legacy_user_hooks(settings_path: Path) -> str:
+    """Migrate away from hooks in the user's settings.json. Never writes through a symlink:
+    a linked settings.json belongs to a dotfiles repository."""
+    if not settings_path.exists() or paths.HOOK_COMMAND not in settings_path.read_text():
+        return "clean"
+    if settings_path.is_symlink():
+        print(
+            f"cloud-coder: warning: {settings_path} (a symlink) still contains cloud-coder hooks; "
+            "remove them from the linked file to avoid running them twice",
+            flush=True,
+        )
+        return "linked"
+    settings = json.loads(settings_path.read_text())
+    mode = settings_path.stat().st_mode & 0o777
+    write_atomic(
+        settings_path, json.dumps(without_cloud_coder_hooks(settings), indent=2) + "\n", mode
+    )
+    return "removed"
 
 
 def _write_if_changed(path: Path, text: str) -> bool:
@@ -97,6 +126,9 @@ def install_system(pyz_source: Path, config: VmConfig) -> None:
         tmp.replace(paths.AGENT_PYZ)
 
     _write_if_changed(paths.CONFIG_PATH, system_files.render_config(config))
+    _write_if_changed(
+        paths.MANAGED_SETTINGS_FILE, system_files.render_managed_hooks(cloud_coder_hooks())
+    )
     _write_if_changed(paths.TMPFILES_CONF, system_files.render_tmpfiles(config.user))
     _write_if_changed(paths.SYSTEMD_DIR / paths.IDLE_SERVICE, system_files.render_idle_service())
     _write_if_changed(paths.SYSTEMD_DIR / paths.IDLE_TIMER, system_files.render_idle_timer())
@@ -139,16 +171,44 @@ def configure_github_https(enabled: bool) -> None:
         )
 
 
+def dotfiles_dir(config: VmConfig, home: Path) -> Path | None:
+    if not config.dotfiles_repo:
+        return None
+    return home / config.workspace / session_registry.repo_name_from_url(config.dotfiles_repo)
+
+
+def install_dotfiles(config: VmConfig, home: Path) -> str:
+    """Clone the Claude Code config repository once (never pulled afterwards, so local
+    edits survive) and run its install command, which must be idempotent."""
+    target = dotfiles_dir(config, home)
+    if target is None:
+        return "not configured"
+    if not target.exists():
+        branch = ["--branch", config.dotfiles_branch] if config.dotfiles_branch else []
+        result = subprocess.run(
+            ["git", "clone", *branch, "--", config.dotfiles_repo, str(target)],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            print(
+                f"cloud-coder: warning: cloning {config.dotfiles_repo} failed "
+                f"(for a private repository run `gh auth login && gh auth setup-git` on the VM; "
+                f"the next connect retries): {result.stderr.strip()}",
+                flush=True,
+            )
+            return "clone failed"
+    subprocess.run(["bash", "-c", config.dotfiles_install], cwd=target, check=True)
+    return "installed"
+
+
 def install_user(config: VmConfig, home: Path) -> None:
     (home / config.workspace).mkdir(parents=True, exist_ok=True)
-
-    settings_path = paths.claude_settings_path(home)
-    settings = json.loads(settings_path.read_text()) if settings_path.exists() else {}
-    merged = merge_hooks(settings)
-    if merged != settings:
-        write_atomic(settings_path, json.dumps(merged, indent=2) + "\n", mode=0o600)
+    (home / config.worktrees).mkdir(parents=True, exist_ok=True)
+    remove_legacy_user_hooks(paths.claude_settings_path(home))
 
     if not paths.claude_bin(home).exists():
         subprocess.run(["bash", "-c", CLAUDE_INSTALLER], check=True)
     dev_tools.install(dev_tools.missing(config.tools, "user", home))
-    configure_github_https(config.github_https)
+    configure_github_https(config.github_https)  # before cloning dotfiles over https
+    install_dotfiles(config, home)

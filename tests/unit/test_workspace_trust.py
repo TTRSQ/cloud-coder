@@ -31,19 +31,19 @@ def test_trust_writes_atomically_and_preserves_mode(tmp_path):
     cfg = tmp_path / ".claude.json"
     cfg.write_text(json.dumps({"userID": "u", "projects": {"/elsewhere": {"a": 1}}}))
     os.chmod(cfg, 0o600)
-    assert trust(cfg, [repo], ws) is True
+    assert trust(cfg, [repo], [ws]) is True
     data = json.loads(cfg.read_text())
     assert data["userID"] == "u" and data["projects"]["/elsewhere"] == {"a": 1}
     assert data["projects"][str(repo.resolve())]["hasTrustDialogAccepted"] is True
     assert os.stat(cfg).st_mode & 0o777 == 0o600
-    assert trust(cfg, [repo], ws) is False  # idempotent
+    assert trust(cfg, [repo], [ws]) is False  # idempotent
 
 
 def test_trust_creates_missing_config(tmp_path):
     ws = tmp_path / "workspace"
     (ws / "r").mkdir(parents=True)
     cfg = tmp_path / ".claude.json"
-    assert trust(cfg, [ws / "r"], ws)
+    assert trust(cfg, [ws / "r"], [ws])
     assert os.stat(cfg).st_mode & 0o777 == 0o600
 
 
@@ -54,7 +54,7 @@ def test_trust_refuses_outside_workspace(tmp_path, target):
     (tmp_path / "outside").mkdir()
     path = {"workspace": ws, "home": tmp_path, "outside": tmp_path / "outside"}[target]
     with pytest.raises(ValueError):
-        trust(tmp_path / ".claude.json", [path], ws)
+        trust(tmp_path / ".claude.json", [path], [ws])
     assert not (tmp_path / ".claude.json").exists()
 
 
@@ -66,8 +66,17 @@ def test_trust_follows_symlinked_config(tmp_path):
     real.write_text(json.dumps({"userID": "u"}))
     link = tmp_path / ".claude.json"
     link.symlink_to(real)
-    assert trust(link, [ws / "r"], ws)
+    assert trust(link, [ws / "r"], [ws])
     assert link.is_symlink()
     assert json.loads(real.read_text())["projects"][str((ws / "r").resolve())] == {
         "hasTrustDialogAccepted": True
     }
+
+
+def test_trust_accepts_any_of_several_roots(tmp_path):
+    git, wt = tmp_path / "git", tmp_path / "git" / "wt"
+    (wt / "app-2").mkdir(parents=True)
+    (git / "app").mkdir()
+    assert trust(tmp_path / ".claude.json", [git / "app", wt / "app-2"], [git, wt])
+    with pytest.raises(ValueError):
+        trust(tmp_path / ".claude.json", [wt], [git, wt])  # a root itself is not trusted
