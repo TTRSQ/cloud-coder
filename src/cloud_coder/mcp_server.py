@@ -7,6 +7,7 @@ The server does not depend on a transport: `cloud-coder mcp` serves it over stdi
 """
 
 import threading
+import unicodedata
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict
@@ -61,9 +62,12 @@ def up_now(cfg: Config) -> connect.UpResult:
 
 def checked_prompt(text: str) -> str:
     """Claude Code runs input starting with ``!`` as a shell command, unchecked: refuse it,
-    so that the tools never run arbitrary commands on the VM."""
+    so that the tools never run arbitrary commands on the VM. Control characters are
+    refused too: an escape sequence could end the bracketed paste and type ``!`` as keys."""
     if text.lstrip().startswith("!"):
         raise ToolError("a prompt must not start with '!' (Claude Code's shell mode)")
+    if any(unicodedata.category(c) == "Cc" and c not in "\n\t" for c in text):
+        raise ToolError("a prompt must not contain control characters other than newline and tab")
     return text
 
 
