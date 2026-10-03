@@ -37,8 +37,9 @@ def test_missing_file_gives_defaults(tmp_path):
 
 
 def test_cli_overrides_win_and_none_is_ignored():
-    cfg = with_overrides(Config(machine_type="e2-standard-4"), machine_type="n2-standard-16",
-                         zone=None)
+    cfg = with_overrides(
+        Config(machine_type="e2-standard-4"), machine_type="n2-standard-16", zone=None
+    )
     assert cfg.machine_type == "n2-standard-16" and cfg.zone == Config().zone
 
 

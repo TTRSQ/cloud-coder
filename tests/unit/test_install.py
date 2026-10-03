@@ -40,8 +40,18 @@ def test_merge_is_idempotent_and_keeps_user_hooks():
 
 
 def test_merge_separates_our_handler_from_shared_group():
-    shared = {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": OURS},
-                                             {"type": "command", "command": "other"}]}]}}
+    shared = {
+        "hooks": {
+            "Stop": [
+                {
+                    "hooks": [
+                        {"type": "command", "command": OURS},
+                        {"type": "command", "command": "other"},
+                    ]
+                }
+            ]
+        }
+    }
     merged = merge_hooks(shared)
     assert len(our_handlers(merged)) == len(HOOK_EVENTS)
     assert {"type": "command", "command": "other"} in merged["hooks"]["Stop"][0]["hooks"]

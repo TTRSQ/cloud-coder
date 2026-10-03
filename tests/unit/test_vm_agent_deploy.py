@@ -23,8 +23,7 @@ def test_vm_config_roundtrip():
 
 
 def test_is_current():
-    out = (f"aaa  {paths.AGENT_PYZ}\nbbb  {paths.CONFIG_PATH}\n"
-           "claude-installed\nhooks-installed\n")
+    out = f"aaa  {paths.AGENT_PYZ}\nbbb  {paths.CONFIG_PATH}\nclaude-installed\nhooks-installed\n"
     assert is_current(out, "aaa", "bbb")
     assert not is_current(out, "zzz", "bbb")
     assert not is_current(out.replace("claude-installed", ""), "aaa", "bbb")

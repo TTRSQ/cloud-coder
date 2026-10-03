@@ -1,0 +1,36 @@
+name: E2E (real GCP)
+
+# Runs against a real GCP project. Requires Workload Identity Federation set up
+# outside this repository, exposed as repository variables:
+#   GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_SERVICE_ACCOUNT, CLOUD_CODER_E2E_PROJECT
+on:
+  workflow_dispatch:
+    inputs:
+      zone:
+        description: GCE zone
+        default: asia-northeast1-b
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - run: uv run pytest tests/e2e --run-e2e -v
+        env:
+          CLOUD_CODER_E2E_PROJECT: ${{ vars.CLOUD_CODER_E2E_PROJECT }}
+          CLOUD_CODER_E2E_ZONE: ${{ inputs.zone }}
+          CLOUD_CODER_E2E_INSTANCE: cloud-coder-e2e

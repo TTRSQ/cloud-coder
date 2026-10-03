@@ -33,8 +33,10 @@ def entry(name, repo, t):
 
 
 def test_next_index_and_latest():
-    sessions = {s.name: s for s in [entry("cc-a-1", "a", 5), entry("cc-a-2", "a", 9),
-                                     entry("cc-b-1", "b", 7)]}
+    sessions = {
+        s.name: s
+        for s in [entry("cc-a-1", "a", 5), entry("cc-a-2", "a", 9), entry("cc-b-1", "b", 7)]
+    }
     assert next_index(sessions, "a") == 3
     assert next_index(sessions, "c") == 1
     assert latest(sessions, "a").name == "cc-a-2"

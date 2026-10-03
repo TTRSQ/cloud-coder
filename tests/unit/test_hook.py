@@ -16,11 +16,15 @@ def test_lifecycle_records_state_by_pane(tmp_path):
     run(tmp_path, {"hook_event_name": "SessionStart", "session_id": "A", "source": "startup"})
     st = session_state.load(tmp_path / "s", "pane-4")
     assert (st.state, st.session_id, st.claude_pid, st.claude_starttime) == ("BUSY", "A", 321, 4242)
-    run(tmp_path, {"hook_event_name": "Stop", "session_id": "A", "background_tasks": [],
-                   "session_crons": []})
+    run(
+        tmp_path,
+        {"hook_event_name": "Stop", "session_id": "A", "background_tasks": [], "session_crons": []},
+    )
     assert session_state.load(tmp_path / "s", "pane-4").state == "READY"
-    run(tmp_path, {"hook_event_name": "Notification", "session_id": "A",
-                   "notification_type": "idle_prompt"})
+    run(
+        tmp_path,
+        {"hook_event_name": "Notification", "session_id": "A", "notification_type": "idle_prompt"},
+    )
     assert session_state.load(tmp_path / "s", "pane-4").state == "IDLE"
     run(tmp_path, {"hook_event_name": "SessionEnd", "session_id": "A", "reason": "other"})
     assert session_state.load(tmp_path / "s", "pane-4") is None
@@ -36,8 +40,9 @@ def test_clear_keeps_new_session_when_old_end_arrives_late(tmp_path):
 def test_session_start_updates_registry_session_id(tmp_path):
     (tmp_path / "s").mkdir()
     reg = tmp_path / "reg.json"
-    session_registry.save(reg, {"cc-app-1": LogicalSession("cc-app-1", "app", None, "/w/app",
-                                                           "OLD", 0.0, 0.0)})
+    session_registry.save(
+        reg, {"cc-app-1": LogicalSession("cc-app-1", "app", None, "/w/app", "OLD", 0.0, 0.0)}
+    )
     run(tmp_path, {"hook_event_name": "SessionStart", "session_id": "NEW", "source": "clear"})
     assert session_registry.load(reg)["cc-app-1"].claude_session_id == "NEW"
 

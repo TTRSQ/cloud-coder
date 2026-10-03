@@ -10,8 +10,11 @@ def test_with_trusted_keeps_existing_project_keys():
     config = {"numStartups": 3, "projects": {"/w/a": {"allowedTools": ["Bash"], "x": 1}}}
     out = with_trusted(config, ["/w/a", "/w/b"])
     assert out["numStartups"] == 3
-    assert out["projects"]["/w/a"] == {"allowedTools": ["Bash"], "x": 1,
-                                       "hasTrustDialogAccepted": True}
+    assert out["projects"]["/w/a"] == {
+        "allowedTools": ["Bash"],
+        "x": 1,
+        "hasTrustDialogAccepted": True,
+    }
     assert out["projects"]["/w/b"] == {"hasTrustDialogAccepted": True}
     assert "hasTrustDialogAccepted" not in config["projects"]["/w/a"]  # input untouched
 
