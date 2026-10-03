@@ -117,6 +117,7 @@ Claude Code の状態は hook で更新されます。
 | `StopFailure` (API エラーでターンが終了) | `READY` |
 | `Stop` で上記のどちらかが空でない、または欠けている | `BUSY` |
 | `Notification` (`idle_prompt`) かつ `READY` | `IDLE` |
+| `READY` のまま 2 分間イベントなし | idle とみなす (状態は `READY` のまま) |
 | `SessionEnd` | 状態を削除 |
 
 - 状態は Claude Code のプロセスごとに `/run/cloud-coder/sessions/` (tmpfs) へ保存され、tmux pane とプロセス ID で実態と突き合わせます。プロセスが消えた状態ファイル (クラッシュ等で `SessionEnd` が来なかったもの) は無視して削除します。
@@ -126,7 +127,7 @@ Claude Code の状態は hook で更新されます。
 - `Esc` でターンを中断した場合は `Stop` もほかの hook も発火しないため、次のプロンプトまで `BUSY` のまま残ります。
 - 未送信の入力をプロンプト欄に入れたまま grace period を超えて放置すると、新規起動のセッションは停止対象になります。
 - `connect` も grace period を取り消します。判定と新規セッションの作成は `/run/cloud-coder/state.lock` の flock で直列化しています。
-- `idle_prompt` は Claude Code が応答を終えて約 60 秒間入力が無いときに送られます。ターミナルに attach している間は送られないことがあるので、離れるときは detach してください。
+- `idle_prompt` は Claude Code が応答を終えて約 60 秒間入力が無いときに送られます。ただし Remote Control が有効なセッションでは送られないことを確認しています (Claude Code 2.1.288)。そのため、`READY` のまま 2 分間イベントが無いセッションも idle とみなします。`READY` は直前の `Stop` で background task も cron も無いと報告されている状態なので、`idle_prompt` を待つ場合と同じ根拠で判定しています。
 - tmux の外 (SSH で直接実行したプロセスなど) は判定の対象外です。
 
 `cloud-coder status` で、自動停止を妨げている理由と停止までの残り時間を確認できます。VM 上のログは `journalctl -u cloud-coder-idle-check.service` で見られます。

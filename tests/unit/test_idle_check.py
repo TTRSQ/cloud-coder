@@ -1,4 +1,4 @@
-from cloud_coder_vm.idle_check import decide, evaluate
+from cloud_coder_vm.idle_check import READY_IDLE_AFTER_SECONDS, decide
 from cloud_coder_vm.process_table import Process
 from cloud_coder_vm.session_state import BUSY, IDLE, READY, SessionState
 from cloud_coder_vm.tmux_panes import Pane
@@ -32,6 +32,18 @@ def state(key, s, pane, pid=None, start=500, session="cc-repo-1"):
         claude_pid=pid,
         claude_starttime=start if pid else None,
     )
+
+
+NOW = 10_000.0
+
+
+def evaluate(panes, procs_, states, now=NOW):
+    from cloud_coder_vm.idle_check import evaluate as real
+
+    for st in states:
+        if not st.updated_at:
+            st.updated_at = now
+    return real(panes, procs_, states, now)
 
 
 PANE1 = Pane("cc-repo-1", "%1", 10, "bash")
@@ -149,3 +161,19 @@ def test_decide_grace_lifecycle():
     mid = decide(True, 1000.0, 1300.0, 600)
     assert mid.action == "grace" and mid.remaining_seconds == 300
     assert decide(True, 1000.0, 1600.0, 600).action == "shutdown"
+
+
+def test_ready_without_idle_prompt_becomes_idle_after_quiet_period():
+    p = procs(shell(10), claude(11, 10))
+    st = state("pane-1", READY, "%1", pid=11)
+    st.updated_at = NOW - READY_IDLE_AFTER_SECONDS + 1
+    assert not evaluate([PANE1], p, [st]).idle
+    st.updated_at = NOW - READY_IDLE_AFTER_SECONDS
+    assert evaluate([PANE1], p, [st]).idle
+
+
+def test_busy_never_times_out():
+    p = procs(shell(10), claude(11, 10))
+    st = state("pane-1", BUSY, "%1", pid=11)
+    st.updated_at = NOW - 10 * READY_IDLE_AFTER_SECONDS
+    assert not evaluate([PANE1], p, [st]).idle

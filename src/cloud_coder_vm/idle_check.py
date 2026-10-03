@@ -13,7 +13,7 @@ from pathlib import Path
 
 from cloud_coder_vm import paths, process_table, session_state, tmux_panes
 from cloud_coder_vm.process_table import Process
-from cloud_coder_vm.session_state import IDLE, SessionState
+from cloud_coder_vm.session_state import IDLE, READY, SessionState
 from cloud_coder_vm.state_lock import state_lock, write_atomic
 from cloud_coder_vm.tmux_panes import Pane
 
@@ -51,10 +51,23 @@ def _pane_subtree(pane: Pane, procs, children) -> tuple[list[Process], list[Proc
     return claudes, others
 
 
+# A READY session (its last Stop reported no background tasks and no crons) that has
+# seen no event for this long counts as idle even without Notification(idle_prompt).
+# Claude Code does not send idle_prompt while Remote Control is on (observed on 2.1.288).
+READY_IDLE_AFTER_SECONDS = 120
+
+
+def is_idle_state(state: SessionState, now: float) -> bool:
+    if state.state == IDLE:
+        return True
+    return state.state == READY and now - state.updated_at >= READY_IDLE_AFTER_SECONDS
+
+
 def evaluate(
     panes: list[Pane] | None,
     procs: dict[int, Process],
     states: list[SessionState],
+    now: float,
 ) -> Evaluation:
     if panes is None:
         return Evaluation(idle=False, busy_reasons=["tmux server could not be queried"])
@@ -74,7 +87,7 @@ def evaluate(
     registered_panes = {s.tmux_pane for s in ev.live_states if s.claude_pid is None}
 
     for state in ev.live_states:
-        if state.state != IDLE:
+        if not is_idle_state(state, now):
             name = state.cloud_coder_session or state.session_id
             ev.busy_reasons.append(
                 f"claude {name} ({state.tmux_pane or 'no tmux'}) is {state.state}"
@@ -134,6 +147,7 @@ def scan(user: str | None) -> Evaluation:
         tmux_panes.list_panes(user),
         process_table.snapshot(),
         session_state.load_all(paths.SESSION_STATE_DIR),
+        time.time(),
     )
 
 
