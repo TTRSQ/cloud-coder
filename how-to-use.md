@@ -269,13 +269,13 @@ claude mcp list   # cloud-coder が Connected になっていること
 /cloud-coder stop
 ```
 
-- [初回セットアップ](#初回セットアップ)の 2〜5 (gcloud の認証、config.yaml、`gh auth login`、Claude Code の `/login`) を済ませてから使います。CLI は `uv run cloud-coder` で、このチェックアウトのものが使われます (`uv tool install` は不要です)。画面の読み取りには MCP Inspector を `npx` で使うので、Node.js 22.19 以上が必要です。
+- [初回セットアップ](#初回セットアップ)の 2〜5 (gcloud の認証、config.yaml、`gh auth login`、Claude Code の `/login`) を済ませてから使います。CLI は `uv run cloud-coder` で、このチェックアウトのものが使われます (`uv tool install` は不要です)。画面の読み取りには MCP Inspector (バージョン固定) を `npx` で使うので、Node.js 22.19 以上が必要です。
 - スキルは Sonnet で動きます (frontmatter の `model: sonnet`)。モデルの切り替えはそのターンだけで、次に入力したときは元のモデルに戻ります。
 - `/cloud-coder` と打ったときだけ動きます (`disable-model-invocation: true`)。このリポジトリでは cloud-coder 自体の開発で status や stop の話が頻繁に出るため、Claude が会話から判断して VM を起動・停止しないようにしています。
 - タスクは `connect --detach` で渡すだけで、結果は待ちません。後で `/cloud-coder read <セッション名>` で画面を読みます。VM が止まっていれば、読む前に起動するかを聞きます。
 - 感嘆符で始まる指示 (Claude Code の shell モード) は送りません。対象の VM を変えるオプション (`--project` など) も付けません。
 - VM を止めるのは `stop` を頼んだときだけです。作業を渡した後は自動停止に任せます。`stop` のときは先に status を見て、作業中 (`BUSY`) のセッションがあれば止めずに確認を求めます。
-- status・起動・タスクの投入・画面の読み取りのコマンドは、スキルを呼んだターンの間だけ許可なしで実行されます (frontmatter の `allowed-tools`)。`stop` は許可を求めます。
+- status・起動・タスクの投入・画面の読み取り (Inspector の `read_session` だけ) のコマンドは、スキルを呼んだターンの間だけ許可なしで実行されます (frontmatter の `allowed-tools`)。`stop` は許可を求めます。
 
 ## 自動停止を使いこなす
 

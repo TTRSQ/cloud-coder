@@ -9,7 +9,7 @@ allowed-tools:
   - Bash(uv run cloud-coder status *)
   - Bash(uv run cloud-coder up)
   - Bash(uv run cloud-coder connect *)
-  - Bash(npx -y @modelcontextprotocol/inspector --cli uv run cloud-coder mcp *)
+  - Bash(npx -y @modelcontextprotocol/inspector@2.9.0 --cli uv run cloud-coder mcp --method tools/call --tool-name read_session *)
 ---
 
 # cloud-coder に作業を任せる
@@ -30,7 +30,8 @@ cloud-coder は、GCE VM 上の tmux で Claude Code を動かし、全セッシ
 - **VM はユーザーが停止を頼んだときだけ止める。** 作業を渡した後や読み取った後に `stop` しない。idle になれば VM は自動で止まる (既定で約 10 分後)。
 - 下の「操作」にあるコマンドだけを使う。VM に `gcloud compute ssh` で入ったり、`gcloud` で VM を操作したりしない。
 - 失敗したら、エラー出力をそのままユーザーに見せて止まる。同じコマンドを何度も再試行しない。
-- `uv run cloud-coder up` と `uv run cloud-coder connect` は、VM が止まっていると起動を待つので数分かかる。Bash の timeout を 600000 (10 分) にして実行する。
+- `uv run cloud-coder up` と `uv run cloud-coder connect` は、VM が止まっていると起動を待つので数分かかる。Bash の timeout を 600000 (10 分) にして実行する。timeout で打ち切られたら再実行せず、`uv run cloud-coder status` の結果を見せて、もう一度呼ぶようユーザーに伝える (どちらも途中から続きを再開できる)。
+- Inspector は MCP の `read_session` の呼び出しにだけ使う。`stop` など他の MCP tool は呼ばない。
 
 ## 依頼の読み方
 
@@ -90,14 +91,14 @@ CLOUD_CODER_PROMPT
 - ユーザーが「別セッションで」「並行して」と言ったときだけ `--new` を付ける (同じリポジトリの 2 つ目のセッションを git worktree に作る)。
 - 指示はユーザーの言葉をそのまま渡す。勝手に要約したり書き足したりしない。
 - 成功すると、標準出力の最後に JSON が 1 行出る。`session` (セッション名、例 `cc-REPO-1`) をユーザーに伝え、結果は後で `/cloud-coder read <session>` で読めると案内する。
-- `Claude Code in this session is BUSY; prompt not sent` で失敗したら、前の作業がまだ終わっていない。送り直さずにユーザーに伝える。
+- `prompt not sent` で失敗したら、送り直さずにユーザーに伝える。`is BUSY` なら前の作業がまだ終わっていない。`has not reported its state yet` なら Claude Code がログイン画面か trust 画面で止まっている可能性があるので、下の attach を案内する。
 - 標準エラーに `workspace trust skipped` が出たら、Claude Code が trust 画面で止まっている。ユーザー自身のターミナルで、このリポジトリから `uv run cloud-coder connect --session <SESSION>` で attach して答えるよう伝える (attach は対話操作なので、このスキルからは実行しない)。
 - 結果を待たない。渡したら報告して終わる。
 
 ### セッションの画面を読む
 
 ```bash
-npx -y @modelcontextprotocol/inspector --cli uv run cloud-coder mcp --method tools/call --tool-name read_session --tool-arg session=<SESSION> --tool-arg lines=200
+npx -y @modelcontextprotocol/inspector@2.9.0 --cli uv run cloud-coder mcp --method tools/call --tool-name read_session --tool-arg session=<SESSION> --tool-arg lines=200
 ```
 
 - セッション名が分からなければ、先に `uv run cloud-coder status` で確認する。セッションが 1 つだけならそれを使い、複数あれば一覧を見せて聞く。
