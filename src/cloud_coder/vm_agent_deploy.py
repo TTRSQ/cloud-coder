@@ -16,7 +16,6 @@ from pathlib import Path
 from cloud_coder import ssh
 from cloud_coder.config import Config
 from cloud_coder_vm import paths
-from cloud_coder_vm.session_registry import repo_name_from_url
 from cloud_coder_vm.system_files import VmConfig, render_config
 
 _FIXED_DATE = (2020, 1, 1, 0, 0, 0)
@@ -72,10 +71,7 @@ def check_command(cfg: Config) -> str:
         f"test -f {paths.MANAGED_SETTINGS_FILE} && echo hooks-installed",
     ]
     if cfg.dotfiles_repo:
-        name = repo_name_from_url(cfg.dotfiles_repo)
-        parts.append(
-            f"test -d ~/{shlex.quote(cfg.workspace)}/{shlex.quote(name)} && echo dotfiles-cloned"
-        )
+        parts.append(f"test -f ~/{paths.DOTFILES_STAMP} && echo dotfiles-installed")
     return "; ".join(parts) + "; true"
 
 
@@ -90,7 +86,7 @@ def is_current(check_output: str, pyz_sha: str, config_sha: str, dotfiles: bool 
         and hashes.get(str(paths.CONFIG_PATH)) == config_sha
         and "claude-installed" in check_output
         and "hooks-installed" in check_output
-        and (not dotfiles or "dotfiles-cloned" in check_output)
+        and (not dotfiles or "dotfiles-installed" in check_output)
     )
 
 
@@ -112,13 +108,14 @@ def ensure_installed(cfg: Config) -> bool:
         local = Path(tmp) / "cloud-coder-vm.pyz"
         local.write_bytes(pyz)
         ssh.scp(cfg, str(local), remote)
-    command = " && ".join(
+    install = " && ".join(
         [
             shlex.join(["sudo", "python3", remote, "install-system", "--config", config_text]),
             shlex.join(["python3", str(paths.AGENT_PYZ), "install-user"]),
-            shlex.join(["rm", "-f", remote]),
         ]
     )
+    # remove the uploaded copy whether or not the install succeeded
+    command = f"{install}; status=$?; rm -f {shlex.quote(remote)}; exit $status"
     result = ssh.run(cfg, command, capture=False)
     if result.returncode != 0:
         raise RuntimeError("installing the VM agent failed (see output above)")

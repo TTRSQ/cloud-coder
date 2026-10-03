@@ -107,21 +107,78 @@ def test_same_repo_name_from_another_owner_is_refused():
         resolve(s, repo_url="git@github.com:someone-else/app.git")
 
 
-def test_layout_defaults(tmp_path):
-    from cloud_coder_vm.launch import ensure_repo
-    from cloud_coder_vm.session_registry import LogicalSession
+def git(*args, cwd):
+    import subprocess
 
-    layout = Layout(tmp_path / "git", tmp_path / "git" / "wt", tmp_path / "workspace")
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+def make_clone(path, origin):
+    path.mkdir(parents=True)
+    git("init", "-q", "-b", "main", cwd=path)
+    git(
+        "-c",
+        "user.email=a@b",
+        "-c",
+        "user.name=a",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "i",
+        cwd=path,
+    )
+    git("remote", "add", "origin", origin, cwd=path)
+
+
+def tmp_layout(tmp_path):
+    return Layout(tmp_path / "git", tmp_path / "git" / "wt", tmp_path / "workspace")
+
+
+def test_trust_roots_have_no_duplicates(tmp_path):
+    layout = tmp_layout(tmp_path)
     assert layout.trust_roots() == [tmp_path / "git", tmp_path / "git/wt", tmp_path / "workspace"]
-    # a legacy session whose directory still exists is used as is, nothing is cloned
+    same = Layout(tmp_path / "workspace", tmp_path / "wt", tmp_path / "workspace")
+    assert same.trust_roots() == [tmp_path / "workspace", tmp_path / "wt"]
+
+
+def test_legacy_clone_is_reused_and_new_worktrees_come_from_it(tmp_path):
+    from cloud_coder_vm.launch import ensure_repo, main_checkout
+
+    layout = tmp_layout(tmp_path)
     legacy = tmp_path / "workspace" / "app"
-    legacy.mkdir(parents=True)
-    s = LogicalSession("cc-app-1", "app", None, str(legacy), "id", 0.0, 0.0)
-    assert ensure_repo(s, layout) == "existing"
-    assert not (tmp_path / "git").exists()
-    # a new --new session must not adopt a directory someone else made
+    make_clone(legacy, "git@github.com:me/app.git")
+    assert main_checkout(layout, "app") == legacy
+    s1 = LogicalSession("cc-app-1", "app", "u", str(legacy), "id", 0.0, 0.0)
+    assert ensure_repo(s1, layout) == "existing"
+    wt = tmp_path / "git" / "wt" / "app-2"
+    s2 = LogicalSession("cc-app-2", "app", "git@github.com:me/app.git", str(wt), "id2", 0.0, 0.0)
+    assert ensure_repo(s2, layout, created=True) == "worktree-added"
+    assert not (tmp_path / "git" / "app").exists()  # no second clone
+
+
+def test_new_session_does_not_adopt_a_directory_it_did_not_create(tmp_path):
+    from cloud_coder_vm.launch import ensure_repo
+
+    layout = tmp_layout(tmp_path)
     taken = tmp_path / "git" / "wt" / "app-2"
     taken.mkdir(parents=True)
     s2 = LogicalSession("cc-app-2", "app", None, str(taken), "id2", 0.0, 0.0)
     with pytest.raises(LaunchError, match="not created by cloud-coder"):
         ensure_repo(s2, layout, created=True)
+
+
+def test_existing_clone_is_adopted_only_for_the_same_repository(tmp_path):
+    from cloud_coder_vm.launch import ensure_repo
+
+    layout = tmp_layout(tmp_path)
+    clone = tmp_path / "git" / "app"
+    make_clone(clone, "git@github.com:me/app.git")
+
+    def session(url):
+        return LogicalSession("cc-app-1", "app", url, str(clone), "id", 0.0, 0.0)
+
+    assert ensure_repo(session("https://github.com/me/app"), layout, created=True) == "existing"
+    assert ensure_repo(session(None), layout, created=True) == "existing"  # named by the user
+    with pytest.raises(LaunchError, match="origin"):
+        ensure_repo(session("git@github.com:other/app.git"), layout, created=True)

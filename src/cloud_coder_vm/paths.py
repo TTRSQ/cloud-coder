@@ -33,6 +33,10 @@ MANAGED_SETTINGS_FILE = Path("/etc/claude-code/managed-settings.d/50-cloud-coder
 LEGACY_WORKSPACE = "workspace"
 
 
+# written after the dotfiles install command succeeds; until then every connect retries
+DOTFILES_STAMP = ".local/share/cloud-coder/dotfiles-installed"  # relative to HOME
+
+
 def registry_path(home: Path) -> Path:
     return home / ".local/share/cloud-coder/sessions.json"
 

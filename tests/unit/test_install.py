@@ -61,6 +61,12 @@ def test_without_cloud_coder_hooks_keeps_everything_else():
     assert without_cloud_coder_hooks(cleaned) == cleaned
     only_ours = {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": OURS}]}]}}
     assert without_cloud_coder_hooks(only_ours) == {}
+    # the user's own empty entries are not ours to tidy up
+    user_empty = {
+        "hooks": {"Stop": [{"hooks": [{"type": "command", "command": OURS}]}], "PreToolUse": []}
+    }
+    assert without_cloud_coder_hooks(user_empty) == {"hooks": {"PreToolUse": []}}
+    assert without_cloud_coder_hooks({"hooks": {}}) == {"hooks": {}}
 
 
 def test_remove_legacy_user_hooks_regular_file(tmp_path):
@@ -128,6 +134,7 @@ def test_install_dotfiles_clones_once_and_reruns_install(tmp_path, monkeypatch):
     src = make_dotfiles_repo(tmp_path)
     config = vm_config(dotfiles_repo=str(src))
     assert install_dotfiles(config, home) == "installed"
+    assert (home / paths.DOTFILES_STAMP).exists()
     clone = home / "git" / "dotClaude"
     (clone / "local-edit").write_text("keep")
     subprocess.run(
@@ -156,6 +163,18 @@ def test_install_dotfiles_clones_once_and_reruns_install(tmp_path, monkeypatch):
     ).stdout
     assert local != upstream
     assert (home / "runs").read_text() == "run\nrun\n"
+
+
+def test_failed_install_command_leaves_no_stamp_so_it_is_retried(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / "git").mkdir(parents=True)
+    src = make_dotfiles_repo(tmp_path)
+    failing = vm_config(dotfiles_repo=str(src), dotfiles_install="exit 3")
+    assert install_dotfiles(failing, home) == "install failed"
+    assert not (home / paths.DOTFILES_STAMP).exists()
+    monkeypatch.setenv("HOME", str(home))
+    assert install_dotfiles(vm_config(dotfiles_repo=str(src)), home) == "installed"
+    assert (home / paths.DOTFILES_STAMP).exists()
 
 
 def test_install_dotfiles_clone_failure_is_reported_not_fatal(tmp_path):

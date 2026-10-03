@@ -87,7 +87,8 @@ cloud-coder up                                      # VM の作成・起動と a
 | `cc-<repo>-N` (`--new`) | `~/git/wt/<repo>-N` (branch `cloud-coder/cc-<repo>-N` の git worktree) |
 
 - 置き場所は `vm.workspace` (clone、既定 `git`) と `vm.worktrees` (worktree、既定 `git/wt`) で変えられます。`~/git/wt` は worktree を `WORKTREE_BASE_DIR=~/git/wt` に作る運用に合わせています。
-- 以前の既定だった `~/workspace` にある clone やセッションはそのまま使えます。対応表は絶対パスを記録しているので、既存のセッションは元の場所で動き続け、新しい clone だけが `~/git` に作られます。cloud-coder が `~/workspace` を移動・削除することはありません。
+- 以前の既定だった `~/workspace` にある clone やセッションはそのまま使えます。対応表は絶対パスを記録しているので、既存のセッションは元の場所で動き続けます。`~/workspace/<repo>` に clone があるリポジトリは、`--new` の worktree (`~/git/wt/<repo>-N`) もその clone から作り、`~/git` に 2 つ目の clone は作りません。cloud-coder が `~/workspace` を移動・削除することはありません。
+- clone 先に既にディレクトリがあるときは、その `origin` が指定した URL と同じリポジトリの場合だけ使います (違えばエラー。手で clone したものを別リポジトリとして使ったり trust したりしないため)。名前だけで `connect <repo>` した場合はそのディレクトリを使います。
 
 - Claude Code は `claude --session-id <uuid> --remote-control <セッション名>` で起動されます。Remote Control で claude.ai / Claude アプリからも操作できます。
 - 対応表は VM の `~/.local/share/cloud-coder/sessions.json` (Persistent Disk) に保存されます。`/clear` などで Claude Code の session ID が変わると hook が対応表を更新します。
@@ -132,6 +133,7 @@ claude:
   dotfiles_repo: https://github.com/OWNER/dotClaude.git
 ```
 
+- clone や install コマンドが失敗した場合は警告を出して先へ進み、次の `connect` で再試行します (install の成功は `~/.local/share/cloud-coder/dotfiles-installed` で記録)。
 - clone は初回だけです。既に clone 済みなら pull も reset もせず (VM 上での編集を残すため)、install コマンドだけを agent の更新時に再実行します。更新を取り込むときは VM 上で `git -C ~/git/dotClaude pull` してください。
 - private repository は HTTPS + gh の認証で clone します。先に「GitHub の認証」を済ませてください。gh の token がそのリポジトリを読めない場合 (fine-grained token の対象外など) は警告を出して先へ進み、次の `connect` で再試行します。
 - hook が `jq` を使う設定リポジトリのために、`jq` は常に入れます。
@@ -155,12 +157,12 @@ VM 上の systemd timer が 1 分ごとに VM 全体を評価します。次を�
 - 全 Claude Code セッションが `IDLE`
 - tmux の全 pane がシェルのプロンプト待ち (フォアグラウンドのコマンドも、シェル配下のバックグラウンドジョブもない)
 
-Claude Code の状態は hook で更新されます。hook は Claude Code の managed settings (`/etc/claude-code/managed-settings.d/50-cloud-coder.json`) に置き、`~/.claude/settings.json` は一切書き換えません (dotfiles でシンボリックリンクにしている場合を壊さないため)。
+Claude Code の状態は hook で更新されます。hook は Claude Code の managed settings (`/etc/claude-code/managed-settings.d/50-cloud-coder.json`) に置きます。cloud-coder が `~/.claude/settings.json` に hook を書き込むことはありません (dotfiles でシンボリックリンクにしている場合を壊さないため)。例外は下記の移行処理だけです。
 
 - managed settings の hook は、ユーザーや project の settings の hook と併用されます ([Hook locations](https://code.claude.com/docs/en/hooks#hook-locations): "user, project, and local settings add their own hooks without removing managed ones")。置き場所は [Linux の managed settings ディレクトリ](https://code.claude.com/docs/en/managed-settings) です。
 - このファイルは `hooks` だけを持ち、permission などユーザー設定を制限するキーは入れません。
 - 組織の [server-managed settings](https://code.claude.com/docs/en/server-managed-settings) が届くアカウント (Team / Enterprise の一部) では、managed settings の既定 (`first-wins`) によりこのファイルが読まれず、自動停止が働かないことがあります。`/status` で managed settings の出どころを確認できます。
-- 以前の版が `~/.claude/settings.json` に追加した hook は、インストール時に取り除きます (cloud-coder の hook だけ。他の設定は保持)。`settings.json` がシンボリックリンクなら書き換えず、警告だけ出します。
+- 移行: 以前の版が `~/.claude/settings.json` に追加した hook は、`settings.json` が通常のファイルの場合に限り、インストール時に一度だけ取り除きます (cloud-coder の hook だけ。他の設定は保持)。シンボリックリンクなら書き換えず、警告だけ出します。
 
 | イベント | 状態 |
 | --- | --- |

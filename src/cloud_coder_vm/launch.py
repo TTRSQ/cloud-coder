@@ -46,31 +46,27 @@ class Layout:
 
     workspace: Path  # clones: <workspace>/<repo>
     worktrees: Path  # --new sessions: <worktrees>/<repo>-<n>
-    legacy_workspace: Path | None = None  # older default; sessions there keep working
+    legacy_workspace: Path  # the older default; clones there keep being used
 
     @classmethod
     def of(cls, config: VmConfig, home: Path) -> "Layout":
         return cls(home / config.workspace, home / config.worktrees, home / paths.LEGACY_WORKSPACE)
 
     def trust_roots(self) -> list[Path]:
-        roots = [self.workspace, self.worktrees]
-        return roots + ([self.legacy_workspace] if self.legacy_workspace else [])
+        return list(dict.fromkeys([self.workspace, self.worktrees, self.legacy_workspace]))
 
 
 def main_checkout(layout: Layout, repo: str) -> Path:
-    return layout.workspace / repo
+    """The one clone of ``repo`` that sessions and worktrees use: an existing clone under
+    the legacy workspace wins, so its branches and stashes stay with new worktrees."""
+    current, legacy = layout.workspace / repo, layout.legacy_workspace / repo
+    if not current.exists() and legacy.is_dir():
+        return legacy
+    return current
 
 
 def worktree_dir(layout: Layout, repo: str, index: int) -> Path:
     return layout.worktrees / f"{repo}-{index}"
-
-
-def main_checkout_of(workdir: Path) -> Path:
-    """The main checkout a worktree belongs to (Claude Code keys trust on it)."""
-    result = _run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=workdir)
-    if result.returncode != 0:
-        return workdir
-    return Path(result.stdout.strip()).parent
 
 
 def resolve_target(
@@ -138,6 +134,22 @@ def _check(args: list[str], cwd: Path | None = None) -> str:
     return result.stdout
 
 
+def check_origin(clone: Path, repo_url: str | None) -> None:
+    """A clone found where a new session would clone it must be of the requested URL;
+    otherwise it is someone else's directory and must not be adopted (or trusted).
+    Without a URL the user named the directory itself (`connect <repo-name>`)."""
+    if repo_url is None:
+        return
+    origin = _run(["git", "remote", "get-url", "origin"], cwd=clone).stdout.strip()
+    if not origin or session_registry.canonical_url(origin) != session_registry.canonical_url(
+        repo_url
+    ):
+        raise LaunchError(
+            f"{clone} already exists with origin {origin or '(none)'}, not {repo_url}; "
+            "move it away or connect with its URL"
+        )
+
+
 def ensure_repo(session: LogicalSession, layout: Layout, created: bool = False) -> str:
     """Clone / add a worktree only when the directory is missing. Returns what was done."""
     main = main_checkout(layout, session.repo)
@@ -145,6 +157,8 @@ def ensure_repo(session: LogicalSession, layout: Layout, created: bool = False) 
     if workdir.exists():
         if created and workdir != main:
             raise LaunchError(f"{workdir} already exists and was not created by cloud-coder")
+        if created:
+            check_origin(main, session.repo_url)
         return "existing"
     actions = []
     if not main.exists():
@@ -391,7 +405,7 @@ def launch(
             result["repo"] = ensure_repo(session, layout, target.created)
             if config.auto_trust_workspace:
                 workdir = Path(session.workdir)
-                trusted = {main_checkout_of(workdir), workdir}
+                trusted = {main_checkout(layout, session.repo), workdir}
                 try:
                     result["trust_written"] = workspace_trust.trust(
                         paths.claude_global_config_path(home), sorted(trusted), layout.trust_roots()

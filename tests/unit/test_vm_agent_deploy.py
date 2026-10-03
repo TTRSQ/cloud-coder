@@ -34,10 +34,10 @@ def test_check_command_and_dotfiles_marker():
     from cloud_coder.vm_agent_deploy import check_command
 
     cfg = Config(dotfiles_repo="https://github.com/TTRSQ/dotClaude.git")
-    assert "test -d ~/git/dotClaude && echo dotfiles-cloned" in check_command(cfg)
+    assert f"test -f ~/{paths.DOTFILES_STAMP} && echo dotfiles-installed" in check_command(cfg)
     assert "dotfiles" not in check_command(Config())
     assert str(paths.MANAGED_SETTINGS_FILE) in check_command(Config())
     out = f"aaa  {paths.AGENT_PYZ}\nbbb  {paths.CONFIG_PATH}\nclaude-installed\nhooks-installed\n"
     assert is_current(out, "aaa", "bbb")
     assert not is_current(out, "aaa", "bbb", dotfiles=True)
-    assert is_current(out + "dotfiles-cloned\n", "aaa", "bbb", dotfiles=True)
+    assert is_current(out + "dotfiles-installed\n", "aaa", "bbb", dotfiles=True)

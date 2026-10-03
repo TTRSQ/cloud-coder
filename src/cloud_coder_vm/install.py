@@ -44,17 +44,27 @@ def without_cloud_coder_hooks(settings: dict, command: str = paths.HOOK_COMMAND)
     hooks = cleaned.get("hooks")
     if not isinstance(hooks, dict):
         return cleaned
+    emptied_by_us = False
     for event in list(hooks):
         groups = []
+        changed = False
         for group in hooks[event]:
-            handlers = [h for h in group.get("hooks", []) if h.get("command") != command]
+            original = group.get("hooks", [])
+            handlers = [h for h in original if h.get("command") != command]
+            if len(handlers) == len(original):
+                groups.append(group)
+                continue
+            changed = True
             if handlers:
                 groups.append({**group, "hooks": handlers})
+        if not changed:
+            continue  # the user's own entries stay exactly as they are
         if groups:
             hooks[event] = groups
         else:
             del hooks[event]
-    if not hooks:
+            emptied_by_us = True
+    if emptied_by_us and not hooks:
         del cleaned["hooks"]
     return cleaned
 
@@ -179,8 +189,12 @@ def dotfiles_dir(config: VmConfig, home: Path) -> Path | None:
 
 def install_dotfiles(config: VmConfig, home: Path) -> str:
     """Clone the Claude Code config repository once (never pulled afterwards, so local
-    edits survive) and run its install command, which must be idempotent."""
+    edits survive) and run its install command, which must be idempotent.
+
+    Failures are reported and leave no stamp, so the next connect tries again."""
     target = dotfiles_dir(config, home)
+    stamp = home / paths.DOTFILES_STAMP
+    stamp.unlink(missing_ok=True)
     if target is None:
         return "not configured"
     if not target.exists():
@@ -198,7 +212,15 @@ def install_dotfiles(config: VmConfig, home: Path) -> str:
                 flush=True,
             )
             return "clone failed"
-    subprocess.run(["bash", "-c", config.dotfiles_install], cwd=target, check=True)
+    result = subprocess.run(["bash", "-c", config.dotfiles_install], cwd=target)
+    if result.returncode != 0:
+        print(
+            f"cloud-coder: warning: `{config.dotfiles_install}` in {target} failed "
+            f"(exit {result.returncode}); the next connect runs it again",
+            flush=True,
+        )
+        return "install failed"
+    write_atomic(stamp, f"{config.dotfiles_repo}\n")
     return "installed"
 
 
