@@ -275,7 +275,7 @@ claude mcp list   # cloud-coder が Connected になっていること
 - タスクは `connect --detach` で渡すだけで、結果は待ちません。後で `/cloud-coder read <セッション名>` で画面を読みます。VM が止まっていれば、読む前に起動するかを聞きます。
 - 感嘆符で始まる指示 (Claude Code の shell モード) は送りません。対象の VM を変えるオプション (`--project` など) も付けません。
 - VM を止めるのは `stop` を頼んだときだけです。作業を渡した後は自動停止に任せます。`stop` のときは先に status を見て、作業中 (`BUSY`) のセッションがあれば止めずに確認を求めます。
-- status・起動・タスクの投入・画面の読み取り (Inspector の `read_session` だけ) のコマンドは、スキルを呼んだターンの間だけ許可なしで実行されます (frontmatter の `allowed-tools`)。`stop` は許可を求めます。
+- status・起動・タスクの投入・画面の読み取りのコマンドは、スキルを呼んだターンの間だけ許可なしで実行されます (frontmatter の `allowed-tools`)。`stop` は許可を求めます。許可ルールはコマンドの先頭部分だけを見るので、オプションの追加 (`--project`、Inspector の `--tool-name` の上書きなど) までは防げません。それらはスキルの指示で禁じています。
 
 ## 自動停止を使いこなす
 
