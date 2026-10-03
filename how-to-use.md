@@ -218,7 +218,7 @@ cloud-coder が起動する Claude Code は、すべて Remote Control 付き (`
 
 ### MCP Inspector で tool を直接呼ぶ
 
-試すだけなら、どこにも登録せずに [MCP Inspector](https://github.com/modelcontextprotocol/inspector) の CLI モードで tool を 1 回ずつ呼べます。Inspector は呼び出しごとに `cloud-coder mcp` を起動し、結果を JSON で表示して終了します。Node.js (`npx`) が必要です。
+試すだけなら、どこにも登録せずに [MCP Inspector](https://github.com/modelcontextprotocol/inspector) の CLI モードで tool を 1 回ずつ呼べます。Inspector は呼び出しごとに `cloud-coder mcp` を起動し、結果を JSON で表示して終了します。Node.js 22.19 以上 (`npx`) が必要です。
 
 ```bash
 npx @modelcontextprotocol/inspector --cli cloud-coder mcp --method tools/list
@@ -234,7 +234,6 @@ npx @modelcontextprotocol/inspector --cli cloud-coder mcp \
 
 - `status` と `read_session` は VM を起動しません。`up` / `start_session` / `send_prompt` は VM を起動し、`stop` は止めます。
 - tool がエラーを返すと、Inspector は終了コード 0 以外で終わります (例: VM が止まっているときの `read_session`)。
-- `--tool-arg` の値は JSON として読める場合は変換されます (`lines=50` は数値になる)。文字列のまま渡したいときは `--tool-args-json '{"session":"cc-REPO-1"}'` を使います。
 - `cloud-coder mcp` にオプションを付けるときは、server のコマンドの後に `--` を置き、Inspector のオプションをその後ろに書きます (Inspector CLI では `--` より前が server のコマンドです。`--config` は Inspector 自身のオプションとも重なります)。
 
 ```bash
