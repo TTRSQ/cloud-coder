@@ -7,6 +7,7 @@
 - [タスクを投げて放置する](#タスクを投げて放置する)
 - [複数のセッションを並行して使う](#複数のセッションを並行して使う)
 - [スマホなどから Remote Control で操作する](#スマホなどから-remote-control-で操作する)
+- [LLM クライアントから MCP で操作する](#llm-クライアントから-mcp-で操作する)
 - [自動停止を使いこなす](#自動停止を使いこなす)
 - [停止した VM で作業を再開する](#停止した-vm-で作業を再開する)
 - [マシンスペックを変える](#マシンスペックを変える)
@@ -204,6 +205,21 @@ cloud-coder が起動する Claude Code は、すべて Remote Control 付き (`
 - VM 停止後は、`connect` したセッションの Claude Code だけが resume されます。Remote Control で使いたいセッションには一度 `connect` (`--detach` で可) してください。
 - Remote Control から指示が来ている間も、応答を終えて入力待ちになれば idle です。応答の約 1〜2 分後から idle とみなされ、grace period (既定 10 分) の後に VM が止まります。考えながらゆっくり指示を出すなら `vm.idle_grace_minutes` を長めにしてください。
 - Remote Control に必要なプランは [README の必要なもの](README.md#必要なもの) を参照してください。
+
+## LLM クライアントから MCP で操作する
+
+`cloud-coder mcp` を MCP server として登録すると、Claude Code などのエージェントが VM の起動、タスクの投入、進み具合や結果の確認を tool で行えます。tool の一覧は [README の MCP server](README.md#mcp-server) にあります。
+
+```bash
+claude mcp add --scope user cloud-coder -- cloud-coder mcp
+claude mcp list   # cloud-coder が Connected になっていること
+```
+
+- 対象の VM は `config.yaml` (と `cloud-coder mcp` に付けたオプション) で決まります。`gcp.project` が無いと server は起動せず、エラーになります。
+- 典型的な流れは `up` (ready になるまで繰り返す) → `start_session` (`repo` と `prompt`) → `status` で `BUSY` が終わるのを待つ → `read_session` で結果を読む → 必要なら `send_prompt` で追加の指示、です。作業が終われば VM は自動停止するので、`stop` を呼ぶ必要は普段ありません。
+- `read_session` は tmux の画面の文字列をそのまま返します。Claude Code の応答のほか、権限の確認や trust 画面など入力を待っている表示もそのまま読めます。
+- `send_prompt` は Claude Code が `BUSY` の間はエラーになります (CLI の `-p` と同じ)。
+- VM 上で行う初回の Claude Code のログイン (`/login`) と `gh auth login` は MCP からはできません。[初回セットアップ](#初回セットアップ)を CLI で済ませてから使ってください。
 
 ## 自動停止を使いこなす
 

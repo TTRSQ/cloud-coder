@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "Run Claude Code workers on a GCE VM over tmux, and stop the VM automatically when everything is idle."
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["pyyaml>=6.0"]
+dependencies = [
+    "mcp>=2.3,<3",
+    "pyyaml>=6.0",
+]
 
 [project.scripts]
 cloud-coder = "cloud_coder.cli:main"

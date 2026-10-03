@@ -16,6 +16,7 @@ cloud-coder connect git@github.com:OWNER/REPO.git
 flowchart LR
   subgraph local[ローカル端末]
     CLI[cloud-coder CLI]
+    LLM[MCP クライアント<br/>Claude Code など] -->|stdio| MCP[cloud-coder mcp]
   end
   subgraph vm[GCE VM]
     agent[cloud-coder-vm.pyz<br/>/opt/cloud-coder]
@@ -31,9 +32,12 @@ flowchart LR
   end
   CLI -->|gcloud compute instances| vm
   CLI -->|gcloud compute ssh / scp| agent
+  MCP -->|gcloud compute instances| vm
+  MCP -->|gcloud compute ssh / scp| agent
 ```
 
-- ローカル側 (`src/cloud_coder`) は GCE の作成・起動・停止と SSH を `gcloud` で行います。依存は PyYAML のみです。
+- ローカル側 (`src/cloud_coder`) は GCE の作成・起動・停止と SSH を `gcloud` で行います。依存は PyYAML と MCP Python SDK (`mcp`、MCP server 用) です。
+- 操作 (`connect.py` / `gce.py` / `ssh.py`) は結果を返し、失敗は例外で知らせます。CLI と MCP server はその上の薄い adapter です。
 - VM 側 (`src/cloud_coder_vm`) は標準ライブラリだけで書かれ、zipapp (`cloud-coder-vm.pyz`) として配布されます。`up` / `connect` のたびにハッシュを比較し、変わっていれば scp してインストールし直します。
 - `connect` は各ステップで状態を確認し、足りないものだけを用意します (VM → SSH → agent → repo → tmux → Claude Code → attach)。既存の repository を pull / reset することはありません。
 
@@ -66,6 +70,7 @@ cloud-coder connect REPO --prompt-file task.md       # プロンプトをファ�
 cloud-coder status                                  # VM / セッション / 自動停止の可否
 cloud-coder stop                                    # VM を停止する (disk は残る)
 cloud-coder up                                      # VM の作成・起動と agent のインストールだけ行う
+cloud-coder mcp                                     # MCP server として stdio で待ち受ける (下の「MCP server」)
 ```
 
 - tmux から抜けるときは detach (`Ctrl-b d`) します。SSH が切れても tmux 内の Claude Code や他のプロセスは動き続けます。
@@ -153,6 +158,31 @@ claude:
 `cloud-coder` が自分で作るディレクトリ (`vm.workspace` 配下の clone と `vm.worktrees` 配下の worktree。以前の `~/workspace` も含む) に限り、Claude Code 起動前に `~/.claude.json` の `projects["<dir>"].hasTrustDialogAccepted` を `true` にし、初回の trust 画面を出さないようにします ([公式 docs](https://code.claude.com/docs/en/permissions) が手動で trust する方法として示しているキーです)。
 既存の内容は保持したまま、一時ファイルへの書き込みと rename で原子的に更新します。これらのディレクトリの外や、`~/git` / `~/git/wt` そのもの、HOME は trust しません。
 無効にする場合は config で `claude.auto_trust_workspace: false` を指定してください。
+
+### MCP server
+
+`cloud-coder mcp` は、VM とセッションを [MCP](https://modelcontextprotocol.io/) の tool として公開する stdio server です。Claude Code など MCP に対応したクライアントから、LLM が VM の起動・タスクの投入・結果の確認を行えます。
+
+```bash
+claude mcp add --scope user cloud-coder -- cloud-coder mcp
+# 設定ファイルや対象を指定する場合: claude mcp add --scope user cloud-coder -- cloud-coder mcp --config ~/.config/cloud-coder/config.yaml
+```
+
+| tool | 引数 | 動作 |
+| --- | --- | --- |
+| `status` | なし | VM の状態、セッション一覧、各 Claude Code の状態 (`BUSY` / `READY` / `IDLE`)、自動停止の状態 (`status --json` と同じ内容) |
+| `up` | なし | VM が止まっていれば起動を要求して**待たずに**返す。動いていれば agent を確認・更新する。`ready: true` になるまで呼び直す |
+| `start_session` | `repo?`, `new?`, `session?`, `prompt?` | `connect --detach` と同じ。repository の clone、tmux、Claude Code の起動 (または resume) を行い、セッション名を返す |
+| `send_prompt` | `session`, `text` | `connect --session <session> -p <text> --detach` と同じ。Claude Code が `READY` / `IDLE` のときだけ送る |
+| `read_session` | `session`, `lines?` (1〜2000、既定 200) | セッションの Claude Code の画面 (tmux pane、scrollback 含む) の最後の `lines` 行と状態。VM は起動しない |
+| `stop` | なし | VM の停止を要求して待たずに返す (`status` で `stopped` を確認) |
+
+- 操作対象の VM は起動時の設定 (`config.yaml` と `cloud-coder mcp` に付けたオプション) だけで決まります。tool は project / zone / instance を引数に取らず、任意のコマンドを実行する tool もありません。`!` で始まるプロンプト (Claude Code の shell モード) と、改行・タブ以外の制御文字を含むプロンプトは拒否します。
+- `cloud-coder mcp --machine-type` などの VM 作成用のオプションは、VM を新しく作るときにだけ使われます。既存 VM の machine type は CLI で変えてください ([マシンスペックを変える](how-to-use.md#マシンスペックを変える))。
+- tool は長く待ちません。VM の起動・停止は要求だけ行い、呼び出し側が `up` / `status` で確認します。ただし agent の初回インストールは `up` の中で数分かかります。
+- `start_session` / `send_prompt` は VM が ready でなければ起動を要求したうえでエラーを返します (`up` で ready を待ってから再実行)。
+- MCP server は ssh-agent を VM に転送しません (`connect` は転送します)。private repository は HTTPS + `gh auth setup-git` で clone してください ([GitHub の認証](#github-の認証))。
+- server は transport に依存しない作りです (`cloud_coder.mcp_server.build_server`)。現在提供しているのは stdio だけです。
 
 ## 自動停止
 

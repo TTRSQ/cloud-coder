@@ -1,8 +1,8 @@
 """Compute Engine lifecycle of the worker VM, done through the gcloud CLI."""
 
 import json
+import logging
 import subprocess
-import sys
 import time
 from dataclasses import dataclass
 
@@ -30,6 +30,8 @@ _GCE_STATUS = {
 
 LABEL = "cloud-coder"
 
+log = logging.getLogger(__name__)
+
 
 class GcloudError(Exception):
     pass
@@ -56,7 +58,7 @@ def vm_from_describe(data: dict | None) -> Vm:
 
 def gcloud(cfg: Config, *args: str, capture: bool = True) -> subprocess.CompletedProcess:
     cmd = ["gcloud", *args, f"--project={cfg.project}"]
-    return subprocess.run(cmd, capture_output=capture, text=True)
+    return subprocess.run(cmd, capture_output=capture, text=True, stdin=subprocess.DEVNULL)
 
 
 def _checked(cfg: Config, *args: str) -> str:
@@ -98,10 +100,6 @@ def create_args(cfg: Config) -> list[str]:
     ]
 
 
-def _log(message: str) -> None:
-    print(f"cloud-coder: {message}", file=sys.stderr, flush=True)
-
-
 def wait_for(cfg: Config, wanted: set[str], timeout: float = 600) -> Vm:
     deadline = time.monotonic() + timeout
     while True:
@@ -113,22 +111,29 @@ def wait_for(cfg: Config, wanted: set[str], timeout: float = 600) -> Vm:
         time.sleep(5)
 
 
-def ensure_running(cfg: Config, machine_type_requested: bool = False) -> str:
-    """Create / start / resume the VM as needed. Returns the action taken."""
+def ensure_running(cfg: Config, machine_type_requested: bool = False, wait: bool = True) -> str:
+    """Create / start / resume the VM as needed. Returns the action taken.
+
+    With ``wait=False`` the GCE operation is only requested (``--async``) and this returns
+    at once; poll ``describe`` until the VM is running. A VM that is still stopping
+    cannot be started yet: then the action is ``stopping`` and nothing is requested.
+    """
+    run_async = () if wait else ("--async",)
     vm = describe(cfg)
     if vm.status == STOPPING:
-        _log("VM is stopping; waiting for it to stop")
+        if not wait:
+            return STOPPING
+        log.info("VM is stopping; waiting for it to stop")
         vm = wait_for(cfg, {STOPPED, SUSPENDED})
     if vm.status == ABSENT:
-        _log(
+        log.info(
             f"creating VM {cfg.instance} ({cfg.machine_type}, {cfg.disk_size_gb}GB {cfg.disk_type})"
         )
-        _checked(cfg, *create_args(cfg))
-        wait_for(cfg, {RUNNING})
-        return "created"
-    if vm.status == STOPPED:
+        _checked(cfg, *create_args(cfg), *run_async)
+        action = "created"
+    elif vm.status == STOPPED:
         if machine_type_requested and vm.machine_type != cfg.machine_type:
-            _log(f"changing machine type {vm.machine_type} -> {cfg.machine_type}")
+            log.info(f"changing machine type {vm.machine_type} -> {cfg.machine_type}")
             _checked(
                 cfg,
                 "compute",
@@ -138,26 +143,37 @@ def ensure_running(cfg: Config, machine_type_requested: bool = False) -> str:
                 f"--zone={cfg.zone}",
                 f"--machine-type={cfg.machine_type}",
             )
-        _log(f"starting VM {cfg.instance}")
-        _checked(cfg, "compute", "instances", "start", cfg.instance, f"--zone={cfg.zone}")
+        log.info(f"starting VM {cfg.instance}")
+        _checked(
+            cfg, "compute", "instances", "start", cfg.instance, f"--zone={cfg.zone}", *run_async
+        )
+        action = "started"
+    elif vm.status == SUSPENDED:
+        log.info(f"resuming VM {cfg.instance}")
+        _checked(
+            cfg, "compute", "instances", "resume", cfg.instance, f"--zone={cfg.zone}", *run_async
+        )
+        action = "resumed"
+    elif vm.status == STARTING:
+        action = "started"
+    else:
+        if machine_type_requested and vm.machine_type != cfg.machine_type:
+            log.info(
+                f"VM is running as {vm.machine_type}; --machine-type applies after "
+                "`cloud-coder stop`"
+            )
+        return "running"
+    if wait:
         wait_for(cfg, {RUNNING})
-        return "started"
-    if vm.status == SUSPENDED:
-        _log(f"resuming VM {cfg.instance}")
-        _checked(cfg, "compute", "instances", "resume", cfg.instance, f"--zone={cfg.zone}")
-        wait_for(cfg, {RUNNING})
-        return "resumed"
-    if vm.status == STARTING:
-        wait_for(cfg, {RUNNING})
-        return "started"
-    if machine_type_requested and vm.machine_type != cfg.machine_type:
-        _log(f"VM is running as {vm.machine_type}; --machine-type applies after `cloud-coder stop`")
-    return "running"
+    return action
 
 
-def stop(cfg: Config) -> str:
+def stop(cfg: Config, wait: bool = True) -> str:
+    """Stop the VM. With ``wait=False`` the stop is only requested and this returns
+    ``stopping``; poll ``describe`` until the VM is stopped."""
     vm = describe(cfg)
     if vm.status in (ABSENT, STOPPED):
         return vm.status
-    _checked(cfg, "compute", "instances", "stop", cfg.instance, f"--zone={cfg.zone}")
-    return "stopped"
+    run_async = () if wait else ("--async",)
+    _checked(cfg, "compute", "instances", "stop", cfg.instance, f"--zone={cfg.zone}", *run_async)
+    return STOPPED if wait else STOPPING

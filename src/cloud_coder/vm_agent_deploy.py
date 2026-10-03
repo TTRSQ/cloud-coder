@@ -6,8 +6,8 @@ and only copy + install when the agent or its config differ.
 
 import hashlib
 import io
+import logging
 import shlex
-import sys
 import tempfile
 import zipfile
 from importlib import resources
@@ -19,6 +19,8 @@ from cloud_coder_vm import paths
 from cloud_coder_vm.system_files import VmConfig, render_config
 
 _FIXED_DATE = (2020, 1, 1, 0, 0, 0)
+log = logging.getLogger(__name__)
+
 _MAIN = "import sys\nfrom cloud_coder_vm.cli import main\nsys.exit(main())\n"
 
 
@@ -101,7 +103,7 @@ def ensure_installed(cfg: Config) -> bool:
     if check.returncode == 0 and current:
         return False
 
-    print("cloud-coder: installing the VM agent", file=sys.stderr, flush=True)
+    log.info("installing the VM agent")
     # relative to the VM user's HOME: not a world-writable, predictable /tmp path
     remote = f"cloud-coder-vm-{pyz_sha[:12]}.pyz"
     with tempfile.TemporaryDirectory() as tmp:

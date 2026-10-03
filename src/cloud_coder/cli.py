@@ -2,11 +2,12 @@
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 
 from cloud_coder import config as config_mod
-from cloud_coder import connect, gce
+from cloud_coder import connect, gce, ssh
 from cloud_coder.config import Config
 
 
@@ -104,11 +105,25 @@ def build_parser() -> argparse.ArgumentParser:
         "status", parents=[common], help="VM, sessions and auto-stop state"
     ).add_argument("--json", action="store_true")
     sub.add_parser("stop", parents=[common], help="stop the VM (disk is kept)")
+    sub.add_parser(
+        "mcp", parents=[common], help="serve the VM and its sessions as MCP tools over stdio"
+    )
     return parser
+
+
+def log_to_stderr() -> None:
+    logger = logging.getLogger("cloud_coder")
+    if not logger.handlers:
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(logging.Formatter("cloud-coder: %(message)s"))
+        logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    log_to_stderr()
     try:
         cfg = resolve_config(args)
         print(
@@ -120,22 +135,31 @@ def main(argv: list[str] | None = None) -> int:
             connect.up(cfg, requested)
             return 0
         if args.command == "connect":
-            return connect.connect(
+            launched = connect.connect(
                 cfg,
                 args.repo,
                 prompt=read_prompt(args),
                 new=args.new,
                 session=args.session,
-                attach=not args.no_attach,
                 no_claude=args.no_claude,
                 machine_type_requested=requested,
             )
+            print(json.dumps(launched))
+            if args.no_attach:
+                return 0
+            return ssh.attach_tmux(cfg, launched["session"])
         if args.command == "status":
             st = connect.status(cfg)
             print(json.dumps(st, indent=2) if args.json else connect.format_status(st))
             return 0
         if args.command == "stop":
             print(f"VM {cfg.instance}: {gce.stop(cfg)}")
+            return 0
+        if args.command == "mcp":
+            # imported here so that the other commands do not load the MCP SDK
+            from cloud_coder import mcp_server
+
+            mcp_server.build_server(cfg).run("stdio")
             return 0
     except (config_mod.ConfigError, gce.GcloudError, RuntimeError, TimeoutError, OSError) as e:
         print(f"cloud-coder: error: {e}", file=sys.stderr)
