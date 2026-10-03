@@ -53,6 +53,8 @@ uv tool install git+https://github.com/TTRSQ/cloud-coder.git
 
 ## 使い方
 
+最初に `~/.config/cloud-coder/config.yaml` に対象の `gcp.project` を書きます ([設定](#設定))。`gcloud` の既定 project は使いません。
+
 ```bash
 cloud-coder connect git@github.com:OWNER/REPO.git   # 初回: VM 作成 → clone → tmux → Claude Code → attach
 cloud-coder connect                                 # 直近のセッションへ戻る

@@ -21,9 +21,17 @@ def write_config(tmp_path, body: str) -> str:
     return str(path)
 
 
-def test_missing_project_is_an_error_without_gcloud_fallback(tmp_path, no_subprocess):
-    config = write_config(tmp_path, "gcp:\n  zone: asia-northeast1-b\n")
-    args = cli.build_parser().parse_args(["status", "--config", config])
+@pytest.mark.parametrize(
+    ("body", "flags"),
+    [
+        ("gcp:\n  zone: asia-northeast1-b\n", []),
+        ('gcp:\n  project: ""\n', []),
+        ("", ["--project", ""]),
+    ],
+)
+def test_missing_project_is_an_error_without_gcloud_fallback(tmp_path, no_subprocess, body, flags):
+    config = write_config(tmp_path, body)
+    args = cli.build_parser().parse_args(["status", "--config", config, *flags])
     with pytest.raises(ConfigError, match=r"set gcp\.project in .*config\.yaml or pass --project"):
         cli.resolve_config(args)
 

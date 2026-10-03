@@ -40,7 +40,7 @@ def resolve_config(args) -> Config:
         disk_type=args.disk_type,
         iap=args.iap,
     )
-    if cfg.project is None:
+    if not cfg.project:
         raise config_mod.ConfigError(
             f"no GCP project: set gcp.project in {config_mod.config_path(args.config)} "
             "or pass --project"
