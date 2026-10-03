@@ -111,7 +111,7 @@ VM には次のツールを入れます (`vm.tools` で選択、既定はすべ�
 
 - 常に入れる前提パッケージは `tmux git curl ca-certificates build-essential` です。
 - Node は nvm などのユーザー単位の管理ではなく apt で入れています。Claude Code の hook や systemd などシェル初期化を通らないプロセスからも同じ `node` が見え、`apt upgrade` で更新できるためです。
-- `docker` グループは新しいログインから有効になります。グループ追加より前から動いている tmux server に新しいセッションを作るときは、`sg docker` 経由でシェルを起動して sudo なしで `docker` を使えるようにします。既存の pane で使うには、新しい tmux window ではなく新しいセッションを作るか再ログインしてください。
+- `docker` グループは新しいログインから有効になります。グループ追加より前から動いている tmux server に新しいセッションを作るときは、`sg docker` 経由でシェルを起動して sudo なしで `docker` を使えるようにします。既存の pane や自分で開いた window は tmux server のグループを引き継ぐので、再ログインしても使えません。cloud-coder に新しいセッションを作らせる (`connect REPO --new` など) か、VM を停止してから `connect` し直してください。
 - 稼働中のコンテナ (`docker compose up -d` など tmux の外で動くもの) があると自動停止しません。止めてよい場合は `vm.ignore_docker: true` にしてください。
 
 ### GitHub の認証

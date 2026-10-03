@@ -53,7 +53,7 @@ claude:
 ```
 
 - 知らないセクションやキーを書くとエラーになります (`unknown config section ...` / `unknown config key ...`)。
-- `gcp.project` / `gcp.zone` / `gcp.instance` は操作対象の VM を決める値で、毎回使われます。VM を作った後に変えると別の VM として扱われ、次の `up` / `connect` で新しい VM が作られます (元の VM と disk は残り、課金も続きます)。
+- `gcp.project` / `gcp.zone` / `gcp.instance` は操作対象の VM を決める値で、毎回使われます。VM を作った後に変えると別の VM として扱われ、次の `up` / `connect` で新しい VM が作られます (元の VM と disk は残り、課金も続きます)。`gcp.project` を書いていない場合に `gcloud config set project` で既定 project を切り替えたときや、`--project` / `--zone` / `--instance` を付けたときも同じです。不要になった VM は[片付け](#片付ける)てください。
 - `gcp.machine_type` / `disk_size_gb` / `disk_type` / `image_family` / `image_project` は VM を作るときにだけ使われます。作成後の変更は[マシンスペックを変える](#マシンスペックを変える)を参照してください。
 - `vm.*` / `git.*` / `claude.*` は、次の `up` / `connect` で VM に送られて反映されます。
 
@@ -330,7 +330,7 @@ dotfiles リポジトリの clone 失敗は警告だけで先へ進み、次の 
 `coder` は `docker` グループに追加されますが、グループは新しいログインから有効で、tmux の pane は tmux server のグループを引き継ぎます。docker を入れた時点で既に tmux server が動いていた場合 (後から `vm.tools` に docker を足したときなど) に起きます。初回の `up` → `connect` では起きません。
 
 - cloud-coder が新しく作る tmux session と window では sudo なしで使えるようにしています (`connect REPO --new` など)。
-- 自分で開いた window (`Ctrl-b c`) や既存の pane では使えません。SSH で入り直しても既存の tmux server は変わらないので、`cloud-coder stop` してから `connect` し直すのが確実です ([README の開発ツール](README.md#開発ツール))。
+- docker を入れる前からある pane や、自分で開いた window (`Ctrl-b c`) では使えません。SSH で入り直しても既存の tmux server は変わらないので、`cloud-coder stop` してから `connect` し直すのが確実です ([README の開発ツール](README.md#開発ツール))。
 
 ### 課金の注意
 
