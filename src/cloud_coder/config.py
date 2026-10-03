@@ -1,0 +1,106 @@
+"""cloud-coder configuration: built-in defaults <- config.yaml <- command line."""
+
+import os
+from dataclasses import dataclass, fields, replace
+from pathlib import Path
+
+import yaml
+
+DEFAULT_CONFIG_PATH = Path("~/.config/cloud-coder/config.yaml")
+# Single source of the default machine type (README and tests refer to it).
+DEFAULT_MACHINE_TYPE = "t2d-standard-8"
+
+
+@dataclass(frozen=True)
+class Config:
+    # gcp
+    project: str | None = None  # falls back to `gcloud config get-value project`
+    zone: str = "asia-northeast1-b"
+    instance: str = "cloud-coder"
+    machine_type: str = DEFAULT_MACHINE_TYPE
+    disk_size_gb: int = 100
+    disk_type: str = "pd-ssd"
+    image_family: str = "ubuntu-2404-lts-amd64"
+    image_project: str = "ubuntu-os-cloud"
+    # ssh
+    ssh_user: str = "coder"
+    iap: bool = False
+    # vm
+    workspace: str = "workspace"
+    idle_grace_minutes: int = 10
+    swap_gb: int = 0  # 0 = do not create a swapfile
+    # claude
+    auto_trust_workspace: bool = True
+
+
+# YAML section -> {yaml key: Config field}
+SECTIONS: dict[str, dict[str, str]] = {
+    "gcp": {
+        "project": "project",
+        "zone": "zone",
+        "instance": "instance",
+        "machine_type": "machine_type",
+        "disk_size_gb": "disk_size_gb",
+        "disk_type": "disk_type",
+        "image_family": "image_family",
+        "image_project": "image_project",
+    },
+    "ssh": {"user": "ssh_user", "iap": "iap"},
+    "vm": {
+        "workspace": "workspace",
+        "idle_grace_minutes": "idle_grace_minutes",
+        "swap_gb": "swap_gb",
+    },
+    "claude": {"auto_trust_workspace": "auto_trust_workspace"},
+}
+
+
+class ConfigError(Exception):
+    pass
+
+
+def config_path(explicit: str | None = None) -> Path:
+    raw = explicit or os.environ.get("CLOUD_CODER_CONFIG") or str(DEFAULT_CONFIG_PATH)
+    return Path(raw).expanduser()
+
+
+def from_mapping(data: dict | None, base: Config | None = None) -> Config:
+    base = base or Config()
+    if not data:
+        return base
+    if not isinstance(data, dict):
+        raise ConfigError("config root must be a mapping")
+    types = {f.name: f.type for f in fields(Config)}
+    values = {}
+    for section, entries in data.items():
+        if section not in SECTIONS:
+            raise ConfigError(f"unknown config section {section!r}")
+        if not isinstance(entries, dict):
+            raise ConfigError(f"config section {section!r} must be a mapping")
+        for key, value in entries.items():
+            if key not in SECTIONS[section]:
+                raise ConfigError(f"unknown config key {section}.{key}")
+            name = SECTIONS[section][key]
+            expected = types[name]
+            if expected in (int, "int") and not (
+                isinstance(value, int) and not isinstance(value, bool)
+            ):
+                raise ConfigError(f"{section}.{key} must be an integer")
+            if expected in (bool, "bool") and not isinstance(value, bool):
+                raise ConfigError(f"{section}.{key} must be true or false")
+            values[name] = value
+    return replace(base, **values)
+
+
+def load(path: Path) -> Config:
+    if not path.exists():
+        return Config()
+    try:
+        data = yaml.safe_load(path.read_text())
+    except yaml.YAMLError as e:
+        raise ConfigError(f"{path}: {e}") from e
+    return from_mapping(data)
+
+
+def with_overrides(config: Config, **overrides) -> Config:
+    return replace(config, **{k: v for k, v in overrides.items() if v is not None})
