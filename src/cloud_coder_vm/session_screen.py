@@ -56,15 +56,17 @@ def read(home: Path, session_name: str, lines: int) -> dict:
     )
     if captured.returncode != 0:
         raise ScreenError(f"tmux capture-pane failed: {captured.stderr.strip()}")
-    state = next(
-        (
-            s.state
-            for s in session_state.load_all(paths.SESSION_STATE_DIR)
-            if (claude_pid is not None and s.claude_pid == claude_pid)
-            or (s.claude_pid is None and s.tmux_pane == pane.pane_id)
-        ),
-        None,
-    )
+    state = None
+    if claude_pid is not None:
+        state = next(
+            (
+                s.state
+                for s in session_state.load_all(paths.SESSION_STATE_DIR)
+                if s.claude_pid == claude_pid
+                or (s.claude_pid is None and s.tmux_pane == pane.pane_id)
+            ),
+            None,
+        )
     output = visible_text(captured.stdout).split("\n")[-lines:]
     return {
         "session": session_name,

@@ -58,7 +58,7 @@ def vm_from_describe(data: dict | None) -> Vm:
 
 def gcloud(cfg: Config, *args: str, capture: bool = True) -> subprocess.CompletedProcess:
     cmd = ["gcloud", *args, f"--project={cfg.project}"]
-    return subprocess.run(cmd, capture_output=capture, text=True)
+    return subprocess.run(cmd, capture_output=capture, text=True, stdin=subprocess.DEVNULL)
 
 
 def _checked(cfg: Config, *args: str) -> str:

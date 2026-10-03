@@ -65,6 +65,7 @@ def scp(cfg: Config, local_path: str, remote_path: str) -> None:
         check=True,
         capture_output=True,
         text=True,
+        stdin=subprocess.DEVNULL,
     )
 
 

@@ -32,7 +32,8 @@ flowchart LR
   end
   CLI -->|gcloud compute instances| vm
   CLI -->|gcloud compute ssh / scp| agent
-  MCP -->|CLI と同じ操作| agent
+  MCP -->|gcloud compute instances| vm
+  MCP -->|gcloud compute ssh / scp| agent
 ```
 
 - ローカル側 (`src/cloud_coder`) は GCE の作成・起動・停止と SSH を `gcloud` で行います。依存は PyYAML と MCP Python SDK (`mcp`、MCP server 用) です。
@@ -176,7 +177,8 @@ claude mcp add --scope user cloud-coder -- cloud-coder mcp
 | `read_session` | `session`, `lines?` (1〜2000、既定 200) | セッションの Claude Code の画面 (tmux pane、scrollback 含む) の最後の `lines` 行と状態。VM は起動しない |
 | `stop` | なし | VM の停止を要求して待たずに返す (`status` で `stopped` を確認) |
 
-- 操作対象の VM は起動時の設定 (`config.yaml` と `cloud-coder mcp` に付けたオプション) だけで決まります。tool は project / zone / instance を引数に取らず、任意のコマンドを実行する tool もありません。
+- 操作対象の VM は起動時の設定 (`config.yaml` と `cloud-coder mcp` に付けたオプション) だけで決まります。tool は project / zone / instance を引数に取らず、任意のコマンドを実行する tool もありません。`!` で始まるプロンプト (Claude Code の shell モード) は拒否します。
+- `cloud-coder mcp --machine-type` などの VM 作成用のオプションは、VM を新しく作るときにだけ使われます。既存 VM の machine type は CLI で変えてください ([マシンスペックを変える](how-to-use.md#マシンスペックを変える))。
 - tool は長く待ちません。VM の起動・停止は要求だけ行い、呼び出し側が `up` / `status` で確認します。ただし agent の初回インストールは `up` の中で数分かかります。
 - `start_session` / `send_prompt` は VM が ready でなければ起動を要求したうえでエラーを返します (`up` で ready を待ってから再実行)。
 - MCP server は ssh-agent を VM に転送しません (`connect` は転送します)。private repository は HTTPS + `gh auth setup-git` で clone してください ([GitHub の認証](#github-の認証))。

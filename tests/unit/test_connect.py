@@ -83,3 +83,10 @@ def test_cli_reports_agent_errors_on_stderr(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "error: Claude Code in this session is BUSY" in captured.err
+
+
+def test_uncaptured_remote_output_goes_to_stderr_not_stdout(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(subprocess, "run", lambda args, **kw: seen.update(kw))
+    ssh.run(Config(project="p"), "true", capture=False)
+    assert seen["stdout"] == 2 and seen["stdin"] == subprocess.DEVNULL

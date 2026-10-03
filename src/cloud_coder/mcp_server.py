@@ -6,6 +6,7 @@ return quickly: starting or stopping the VM is only requested, and the caller po
 The server does not depend on a transport: `cloud-coder mcp` serves it over stdio.
 """
 
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict
@@ -49,6 +50,23 @@ EXPECTED_ERRORS = (
 )
 
 
+# The SDK runs tools concurrently; installing the agent twice at once would race.
+_up_lock = threading.Lock()
+
+
+def up_now(cfg: Config) -> connect.UpResult:
+    with _up_lock:
+        return connect.up(cfg, wait=False)
+
+
+def checked_prompt(text: str) -> str:
+    """Claude Code runs input starting with ``!`` as a shell command, unchecked: refuse it,
+    so that the tools never run arbitrary commands on the VM."""
+    if text.lstrip().startswith("!"):
+        raise ToolError("a prompt must not start with '!' (Claude Code's shell mode)")
+    return text
+
+
 @contextmanager
 def tool_errors() -> Iterator[None]:
     try:
@@ -58,7 +76,7 @@ def tool_errors() -> Iterator[None]:
 
 
 def require_ready(cfg: Config) -> None:
-    result = connect.up(cfg, wait=False)
+    result = up_now(cfg)
     if not result.ready:
         raise ToolError(
             f"the VM is not ready yet (VM {result.vm_action}); "
@@ -81,7 +99,7 @@ def build_server(cfg: Config) -> MCPServer:
         also install or update the cloud-coder agent on it (the first install can take
         several minutes). Call again until `ready` is true."""
         with tool_errors():
-            return asdict(connect.up(cfg, wait=False))
+            return asdict(up_now(cfg))
 
     @server.tool(annotations=ACTS)
     def start_session(
@@ -109,6 +127,8 @@ def build_server(cfg: Config) -> MCPServer:
     ) -> dict:
         """Make sure a session (git checkout, tmux session and Claude Code) exists and
         runs, and return its name. Requires a ready VM (see `up`)."""
+        if prompt is not None:
+            checked_prompt(prompt)
         with tool_errors():
             require_ready(cfg)
             return connect.launch(
@@ -123,6 +143,7 @@ def build_server(cfg: Config) -> MCPServer:
         """Type an instruction into the session's Claude Code and submit it. Refused
         unless Claude Code is READY or IDLE; if Claude Code is not running it is
         started (or resumed) with this instruction."""
+        checked_prompt(text)
         with tool_errors():
             require_ready(cfg)
             return connect.launch(cfg, None, session=session, prompt=text, forward_agent=False)
