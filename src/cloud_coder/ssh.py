@@ -1,10 +1,12 @@
 """SSH / SCP to the worker VM through `gcloud compute ssh|scp` (external IP or IAP)."""
 
+import logging
 import subprocess
-import sys
 import time
 
 from cloud_coder.config import Config
+
+log = logging.getLogger(__name__)
 
 
 def _target(cfg: Config) -> str:
@@ -46,9 +48,12 @@ def ssh_command(
 def run(
     cfg: Config, command: str, *, forward_agent: bool = False, capture: bool = True
 ) -> subprocess.CompletedProcess:
+    """Run ``command`` on the VM. Without ``capture`` its output goes to our stderr, never
+    to our stdout, which carries machine-readable output (JSON, the MCP stdio stream)."""
     return subprocess.run(
         ssh_command(cfg, command, forward_agent=forward_agent),
         capture_output=capture,
+        stdout=None if capture else 2,
         text=True,
         stdin=subprocess.DEVNULL,
     )
@@ -63,6 +68,10 @@ def scp(cfg: Config, local_path: str, remote_path: str) -> None:
     )
 
 
+def reachable(cfg: Config) -> bool:
+    return run(cfg, "true").returncode == 0
+
+
 def wait_ready(cfg: Config, timeout: float = 300) -> None:
     deadline = time.monotonic() + timeout
     while True:
@@ -71,7 +80,7 @@ def wait_ready(cfg: Config, timeout: float = 300) -> None:
             return
         if time.monotonic() > deadline:
             raise TimeoutError(f"SSH to {cfg.instance} not ready: {result.stderr.strip()[-500:]}")
-        print("cloud-coder: waiting for SSH...", file=sys.stderr, flush=True)
+        log.info("waiting for SSH...")
         time.sleep(5)
 
 

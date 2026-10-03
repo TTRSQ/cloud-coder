@@ -1,24 +1,45 @@
-"""`up`, `connect` and `status` flows: VM -> SSH -> agent -> repo/tmux/Claude -> attach."""
+"""Operations on the worker: `up`, `launch` / `connect`, `read_session` and `status`.
+
+They return results and raise on failure; progress goes to the ``cloud_coder`` logger.
+The command line and the MCP server are thin adapters over them.
+"""
 
 import base64
 import json
+import logging
 import shlex
-import sys
+import subprocess
+from dataclasses import dataclass
 
 from cloud_coder import gce, ssh, vm_agent_deploy
 from cloud_coder.config import Config
 from cloud_coder_vm import paths
 
-
-def _log(message: str) -> None:
-    print(f"cloud-coder: {message}", file=sys.stderr, flush=True)
+log = logging.getLogger(__name__)
 
 
-def up(cfg: Config, machine_type_requested: bool = False) -> None:
-    action = gce.ensure_running(cfg, machine_type_requested)
-    _log(f"VM {cfg.instance}: {action}")
-    ssh.wait_ready(cfg)
-    vm_agent_deploy.ensure_installed(cfg)
+class AgentError(RuntimeError):
+    """The VM agent failed or reported an error."""
+
+
+@dataclass(frozen=True)
+class UpResult:
+    vm_action: str  # created / started / resumed / running / stopping
+    ready: bool  # VM running, SSH reachable and the agent installed
+    agent_installed: bool  # this call (re)installed the agent
+
+
+def up(cfg: Config, machine_type_requested: bool = False, *, wait: bool = True) -> UpResult:
+    """Make the VM ready for sessions. With ``wait=False`` a VM that is not running yet is
+    only asked to start, and the result is not ready: call again until it is."""
+    action = gce.ensure_running(cfg, machine_type_requested, wait=wait)
+    log.info(f"VM {cfg.instance}: {action}")
+    if not wait and (action != gce.RUNNING or not ssh.reachable(cfg)):
+        return UpResult(action, ready=False, agent_installed=False)
+    if wait:
+        ssh.wait_ready(cfg)
+    installed = vm_agent_deploy.ensure_installed(cfg)
+    return UpResult(action, ready=True, agent_installed=installed)
 
 
 def is_repo_url(value: str) -> bool:
@@ -50,8 +71,33 @@ def launch_command(
 def parse_agent_json(stdout: str) -> dict:
     lines = [line for line in stdout.splitlines() if line.startswith("{")]
     if not lines:
-        raise RuntimeError(f"unexpected output from the VM agent: {stdout.strip()[-500:]}")
+        raise AgentError(f"unexpected output from the VM agent: {stdout.strip()[-500:]}")
     return json.loads(lines[-1])
+
+
+def agent_result(result: subprocess.CompletedProcess) -> dict:
+    """The JSON a VM agent command printed; AgentError when it failed."""
+    if result.returncode != 0 and not result.stdout.strip():
+        raise AgentError(result.stderr.strip()[-500:] or f"exit status {result.returncode}")
+    out = parse_agent_json(result.stdout)
+    if "error" in out:
+        raise AgentError(out["error"])
+    return out
+
+
+def launch(
+    cfg: Config,
+    repo: str | None,
+    *,
+    new: bool = False,
+    session: str | None = None,
+    no_claude: bool = False,
+    prompt: str | None = None,
+    forward_agent: bool = True,
+) -> dict:
+    """Ensure repo, tmux session and Claude Code on a ready VM, and hand Claude the prompt."""
+    command = launch_command(repo, session, new, no_claude, prompt)
+    return agent_result(ssh.run(cfg, command, forward_agent=forward_agent))
 
 
 def connect(
@@ -60,33 +106,38 @@ def connect(
     *,
     new: bool = False,
     session: str | None = None,
-    attach: bool = True,
     no_claude: bool = False,
     prompt: str | None = None,
     machine_type_requested: bool = False,
-) -> int:
+) -> dict:
+    """`up`, then `launch`. Returns what the VM agent did, including the session name."""
     up(cfg, machine_type_requested)
-    command = launch_command(repo, session, new, no_claude, prompt)
-    result = ssh.run(cfg, command, forward_agent=True)
-    if result.returncode != 0 and not result.stdout.strip():
-        _log(result.stderr.strip())
-        return 1
-    launched = parse_agent_json(result.stdout)
-    if "error" in launched:
-        _log(f"error: {launched['error']}")
-        return 1
-    _log(
+    launched = launch(cfg, repo, new=new, session=session, no_claude=no_claude, prompt=prompt)
+    log.info(
         f"session {launched['session']} in {launched['workdir']}: repo {launched['repo']}, "
         f"tmux {launched['tmux']}, claude {launched.get('claude', 'not started')}"
         + (f", prompt {launched['prompt']}" if "prompt" in launched else "")
     )
     trust = launched.get("trust_written")
     if isinstance(trust, str):
-        _log(f"workspace trust {trust}; accept Claude Code's trust prompt in tmux")
-    print(json.dumps(launched))
-    if not attach:
-        return 0
-    return ssh.attach_tmux(cfg, launched["session"])
+        log.info(f"workspace trust {trust}; accept Claude Code's trust prompt in tmux")
+    return launched
+
+
+def read_session(cfg: Config, session: str, lines: int = 200) -> dict:
+    """The last ``lines`` lines of the session's Claude Code pane, and its state."""
+    command = shlex.join(
+        [
+            "python3",
+            str(paths.AGENT_PYZ),
+            "read-session",
+            "--session",
+            session,
+            "--lines",
+            str(lines),
+        ]
+    )
+    return agent_result(ssh.run(cfg, command))
 
 
 def status(cfg: Config) -> dict:

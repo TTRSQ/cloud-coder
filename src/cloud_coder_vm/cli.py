@@ -18,6 +18,7 @@ from cloud_coder_vm import (
     launch,
     paths,
     session_registry,
+    session_screen,
     system_files,
 )
 
@@ -81,6 +82,16 @@ def cmd_launch(args) -> int:
     return 0
 
 
+def cmd_read_session(args) -> int:
+    try:
+        result = session_screen.read(Path.home(), args.session, args.lines)
+    except session_screen.ScreenError as e:
+        print(json.dumps({"error": str(e)}))
+        return 1
+    print(json.dumps(result))
+    return 0
+
+
 def cmd_install_system(args) -> int:
     if os.geteuid() != 0:
         print("install-system must run as root", file=sys.stderr)
@@ -123,6 +134,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-claude", action="store_true", help="prepare repo and tmux only")
     p.add_argument("--prompt-b64", help="first prompt for Claude Code, base64 encoded (UTF-8)")
     p.set_defaults(func=cmd_launch)
+
+    p = sub.add_parser("read-session", help="print a session's Claude Code pane as JSON")
+    p.add_argument("--session", required=True)
+    p.add_argument("--lines", type=int, default=200, help="lines to return, scrollback included")
+    p.set_defaults(func=cmd_read_session)
 
     p = sub.add_parser("install-system", help="(root) install units and files")
     p.add_argument("--config", required=True, help="VM config as JSON")
