@@ -57,19 +57,6 @@ def test_merge_separates_our_handler_from_shared_group():
     assert {"type": "command", "command": "other"} in merged["hooks"]["Stop"][0]["hooks"]
 
 
-def test_install_in_progress(tmp_path):
-    import os
-
-    from cloud_coder_vm.install import install_in_progress
-
-    marker = tmp_path / "installing"
-    assert not install_in_progress(marker)
-    marker.write_text(f"{os.getpid()}\n")
-    assert install_in_progress(marker)
-    marker.write_text("999999999\n")
-    assert not install_in_progress(marker)
-
-
 def test_git_url_rewrite_is_idempotent_and_keeps_other_values():
     from cloud_coder_vm.install import GITHUB_SSH_PREFIXES, git_url_rewrite_changes
 

@@ -11,6 +11,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from cloud_coder_vm import (
+    busy_markers,
     hook,
     idle_check,
     install,
@@ -85,13 +86,13 @@ def cmd_install_system(args) -> int:
         print("install-system must run as root", file=sys.stderr)
         return 1
     config = system_files.parse_config(args.config)
-    with install.installing():
+    with busy_markers.busy_marker("install", required=False):
         install.install_system(Path(sys.argv[0]).resolve(), config)
     return 0
 
 
 def cmd_install_user(_args) -> int:
-    with install.installing():
+    with busy_markers.busy_marker("install", required=False):
         install.install_user(_load_config(), Path.home())
     return 0
 

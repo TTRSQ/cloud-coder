@@ -36,6 +36,22 @@ def repo_name_from_url(url: str) -> str:
     return tail
 
 
+def canonical_url(url: str) -> str:
+    """Same repository, whatever the transport: git@h:o/r.git, ssh://git@h/o/r, https://h/o/r"""
+    url = url.strip().rstrip("/")
+    if url.endswith(".git"):
+        url = url[:-4]
+    if "://" in url:
+        rest = url.split("://", 1)[1]
+    elif re.match(r"^[^/]+@[^/:]+:", url) or re.match(r"^[^/:]+:[^/]", url):
+        rest = url.replace(":", "/", 1)
+    else:
+        return url  # local path
+    rest = rest.split("@", 1)[-1]
+    host, _, path = rest.partition("/")
+    return f"{host.split(':')[0].lower()}/{path}"
+
+
 def session_name(repo: str, index: int) -> str:
     # tmux forbids ':' and '.' in session names.
     safe = re.sub(r"[^A-Za-z0-9_-]", "_", repo)

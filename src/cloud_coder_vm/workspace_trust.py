@@ -42,12 +42,15 @@ def trust(config_path: Path, directories: list[Path], workspace_root: Path) -> b
     for directory in directories:
         if not is_under(directory, workspace_root):
             raise ValueError(f"refusing to trust {directory}: not inside {workspace_root}")
+    # Update the real file if ~/.claude.json is a symlink, instead of replacing the link.
+    config_path = config_path.resolve()
     try:
         text = config_path.read_text()
         mode = os.stat(config_path).st_mode & 0o777
     except FileNotFoundError:
         text, mode = "{}", 0o600
     config = json.loads(text) if text.strip() else {}
+    # Read-modify-write is kept to milliseconds; Claude Code rewrites this file too.
     updated = with_trusted(config, [str(d.resolve()) for d in directories])
     if updated is None:
         return False

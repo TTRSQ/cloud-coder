@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from cloud_coder_vm import (
+    busy_markers,
     idle_check,
     paths,
     process_table,
@@ -63,6 +64,18 @@ def resolve_target(
         return Target(sessions[session_name], created=False)
     if repo_url:
         repo = session_registry.repo_name_from_url(repo_url)
+        known = {
+            s.repo_url
+            for s in sessions.values()
+            if s.repo == repo
+            and s.repo_url
+            and session_registry.canonical_url(s.repo_url)
+            != session_registry.canonical_url(repo_url)
+        }
+        if known:
+            raise LaunchError(
+                f"{repo!r} in the workspace was cloned from {sorted(known)[0]}, not {repo_url}"
+            )
     if repo is None:
         if new:
             raise LaunchError("--new needs a repository")
@@ -110,7 +123,7 @@ def ensure_repo(session: LogicalSession, workspace: Path) -> str:
             raise LaunchError(f"{main} does not exist; pass the repository URL to clone it")
         env_ssh = "ssh -o StrictHostKeyChecking=accept-new"
         result = subprocess.run(
-            ["git", "clone", session.repo_url, str(main)],
+            ["git", "clone", "--", session.repo_url, str(main)],
             env={**os.environ, "GIT_SSH_COMMAND": env_ssh},
             capture_output=True,
             text=True,
@@ -244,7 +257,9 @@ def _cmdline(pid: int) -> list[str]:
     return [a.decode(errors="replace") for a in raw.split(b"\0") if a]
 
 
-def ensure_claude(session: LogicalSession, home: Path, prompt: str | None = None) -> dict:
+def ensure_claude(
+    session: LogicalSession, home: Path, prompt: str | None = None, reuse_pane: bool = False
+) -> dict:
     """Start Claude Code in the session unless one already runs there; then hand it ``prompt``."""
     panes = parse_list_panes(
         _check(["tmux", "list-panes", "-s", "-t", f"={session.name}", "-F", PANE_FORMAT])
@@ -262,7 +277,12 @@ def ensure_claude(session: LogicalSession, home: Path, prompt: str | None = None
                 send_prompt_to_running(pane.pane_id, proc.pid, prompt)
                 result["prompt"] = "sent"
             return result
-        if free_pane is None and len(others) == 1 and process_table.is_shell(others[0]):
+        if (
+            reuse_pane
+            and free_pane is None
+            and len(others) == 1
+            and process_table.is_shell(others[0])
+        ):
             free_pane = pane.pane_id
 
     if free_pane is None:
@@ -312,37 +332,53 @@ def launch(
         raise LaunchError("a prompt needs Claude Code; drop --no-claude")
     workspace = home / config.workspace
     registry_file = paths.registry_path(home)
-    with state_lock():
-        # New work is starting: cancel any pending shutdown before doing anything slow.
-        idle_check.cancel_grace()
-        sessions = session_registry.load(registry_file)
-        target = resolve_target(
-            sessions,
-            workspace,
-            repo_url=repo_url,
-            repo=repo,
-            session_name=session_name,
-            new=new,
-            now=time.time(),
-        )
-        session = target.session
+    # The marker keeps the idle check from stopping the VM while we clone / start
+    # Claude Code; the state lock is held only for the short registry updates so
+    # hooks of other sessions are never kept waiting.
+    with busy_markers.busy_marker("launch"):
+        with state_lock():
+            idle_check.cancel_grace()
+            sessions = session_registry.load(registry_file)
+            target = resolve_target(
+                sessions,
+                workspace,
+                repo_url=repo_url,
+                repo=repo,
+                session_name=session_name,
+                new=new,
+                now=time.time(),
+            )
+            session = target.session
+            session.last_connected_at = time.time()
+            sessions[session.name] = session  # reserves the name for concurrent --new
+            session_registry.save(registry_file, sessions)
         result: dict = {
             "session": session.name,
             "workdir": session.workdir,
             "claude_session_id": session.claude_session_id,
             "created": target.created,
         }
-        result["repo"] = ensure_repo(session, workspace)
-        sessions[session.name] = session
-        session.last_connected_at = time.time()
-        session_registry.save(registry_file, sessions)
-
-        if config.auto_trust_workspace:
-            trusted = {main_checkout(workspace, session.repo), Path(session.workdir)}
-            result["trust_written"] = workspace_trust.trust(
-                paths.claude_global_config_path(home), sorted(trusted), workspace
-            )
+        try:
+            result["repo"] = ensure_repo(session, workspace)
+            if config.auto_trust_workspace:
+                trusted = {main_checkout(workspace, session.repo), Path(session.workdir)}
+                try:
+                    result["trust_written"] = workspace_trust.trust(
+                        paths.claude_global_config_path(home), sorted(trusted), workspace
+                    )
+                except ValueError as e:
+                    raise LaunchError(str(e)) from e
+        except LaunchError:
+            if target.created:
+                with state_lock():
+                    sessions = session_registry.load(registry_file)
+                    sessions.pop(session.name, None)
+                    session_registry.save(registry_file, sessions)
+            raise
         result["tmux"] = ensure_tmux_session(session)
         if start_claude:
-            result.update(ensure_claude(session, home, prompt))
+            # A pane of an existing tmux session may hold half-typed input: only the
+            # pane of a session created just now is typed into, otherwise a new window.
+            reuse_pane = result["tmux"] == "created"
+            result.update(ensure_claude(session, home, prompt, reuse_pane))
     return result

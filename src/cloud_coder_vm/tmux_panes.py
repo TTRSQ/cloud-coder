@@ -38,13 +38,17 @@ def no_server(stderr: str) -> bool:
     )
 
 
-def list_panes(user: str | None = None) -> list[Pane] | None:
+def list_panes(user: str | None = None, timeout: float | None = None) -> list[Pane] | None:
     """Panes of all sessions; [] when no server runs, None when tmux could not be queried."""
-    result = subprocess.run(
-        [*tmux_command(user), "list-panes", "-a", "-F", PANE_FORMAT],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            [*tmux_command(user), "list-panes", "-a", "-F", PANE_FORMAT],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return None
     if result.returncode != 0:
         return [] if no_server(result.stderr) else None
     return parse_list_panes(result.stdout)

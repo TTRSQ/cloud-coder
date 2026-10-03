@@ -61,7 +61,9 @@ def apply_event(
         # prompt or stop that was already recorded for this same conversation.
         return current.state
 
-    new = session_state.next_state(current.state if current else None, payload)
+    new = session_state.next_state(
+        current.state if current else None, payload, current.last_event if current else None
+    )
     if new is None:
         session_state.remove(state_dir, key)
     else:
@@ -91,7 +93,9 @@ def main(stdin=sys.stdin) -> int:
         return 0
     try:
         payload = json.load(stdin)
-        with state_lock():
+        # Never block Claude Code: after a short wait, record without the lock
+        # (each state file is replaced atomically).
+        with state_lock(timeout=2):
             new = apply_event(
                 payload,
                 os.environ,

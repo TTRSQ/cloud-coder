@@ -166,6 +166,7 @@ def test_decide_grace_lifecycle():
 def test_ready_without_idle_prompt_becomes_idle_after_quiet_period():
     p = procs(shell(10), claude(11, 10))
     st = state("pane-1", READY, "%1", pid=11)
+    st.last_event = "Stop"
     st.updated_at = NOW - READY_IDLE_AFTER_SECONDS + 1
     assert not evaluate([PANE1], p, [st]).idle
     st.updated_at = NOW - READY_IDLE_AFTER_SECONDS
@@ -198,3 +199,25 @@ def test_sg_wrapped_shell_at_prompt_is_idle():
     assert evaluate([PANE1], p, []).idle
     p[12] = other(12, 11, "make")
     assert not evaluate([PANE1], p, []).idle
+
+
+def test_ready_after_stop_failure_waits_for_idle_prompt():
+    p = procs(shell(10), claude(11, 10))
+    st = state("pane-1", READY, "%1", pid=11)
+    st.last_event = "StopFailure"
+    st.updated_at = NOW - 10 * READY_IDLE_AFTER_SECONDS
+    assert not evaluate([PANE1], p, [st]).idle
+
+
+def test_restarted_session_without_a_turn_becomes_idle_after_ten_minutes():
+    from cloud_coder_vm.idle_check import SESSION_START_IDLE_AFTER_SECONDS
+
+    p = procs(shell(10), claude(11, 10))
+    st = state("pane-1", BUSY, "%1", pid=11)
+    st.last_event = "SessionStart"
+    st.updated_at = NOW - SESSION_START_IDLE_AFTER_SECONDS + 1
+    assert not evaluate([PANE1], p, [st]).idle
+    st.updated_at = NOW - SESSION_START_IDLE_AFTER_SECONDS
+    assert evaluate([PANE1], p, [st]).idle
+    st.last_event = "UserPromptSubmit"  # a turn in progress never times out
+    assert not evaluate([PANE1], p, [st]).idle

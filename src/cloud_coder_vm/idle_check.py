@@ -11,9 +11,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from cloud_coder_vm import install, paths, process_table, session_state, ssh_logins, tmux_panes
+from cloud_coder_vm import busy_markers, paths, process_table, session_state, ssh_logins, tmux_panes
 from cloud_coder_vm.process_table import Process
-from cloud_coder_vm.session_state import IDLE, READY, SessionState
+from cloud_coder_vm.session_state import BUSY, IDLE, READY, SessionState
 from cloud_coder_vm.state_lock import state_lock, write_atomic
 from cloud_coder_vm.system_files import VmConfig
 from cloud_coder_vm.tmux_panes import Pane
@@ -43,10 +43,24 @@ def _state_is_live(state: SessionState, procs: dict[int, Process], claude_panes:
 READY_IDLE_AFTER_SECONDS = 120
 
 
+# A session that (re)started without a turn (resume, /clear, ...) is BUSY because a
+# resume restores scheduled crons. Claude Code sends no idle_prompt then (observed on
+# 2.1.288), so after this long without any event it counts as idle.
+SESSION_START_IDLE_AFTER_SECONDS = 600
+
+
 def is_idle_state(state: SessionState, now: float) -> bool:
     if state.state == IDLE:
         return True
-    return state.state == READY and now - state.updated_at >= READY_IDLE_AFTER_SECONDS
+    if state.state == BUSY and state.last_event == "SessionStart":
+        return now - state.updated_at >= SESSION_START_IDLE_AFTER_SECONDS
+    # Only a READY that came from Stop: Stop reported no background tasks and no crons.
+    # A READY from StopFailure reported nothing, so it waits for idle_prompt.
+    return (
+        state.state == READY
+        and state.last_event == "Stop"
+        and now - state.updated_at >= READY_IDLE_AFTER_SECONDS
+    )
 
 
 def evaluate(
@@ -143,31 +157,71 @@ def cancel_grace(path: Path = paths.IDLE_SINCE) -> None:
     path.unlink(missing_ok=True)
 
 
+SUBPROCESS_TIMEOUT = 20
+
+
 def running_containers() -> list[str] | None:
-    """Running container names; [] when Docker is not installed or its daemon is down."""
+    """Running container names; [] when Docker is not installed or its daemon is down,
+    None when Docker could not be queried (counts as busy)."""
     if not Path("/usr/bin/docker").exists():
         return []
-    active = subprocess.run(["systemctl", "is-active", "--quiet", "docker"], check=False)
-    if active.returncode != 0:
-        return []
-    result = subprocess.run(
-        ["docker", "ps", "--format", "{{.Names}}"], capture_output=True, text=True, timeout=30
-    )
+    try:
+        active = subprocess.run(
+            ["systemctl", "is-active", "--quiet", "docker"], timeout=SUBPROCESS_TIMEOUT
+        )
+        if active.returncode != 0:
+            return []
+        result = subprocess.run(
+            ["docker", "ps", "--format", "{{.Names}}"],
+            capture_output=True,
+            text=True,
+            timeout=SUBPROCESS_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return None
     if result.returncode != 0:
         return None
     return result.stdout.split()
 
 
-def scan(config: VmConfig) -> Evaluation:
-    return evaluate(
-        tmux_panes.list_panes(config.user),
+@dataclass
+class Observation:
+    """Everything the idle decision needs that is slow to gather (no lock held)."""
+
+    panes: list[Pane] | None
+    procs: dict[int, Process]
+    containers: list[str] | None
+    logins: list[ssh_logins.Login]
+
+
+def observe(config: VmConfig) -> Observation:
+    return Observation(
+        tmux_panes.list_panes(config.user, timeout=SUBPROCESS_TIMEOUT),
         process_table.snapshot(),
-        session_state.load_all(paths.SESSION_STATE_DIR),
-        time.time(),
         () if config.ignore_docker else running_containers(),
         () if config.ignore_ssh_sessions else ssh_logins.read_logins(),
+    )
+
+
+def judge(config: VmConfig, obs: Observation) -> Evaluation:
+    """Evaluate with the session states and work markers as they are right now."""
+    ev = evaluate(
+        obs.panes,
+        obs.procs,
+        session_state.load_all(paths.SESSION_STATE_DIR),
+        time.time(),
+        obs.containers,
+        obs.logins,
         config.ssh_session_idle_minutes * 60,
     )
+    for kind in busy_markers.active():
+        ev.idle = False
+        ev.busy_reasons.append(f"cloud-coder {kind} in progress")
+    return ev
+
+
+def scan(config: VmConfig) -> Evaluation:
+    return judge(config, observe(config))
 
 
 def run(
@@ -175,11 +229,12 @@ def run(
     shutdown: Callable[[], None] | None = None,
     now: Callable[[], float] = time.time,
 ) -> Decision:
+    # tmux / docker / /proc are read without the lock; session states, markers and the
+    # grace timestamp are re-read under it, so a prompt or launch that lands while we
+    # look still cancels the decision.
+    obs = observe(config)
     with state_lock():
-        ev = scan(config)
-        if install.install_in_progress():
-            ev.idle = False
-            ev.busy_reasons.append("cloud-coder agent install in progress")
+        ev = judge(config, obs)
         for key in ev.stale_keys:
             session_state.remove(paths.SESSION_STATE_DIR, key)
         grace_seconds = config.grace_seconds

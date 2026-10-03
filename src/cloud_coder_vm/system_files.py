@@ -36,6 +36,8 @@ def render_tmpfiles(user: str) -> str:
     return (
         f"d {paths.RUNTIME_DIR} 0755 {user} {user} -\n"
         f"d {paths.SESSION_STATE_DIR} 0755 {user} {user} -\n"
+        f"d {paths.BUSY_DIR} 0755 {user} {user} -\n"
+        f"d {paths.PROMPT_DIR} 0700 {user} {user} -\n"
         f"f {paths.STATE_LOCK} 0644 {user} {user} -\n"
     )
 
@@ -47,6 +49,7 @@ After=systemd-tmpfiles-setup.service
 
 [Service]
 Type=oneshot
+TimeoutStartSec=120
 ExecStart=/usr/bin/python3 {paths.AGENT_PYZ} idle-check
 """
 

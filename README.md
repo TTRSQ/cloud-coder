@@ -89,7 +89,7 @@ cloud-coder up                                      # VM の作成・起動と a
 - Claude Code は `claude --session-id <uuid> --remote-control <セッション名>` で起動されます。Remote Control で claude.ai / Claude アプリからも操作できます。
 - 対応表は VM の `~/.local/share/cloud-coder/sessions.json` (Persistent Disk) に保存されます。`/clear` などで Claude Code の session ID が変わると hook が対応表を更新します。
 - VM の停止後に `connect` すると tmux session を作り直し、`claude --resume <session-id> --remote-control <セッション名>` で同じ会話を再開します。
-- 既に Claude Code が動いているセッションへの `connect` は attach だけ行い、二重に起動しません。何かが動いている pane には入力しません。
+- 既に Claude Code が動いているセッションへの `connect` は attach だけ行い、二重に起動しません。Claude Code が終了していた場合は、入力途中の行を壊さないよう既存の pane ではなく新しい window で起動します (pane を使うのは tmux session をその場で作ったときだけです)。
 
 ### 開発ツール
 
@@ -149,17 +149,20 @@ Claude Code の状態は hook で更新されます。
 | `StopFailure` (API エラーでターンが終了) | `READY` |
 | `Stop` で上記のどちらかが空でない、または欠けている | `BUSY` |
 | `Notification` (`idle_prompt`) かつ `READY` | `IDLE` |
-| `READY` のまま 2 分間イベントなし | idle とみなす (状態は `READY` のまま) |
+| `Stop` 由来の `READY` のまま 2 分間イベントなし | idle とみなす (状態は `READY` のまま) |
+| `SessionStart` 由来の `BUSY` (ターン未実行) に `idle_prompt` | `IDLE` |
+| `SessionStart` 由来の `BUSY` のまま 10 分間イベントなし | idle とみなす |
 | `SessionEnd` | 状態を削除 |
 
 - 状態は Claude Code のプロセスごとに `/run/cloud-coder/sessions/` (tmpfs) へ保存され、tmux pane とプロセス ID で実態と突き合わせます。プロセスが消えた状態ファイル (クラッシュ等で `SessionEnd` が来なかったもの) は無視して削除します。
-- まだ状態を報告していない Claude Code (起動直後やログイン前) は busy 扱いです。
+- まだ状態を報告していない Claude Code (起動直後やログイン前) は busy 扱いです。hook はログインと trust の後でないと動かないため、ログイン画面のまま放置した Claude Code は VM を止め続けます。初回は attach してログインを済ませてください。
 - 新規起動 (`startup`) は、プロセスも会話も新しく background task も cron も存在しないので、プロンプトが送られるまで `IDLE` とします。起動しただけで放置したセッションが VM を止めなくなるのを防ぐためです。tmux の他の pane の判定はそのまま効き、プロンプトが送られれば `UserPromptSubmit` で `BUSY` に戻ります。同じプロセスで既に記録済みのイベントを、遅れて届いた `SessionStart` で上書きすることはありません。
-- `resume` は cron (`CronCreate`) を復元するため安全側で `BUSY` にしています。resume しただけで放置すると自動停止しないので、`--prompt` を渡すか一度プロンプトを送ってください。
+- `resume` は cron (`CronCreate`) を復元するため `BUSY` にしています。ただし resume しただけ (ターン未実行) の状態では `idle_prompt` が来ないことを確認したので、イベントが無いまま 10 分経ったら idle とみなします。停止した VM に再接続して見るだけ、という最もよくある使い方で止まらなくなるのを防ぐためです。代わりに、復元された cron のうち 10 分 + grace period より先に発火するものは、VM が止まると発火しません。
 - `Esc` でターンを中断した場合は `Stop` もほかの hook も発火しないため、次のプロンプトまで `BUSY` のまま残ります。
 - 未送信の入力をプロンプト欄に入れたまま grace period を超えて放置すると、新規起動のセッションは停止対象になります。
-- `connect` も grace period を取り消します。判定と新規セッションの作成は `/run/cloud-coder/state.lock` の flock で直列化しています。
-- `idle_prompt` は Claude Code が応答を終えて約 60 秒間入力が無いときに送られます。ただし Remote Control のセッションで、送られないケースを確認しています (Claude Code 2.1.288。スマホから接続中、あるいはダイアログ表示中と思われる。同じ RC セッションでも別のタイミングでは約 60 秒で送られた)。そのため、`READY` のまま 2 分間イベントが無いセッションも idle とみなします。`READY` は直前の `Stop` で background task も cron も無いと報告されている状態なので、`idle_prompt` を待つ場合と同じ根拠で判定しています。
+- `connect` も grace period を取り消します。`/run/cloud-coder/state.lock` の flock は短いファイル更新の間だけ持ち、clone や Claude Code の起動など時間のかかる処理の間は `/run/cloud-coder/busy/` のマーカー (pid 付き、プロセスが消えたら無効) で busy にします。hook は lock を最大 2 秒だけ待ち、取れなければ lock 無しで状態ファイルを原子的に書き換えます (Claude Code を待たせないため)。
+- `idle_prompt` は Claude Code が応答を終えて約 60 秒間入力が無いときに送られます。ただし Remote Control のセッションで、送られないケースを確認しています (Claude Code 2.1.288。スマホから接続中、あるいはダイアログ表示中と思われる。同じ RC セッションでも別のタイミングでは約 60 秒で送られた)。そのため、`READY` のまま 2 分間イベントが無いセッションも idle とみなします。`Stop` 由来の `READY` は background task も cron も無いと報告された状態なので、`idle_prompt` を待つ場合と同じ根拠で判定しています。`StopFailure` 由来の `READY` は task の情報が無いので、`idle_prompt` を待ちます。
+- background task (`run_in_background` の shell など) が終わると Claude Code は自分で次のターンを始め、改めて `Stop` が来て `READY` に戻ることを確認しています。
 - tmux の外で動いているもののうち、次は busy 扱いです: SSH の対話ログイン (下記)、稼働中の Docker コンテナ、cloud-coder agent のインストール中。
 
 ### SSH ログイン中は止めない

@@ -56,3 +56,18 @@ def test_trust_refuses_outside_workspace(tmp_path, target):
     with pytest.raises(ValueError):
         trust(tmp_path / ".claude.json", [path], ws)
     assert not (tmp_path / ".claude.json").exists()
+
+
+def test_trust_follows_symlinked_config(tmp_path):
+    ws = tmp_path / "workspace"
+    (ws / "r").mkdir(parents=True)
+    real = tmp_path / "dotfiles" / "claude.json"
+    real.parent.mkdir()
+    real.write_text(json.dumps({"userID": "u"}))
+    link = tmp_path / ".claude.json"
+    link.symlink_to(real)
+    assert trust(link, [ws / "r"], ws)
+    assert link.is_symlink()
+    assert json.loads(real.read_text())["projects"][str((ws / "r").resolve())] == {
+        "hasTrustDialogAccepted": True
+    }

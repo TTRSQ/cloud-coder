@@ -70,3 +70,9 @@ def test_session_end_removes():
 def test_state_key_prefers_pane():
     assert state_key("%12", "abc") == "pane-12"
     assert state_key(None, "ab/c-1") == "session-abc-1"
+
+
+def test_idle_prompt_after_session_start_without_a_turn():
+    assert next_state(BUSY, IDLE_PROMPT, last_event="SessionStart") == IDLE
+    assert next_state(BUSY, IDLE_PROMPT, last_event="UserPromptSubmit") == BUSY
+    assert next_state(BUSY, IDLE_PROMPT, last_event="Stop") == BUSY  # background work

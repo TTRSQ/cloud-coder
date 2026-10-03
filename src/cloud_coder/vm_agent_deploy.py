@@ -92,7 +92,8 @@ def ensure_installed(cfg: Config) -> bool:
         return False
 
     print("cloud-coder: installing the VM agent", file=sys.stderr, flush=True)
-    remote = f"/tmp/cloud-coder-vm-{pyz_sha[:12]}.pyz"
+    # relative to the VM user's HOME: not a world-writable, predictable /tmp path
+    remote = f"cloud-coder-vm-{pyz_sha[:12]}.pyz"
     with tempfile.TemporaryDirectory() as tmp:
         local = Path(tmp) / "cloud-coder-vm.pyz"
         local.write_bytes(pyz)

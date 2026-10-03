@@ -97,3 +97,10 @@ def test_regroup_command(monkeypatch):
     assert regroup_command("docker", {999}, {999}) == []  # server already has it
     assert regroup_command("docker", {999}, None) == []  # new server inherits it
     assert regroup_command("docker", {1000}, {1000}) == []  # this login lacks it too
+
+
+def test_same_repo_name_from_another_owner_is_refused():
+    s = {"cc-app-1": entry("cc-app-1", "app", 1, url="git@github.com:me/app.git")}
+    assert not resolve(s, repo_url="https://github.com/me/app").created  # same repo
+    with pytest.raises(LaunchError, match="cloned from"):
+        resolve(s, repo_url="git@github.com:someone-else/app.git")

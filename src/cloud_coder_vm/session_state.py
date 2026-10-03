@@ -31,7 +31,7 @@ class SessionState:
     updated_at: float = 0.0
 
 
-def next_state(current: str | None, payload: dict) -> str | None:
+def next_state(current: str | None, payload: dict, last_event: str | None = None) -> str | None:
     """Return the state after a hook event, or None when no record should exist.
 
     Returning ``current`` means the event does not change the state.
@@ -57,8 +57,13 @@ def next_state(current: str | None, payload: dict) -> str | None:
         # straight to IDLE: idle_prompt (which waits for background agents) decides.
         return READY
     if event == "Notification":
-        if payload.get("notification_type") == "idle_prompt" and current == READY:
-            return IDLE
+        if payload.get("notification_type") == "idle_prompt":
+            if current == READY:
+                return IDLE
+            # BUSY only because a session (re)started (resume, /clear, ...) and no turn
+            # has run since: Claude Code is waiting for input.
+            if current == BUSY and last_event == "SessionStart":
+                return IDLE
         return current
     if event == "SessionEnd":
         return None

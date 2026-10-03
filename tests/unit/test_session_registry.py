@@ -50,3 +50,17 @@ def test_roundtrip(tmp_path):
     save(path, sessions)
     assert load(path) == sessions
     assert load(tmp_path / "missing.json") == {}
+
+
+def test_canonical_url():
+    from cloud_coder_vm.session_registry import canonical_url
+
+    same = [
+        "git@github.com:TTRSQ/cloud-coder.git",
+        "ssh://git@github.com/TTRSQ/cloud-coder",
+        "https://github.com/TTRSQ/cloud-coder.git",
+        "https://GitHub.com/TTRSQ/cloud-coder/",
+    ]
+    assert {canonical_url(u) for u in same} == {"github.com/TTRSQ/cloud-coder"}
+    assert canonical_url("git@github.com:other/cloud-coder.git") != canonical_url(same[0])
+    assert canonical_url("/srv/git/repo.git") == "/srv/git/repo"

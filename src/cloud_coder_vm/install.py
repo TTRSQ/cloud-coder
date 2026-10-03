@@ -9,8 +9,6 @@ import json
 import os
 import shutil
 import subprocess
-from collections.abc import Iterator
-from contextlib import contextmanager, suppress
 from pathlib import Path
 
 from cloud_coder_vm import dev_tools, paths, system_files
@@ -28,32 +26,6 @@ HOOK_EVENTS: list[tuple[str, str | None]] = [
 # Always installed: what cloud-coder itself and most toolchains (cargo, node-gyp) need.
 BASE_APT_PACKAGES = ["tmux", "git", "curl", "ca-certificates", "build-essential"]
 CLAUDE_INSTALLER = "curl -fsSL https://claude.ai/install.sh | bash"
-
-
-@contextmanager
-def installing() -> Iterator[None]:
-    """Mark an install in progress so the idle check does not shut the VM down under it."""
-    marker = paths.INSTALL_MARKER
-    with suppress(OSError):  # runtime dir not created yet (first install)
-        marker.write_text(f"{os.getpid()}\n")
-    try:
-        yield
-    finally:
-        marker.unlink(missing_ok=True)
-
-
-def install_in_progress(marker: Path = paths.INSTALL_MARKER) -> bool:
-    try:
-        pid = int(marker.read_text().strip())
-    except (OSError, ValueError):
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
 
 
 def merge_hooks(settings: dict, command: str = paths.HOOK_COMMAND) -> dict:
