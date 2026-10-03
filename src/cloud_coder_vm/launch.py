@@ -58,8 +58,8 @@ class Layout:
 
 def main_checkout(layout: Layout, repo: str) -> Path:
     """The one clone of ``repo`` that sessions and worktrees use. A clone under the legacy
-    workspace wins: cloud-coder never creates new ones there, so the answer cannot change
-    when a directory later appears under the current workspace."""
+    workspace wins, since cloud-coder no longer creates clones there. Whatever this
+    returns is checked against the session's URL before it is built on or trusted."""
     legacy = layout.legacy_workspace / repo
     return legacy if legacy.is_dir() else layout.workspace / repo
 
@@ -133,31 +133,31 @@ def _check(args: list[str], cwd: Path | None = None) -> str:
     return result.stdout
 
 
-def check_origin(clone: Path, repo_url: str | None) -> None:
-    """A clone found where a new session would clone it must be of the requested URL;
-    otherwise it is someone else's directory and must not be adopted (or trusted).
-    Without a URL the user named the directory itself (`connect <repo-name>`)."""
+def is_clone_of(clone: Path, repo_url: str | None) -> bool:
+    """Whether ``clone`` is a clone of ``repo_url`` (whatever the transport)."""
     if repo_url is None:
-        return
+        return False
     origin = _run(["git", "remote", "get-url", "origin"], cwd=clone).stdout.strip()
-    if not origin or session_registry.canonical_url(origin) != session_registry.canonical_url(
-        repo_url
-    ):
-        raise LaunchError(
-            f"{clone} already exists with origin {origin or '(none)'}, not {repo_url}; "
-            "move it away or connect with its URL"
-        )
+    return bool(origin) and (
+        session_registry.canonical_url(origin) == session_registry.canonical_url(repo_url)
+    )
 
 
 def ensure_repo(session: LogicalSession, layout: Layout, created: bool = False) -> str:
-    """Clone / add a worktree only when the directory is missing. Returns what was done."""
+    """Clone / add a worktree only when the directory is missing. Returns what was done.
+
+    A clone cloud-coder builds on without making it now (an existing clone for a new
+    session, or the source of a new worktree) must be of the session's repository;
+    with only a repo name (``connect <name>``) the user vouches for the directory."""
     main = main_checkout(layout, session.repo)
     workdir = Path(session.workdir)
     if created and workdir != main and workdir.exists():
         raise LaunchError(f"{workdir} already exists and was not created by cloud-coder")
-    if created and main.exists():
-        # a new session builds on a clone it did not make in this run: same repository only
-        check_origin(main, session.repo_url)
+    builds_on_main = main.exists() and (created or not workdir.exists())
+    if builds_on_main and session.repo_url and not is_clone_of(main, session.repo_url):
+        raise LaunchError(
+            f"{main} is not a clone of {session.repo_url}; move it away or connect with its URL"
+        )
     if workdir.exists():
         return "existing"
     actions = []
@@ -358,6 +358,24 @@ def ensure_claude(
     return result
 
 
+def trust_session(session: LogicalSession, layout: Layout, home: Path) -> bool | str:
+    """Pre-accept Claude Code's trust dialog for the session's checkout, but only when it
+    is verified to be a clone of the session's URL. A session known only by repo name,
+    or a clone whose origin changed, is left to Claude Code's own trust dialog.
+    Returns whether ~/.claude.json was written, or why trust was skipped."""
+    main = main_checkout(layout, session.repo)
+    if not is_clone_of(main, session.repo_url):
+        return "skipped: not verified as a clone of the session's URL"
+    try:
+        return workspace_trust.trust(
+            paths.claude_global_config_path(home),
+            sorted({main, Path(session.workdir)}),
+            layout.trust_roots(),
+        )
+    except ValueError as e:
+        raise LaunchError(str(e)) from e
+
+
 def launch(
     config: VmConfig,
     home: Path,
@@ -403,18 +421,8 @@ def launch(
         }
         try:
             result["repo"] = ensure_repo(session, layout, target.created)
-            # A new session named only by repo name runs in a directory nobody verified as
-            # cloud-coder's; Claude Code's own trust dialog decides there.
-            unverified = target.created and session.repo_url is None
-            if config.auto_trust_workspace and not unverified:
-                workdir = Path(session.workdir)
-                trusted = {main_checkout(layout, session.repo), workdir}
-                try:
-                    result["trust_written"] = workspace_trust.trust(
-                        paths.claude_global_config_path(home), sorted(trusted), layout.trust_roots()
-                    )
-                except ValueError as e:
-                    raise LaunchError(str(e)) from e
+            if config.auto_trust_workspace:
+                result["trust_written"] = trust_session(session, layout, home)
         except LaunchError:
             if target.created:
                 with state_lock():

@@ -80,6 +80,9 @@ def connect(
         f"tmux {launched['tmux']}, claude {launched.get('claude', 'not started')}"
         + (f", prompt {launched['prompt']}" if "prompt" in launched else "")
     )
+    trust = launched.get("trust_written")
+    if isinstance(trust, str):
+        _log(f"workspace trust {trust}; accept Claude Code's trust prompt in tmux")
     print(json.dumps(launched))
     if not attach:
         return 0
