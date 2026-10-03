@@ -16,7 +16,7 @@ DEFAULT_MACHINE_TYPE = "t2d-standard-8"
 @dataclass(frozen=True)
 class Config:
     # gcp
-    project: str | None = None  # falls back to `gcloud config get-value project`
+    project: str | None = None  # required: set in config.yaml or pass --project
     zone: str = "asia-northeast1-b"
     instance: str = "cloud-coder"
     machine_type: str = DEFAULT_MACHINE_TYPE
