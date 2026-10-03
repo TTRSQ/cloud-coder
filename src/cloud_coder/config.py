@@ -33,6 +33,10 @@ class Config:
     swap_gb: int = 0  # 0 = do not create a swapfile
     tools: tuple[str, ...] = DEFAULT_TOOLS
     ignore_docker: bool = False  # running containers block auto-stop unless true
+    ignore_ssh_sessions: bool = False  # interactive SSH logins block auto-stop unless true
+    ssh_session_idle_minutes: int = 30
+    # git
+    github_https: bool = True  # use https://github.com/ for git@github.com: URLs on the VM
     # claude
     auto_trust_workspace: bool = True
 
@@ -56,7 +60,10 @@ SECTIONS: dict[str, dict[str, str]] = {
         "swap_gb": "swap_gb",
         "tools": "tools",
         "ignore_docker": "ignore_docker",
+        "ignore_ssh_sessions": "ignore_ssh_sessions",
+        "ssh_session_idle_minutes": "ssh_session_idle_minutes",
     },
+    "git": {"github_https": "github_https"},
     "claude": {"auto_trust_workspace": "auto_trust_workspace"},
 }
 

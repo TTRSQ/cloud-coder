@@ -19,6 +19,9 @@ class VmConfig:
     swap_gb: int  # 0 = leave swap alone
     tools: list[str]  # names in dev_tools.TOOLS
     ignore_docker: bool  # do not let running containers block auto-stop
+    ignore_ssh_sessions: bool  # do not let interactive SSH logins block auto-stop
+    ssh_session_idle_minutes: int  # an SSH shell without input for this long stops counting
+    github_https: bool  # rewrite GitHub SSH URLs to HTTPS in the user's git config
 
 
 def render_config(config: VmConfig) -> str:

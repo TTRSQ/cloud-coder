@@ -68,3 +68,52 @@ def test_install_in_progress(tmp_path):
     assert install_in_progress(marker)
     marker.write_text("999999999\n")
     assert not install_in_progress(marker)
+
+
+def test_git_url_rewrite_is_idempotent_and_keeps_other_values():
+    from cloud_coder_vm.install import GITHUB_SSH_PREFIXES, git_url_rewrite_changes
+
+    assert git_url_rewrite_changes([], True) == (list(GITHUB_SSH_PREFIXES), [])
+    assert git_url_rewrite_changes(list(GITHUB_SSH_PREFIXES) + ["gh:"], True) == ([], [])
+    assert git_url_rewrite_changes(["git@github.com:", "gh:"], False) == ([], ["git@github.com:"])
+    assert git_url_rewrite_changes(["gh:"], False) == ([], [])
+
+
+def test_configure_github_https_with_real_git(tmp_path, monkeypatch):
+    import subprocess
+
+    from cloud_coder_vm.install import configure_github_https
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / ".gitconfig"))
+    helper = "!/usr/bin/gh auth git-credential"
+    subprocess.run(
+        ["git", "config", "--global", "credential.https://github.com.helper", helper], check=True
+    )
+
+    def values():
+        out = subprocess.run(
+            ["git", "config", "--global", "--get-all", "url.https://github.com/.insteadOf"],
+            capture_output=True,
+            text=True,
+        )
+        return out.stdout.split()
+
+    configure_github_https(True)
+    configure_github_https(True)
+    assert values() == ["git@github.com:", "ssh://git@github.com/"]
+    rewritten = subprocess.run(
+        ["git", "ls-remote", "--get-url", "git@github.com:o/r.git"],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+    ).stdout.strip()
+    assert rewritten == "https://github.com/o/r.git"
+    configure_github_https(False)
+    assert values() == []
+    helper_now = subprocess.run(
+        ["git", "config", "--global", "credential.https://github.com.helper"],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert helper_now == helper

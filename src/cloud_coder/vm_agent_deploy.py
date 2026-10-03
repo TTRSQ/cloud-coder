@@ -49,6 +49,9 @@ def vm_config(cfg: Config) -> VmConfig:
         swap_gb=cfg.swap_gb,
         tools=list(cfg.tools),
         ignore_docker=cfg.ignore_docker,
+        ignore_ssh_sessions=cfg.ignore_ssh_sessions,
+        ssh_session_idle_minutes=cfg.ssh_session_idle_minutes,
+        github_https=cfg.github_https,
     )
 
 

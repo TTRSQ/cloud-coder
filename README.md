@@ -75,6 +75,7 @@ cloud-coder up                                      # VM の作成・起動と a
 - private repository の clone 方法は 2 通りあります。
   - SSH URL (`git@github.com:OWNER/REPO.git`): `connect` はローカルの ssh-agent を VM に転送します (`ssh -A`) ので、鍵を agent に登録しておけば clone できます。転送は `connect` の間だけなので、VM 上での後の `git push` などには使えません。
   - HTTPS URL (`https://github.com/OWNER/REPO.git`): 下の「GitHub の認証」で `gh auth setup-git` を済ませておけば、clone も push も gh の認証で行えます。継続的に使うならこちらを推奨します。
+  - 既定では VM の `~/.gitconfig` に `url."https://github.com/".insteadOf` として `git@github.com:` と `ssh://git@github.com/` を追加するので、SSH 形式の GitHub URL も HTTPS + gh の認証で clone / push されます (VM に SSH 鍵を置く必要がありません)。追加するのはこの 2 つの値だけで、`gh auth setup-git` の credential helper など他の設定は変更しません。無効にするには `git.github_https: false` にします (この 2 つの値を取り除きます)。
 
 ### セッション
 
@@ -159,7 +160,16 @@ Claude Code の状態は hook で更新されます。
 - 未送信の入力をプロンプト欄に入れたまま grace period を超えて放置すると、新規起動のセッションは停止対象になります。
 - `connect` も grace period を取り消します。判定と新規セッションの作成は `/run/cloud-coder/state.lock` の flock で直列化しています。
 - `idle_prompt` は Claude Code が応答を終えて約 60 秒間入力が無いときに送られます。ただし Remote Control のセッションで、送られないケースを確認しています (Claude Code 2.1.288。スマホから接続中、あるいはダイアログ表示中と思われる。同じ RC セッションでも別のタイミングでは約 60 秒で送られた)。そのため、`READY` のまま 2 分間イベントが無いセッションも idle とみなします。`READY` は直前の `Stop` で background task も cron も無いと報告されている状態なので、`idle_prompt` を待つ場合と同じ根拠で判定しています。
-- tmux の外 (SSH で直接実行したプロセスなど) は判定の対象外です。例外として、稼働中の Docker コンテナと cloud-coder agent のインストール中は busy 扱いです。
+- tmux の外で動いているもののうち、次は busy 扱いです: SSH の対話ログイン (下記)、稼働中の Docker コンテナ、cloud-coder agent のインストール中。
+
+### SSH ログイン中は止めない
+
+tmux の外で SSH にログインしている間は自動停止しません。止めてよい場合は `vm.ignore_ssh_sessions: true` にしてください。
+
+- ログインは utmp (`who` に出るもの) で判定します。sshd が端末を割り当てたログインだけが記録されるので、`gcloud compute ssh --command ...` (cloud-coder 自身の配布・launch・status を含む) は対象になりません。
+- その端末でシェル以外のコマンドが動いていれば (フォアグラウンドでもバックグラウンドジョブでも)、入力が無くても busy です。
+- シェルのプロンプト待ちのまま `vm.ssh_session_idle_minutes` (既定 30 分) 端末への入力が無いログインは数えません (`w` の IDLE と同じ、端末デバイスの atime で判定)。閉じ忘れた端末や、切断されたのに残ったログインで VM が止まらなくなるのを防ぐためです。sshd プロセスが既に無い utmp の記録も無視します。
+- `tmux attach` している SSH は数えません。判定は tmux の pane 側に任せます (attach の有無で二重に止めないため)。tmux pane 自身の utmp 記録 (`tmux(<pid>).%N`) も同様です。
 
 `cloud-coder status` で、自動停止を妨げている理由と停止までの残り時間を確認できます。VM 上のログは `journalctl -u cloud-coder-idle-check.service` で見られます。
 
@@ -186,6 +196,10 @@ vm:
   swap_gb: 0                 # 1 以上で /swapfile を作成する (既存の swapfile は変更しない)
   tools: [gh, node, rust, docker, uv]   # [] で何も入れない
   ignore_docker: false       # true で稼働中のコンテナを自動停止の判定から外す
+  ignore_ssh_sessions: false # true で SSH の対話ログインを自動停止の判定から外す
+  ssh_session_idle_minutes: 30   # 入力がこの時間無い SSH ログインは数えない
+git:
+  github_https: true         # GitHub の SSH URL を HTTPS に読み替える
 claude:
   auto_trust_workspace: true
 ```

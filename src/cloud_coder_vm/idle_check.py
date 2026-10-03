@@ -11,10 +11,11 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from cloud_coder_vm import install, paths, process_table, session_state, tmux_panes
+from cloud_coder_vm import install, paths, process_table, session_state, ssh_logins, tmux_panes
 from cloud_coder_vm.process_table import Process
 from cloud_coder_vm.session_state import IDLE, READY, SessionState
 from cloud_coder_vm.state_lock import state_lock, write_atomic
+from cloud_coder_vm.system_files import VmConfig
 from cloud_coder_vm.tmux_panes import Pane
 
 
@@ -54,6 +55,8 @@ def evaluate(
     states: list[SessionState],
     now: float,
     containers: list[str] | None = (),
+    logins: list[ssh_logins.Login] = (),
+    ssh_idle_seconds: float = 0,
 ) -> Evaluation:
     """``containers``: names of running Docker containers, None if Docker could not be
     queried; pass () when Docker is absent or ignored."""
@@ -97,6 +100,8 @@ def evaluate(
         elif rest:
             names = sorted({os.path.basename(p.argv0) or "?" for p in rest})
             ev.busy_reasons.append(f"{where}: shell has running processes {', '.join(names)}")
+
+    ev.busy_reasons += ssh_logins.busy_reasons(logins, procs, now, ssh_idle_seconds)
 
     # Containers run outside tmux (docker compose up -d), so tmux cannot see them.
     if containers is None:
@@ -153,30 +158,31 @@ def running_containers() -> list[str] | None:
     return result.stdout.split()
 
 
-def scan(user: str | None, ignore_docker: bool = False) -> Evaluation:
+def scan(config: VmConfig) -> Evaluation:
     return evaluate(
-        tmux_panes.list_panes(user),
+        tmux_panes.list_panes(config.user),
         process_table.snapshot(),
         session_state.load_all(paths.SESSION_STATE_DIR),
         time.time(),
-        () if ignore_docker else running_containers(),
+        () if config.ignore_docker else running_containers(),
+        () if config.ignore_ssh_sessions else ssh_logins.read_logins(),
+        config.ssh_session_idle_minutes * 60,
     )
 
 
 def run(
-    user: str,
-    grace_seconds: float,
-    ignore_docker: bool = False,
+    config: VmConfig,
     shutdown: Callable[[], None] | None = None,
     now: Callable[[], float] = time.time,
 ) -> Decision:
     with state_lock():
-        ev = scan(user, ignore_docker)
+        ev = scan(config)
         if install.install_in_progress():
             ev.idle = False
             ev.busy_reasons.append("cloud-coder agent install in progress")
         for key in ev.stale_keys:
             session_state.remove(paths.SESSION_STATE_DIR, key)
+        grace_seconds = config.grace_seconds
         decision = decide(ev.idle, read_idle_since(), now(), grace_seconds)
         if decision.action == "busy":
             cancel_grace()

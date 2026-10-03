@@ -28,7 +28,7 @@ def _load_config() -> system_files.VmConfig:
 def cmd_status(_args) -> int:
     config = _load_config()
     home = Path.home()
-    ev = idle_check.scan(config.user, config.ignore_docker)
+    ev = idle_check.scan(config)
     idle_since = idle_check.read_idle_since()
     decision = idle_check.decide(ev.idle, idle_since, time.time(), config.grace_seconds)
     tmux_sessions = subprocess.run(
@@ -98,7 +98,7 @@ def cmd_install_user(_args) -> int:
 
 def cmd_idle_check(_args) -> int:
     config = _load_config()
-    idle_check.run(config.user, config.grace_seconds, config.ignore_docker)
+    idle_check.run(config)
     return 0
 
 

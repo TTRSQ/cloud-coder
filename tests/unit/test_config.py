@@ -70,3 +70,17 @@ def test_tools_config(tmp_path):
         from_mapping({"vm": {"tools": ["emacs"]}})
     with pytest.raises(ConfigError):
         from_mapping({"vm": {"tools": "gh"}})
+
+
+def test_ssh_and_git_config():
+    cfg = Config()
+    assert cfg.ignore_ssh_sessions is False and cfg.ssh_session_idle_minutes == 30
+    assert cfg.github_https is True
+    cfg = from_mapping(
+        {
+            "vm": {"ignore_ssh_sessions": True, "ssh_session_idle_minutes": 5},
+            "git": {"github_https": False},
+        }
+    )
+    assert cfg.ignore_ssh_sessions and cfg.ssh_session_idle_minutes == 5
+    assert cfg.github_https is False

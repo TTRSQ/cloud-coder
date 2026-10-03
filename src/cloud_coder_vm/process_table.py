@@ -16,6 +16,7 @@ class Process:
     argv0: str
     exe: str = ""
     starttime: int = 0
+    tty: int = 0  # controlling terminal device number, 0 if none
 
 
 def is_shell(proc: Process) -> bool:
@@ -72,6 +73,7 @@ def read_process(pid: int, proc_root: Path = Path("/proc")) -> Process | None:
     # comm (field 2) may contain spaces and parentheses; fields resume after the last ')'.
     fields = stat[stat.rindex(")") + 2 :].split()
     ppid = int(fields[1])
+    tty = int(fields[4])
     starttime = int(fields[19])
     argv = [a.decode(errors="replace") for a in cmdline if a]
     if not argv:  # kernel thread
@@ -84,7 +86,7 @@ def read_process(pid: int, proc_root: Path = Path("/proc")) -> Process | None:
         exe = os.readlink(base / "exe")
     except OSError:
         exe = ""
-    return Process(pid=pid, ppid=ppid, argv0=argv0, exe=exe, starttime=starttime)
+    return Process(pid=pid, ppid=ppid, argv0=argv0, exe=exe, starttime=starttime, tty=tty)
 
 
 def snapshot(proc_root: Path = Path("/proc")) -> dict[int, Process]:

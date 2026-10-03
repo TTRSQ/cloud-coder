@@ -139,6 +139,34 @@ def install_system(pyz_source: Path, config: VmConfig) -> None:
     subprocess.run(["systemctl", "enable", "--now", paths.IDLE_TIMER], check=True)
 
 
+GITHUB_HTTPS = "url.https://github.com/.insteadOf"
+GITHUB_SSH_PREFIXES = ("git@github.com:", "ssh://git@github.com/")
+
+
+def git_url_rewrite_changes(current: list[str], enabled: bool) -> tuple[list[str], list[str]]:
+    """(values to add, values to remove) for url.https://github.com/.insteadOf.
+
+    Only cloud-coder's own two values are touched; any other value the user set stays.
+    """
+    if enabled:
+        return [p for p in GITHUB_SSH_PREFIXES if p not in current], []
+    return [], [p for p in GITHUB_SSH_PREFIXES if p in current]
+
+
+def configure_github_https(enabled: bool) -> None:
+    current = subprocess.run(
+        ["git", "config", "--global", "--get-all", GITHUB_HTTPS], capture_output=True, text=True
+    ).stdout.split()
+    add, remove = git_url_rewrite_changes(current, enabled)
+    for value in add:
+        subprocess.run(["git", "config", "--global", "--add", GITHUB_HTTPS, value], check=True)
+    for value in remove:
+        subprocess.run(
+            ["git", "config", "--global", "--fixed-value", "--unset", GITHUB_HTTPS, value],
+            check=True,
+        )
+
+
 def install_user(config: VmConfig, home: Path) -> None:
     (home / config.workspace).mkdir(parents=True, exist_ok=True)
 
@@ -151,3 +179,4 @@ def install_user(config: VmConfig, home: Path) -> None:
     if not paths.claude_bin(home).exists():
         subprocess.run(["bash", "-c", CLAUDE_INSTALLER], check=True)
     dev_tools.install(dev_tools.missing(config.tools, "user", home))
+    configure_github_https(config.github_https)
