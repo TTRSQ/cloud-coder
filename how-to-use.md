@@ -52,8 +52,9 @@ claude:
   dotfiles_repo: https://github.com/OWNER/dotClaude.git   # Claude Code の設定リポジトリ (任意)
 ```
 
-- 知らないセクションやキーを書くとエラーになります (`unknown config key ...`)。
-- `gcp.*` (machine type や disk) は VM を作るときにだけ使われます。作成後の変更は[マシンスペックを変える](#マシンスペックを変える)を参照してください。
+- 知らないセクションやキーを書くとエラーになります (`unknown config section ...` / `unknown config key ...`)。
+- `gcp.project` / `gcp.zone` / `gcp.instance` は操作対象の VM を決める値で、毎回使われます。VM を作った後に変えると別の VM として扱われ、次の `up` / `connect` で新しい VM が作られます (元の VM と disk は残り、課金も続きます)。
+- `gcp.machine_type` / `disk_size_gb` / `disk_type` / `image_family` / `image_project` は VM を作るときにだけ使われます。作成後の変更は[マシンスペックを変える](#マシンスペックを変える)を参照してください。
 - `vm.*` / `git.*` / `claude.*` は、次の `up` / `connect` で VM に送られて反映されます。
 
 ### 4. VM を作り GitHub を認証する
@@ -66,7 +67,7 @@ cloud-coder up    # VM を作成し、agent と開発ツール、Claude Code を
 
 `claude.dotfiles_repo` が private repository の場合、この時点では clone に失敗して警告が出ますが、先へ進みます (次の `up` / `connect` で再試行されます)。
 
-続いて VM に SSH で入り、gh を認証します (`ssh.iap: true` の場合は `--tunnel-through-iap` を付けます)。
+続いて VM に SSH で入り、gh を認証します (`ssh.iap: true` の場合は、以下の `gcloud compute ssh` / `scp` に `--tunnel-through-iap` を付けます)。
 
 ```bash
 gcloud compute ssh coder@cloud-coder --project <project> --zone asia-northeast1-b
@@ -115,7 +116,7 @@ cloud-coder connect REPO        # REPO の直近のセッションへ (VM が止
 cloud-coder connect             # 直近に使ったセッションへ
 ```
 
-- `REPO` は clone 済みのリポジトリ名 (`~/git/REPO` のディレクトリ名) です。URL を渡しても、そのリポジトリのセッションが既にあれば同じセッションに戻ります。
+- `REPO` は clone 済みのリポジトリ名 (`~/git/REPO` のディレクトリ名) です。URL を渡しても、そのリポジトリのセッションが既にあれば同じセッションに戻ります (同じ名前の別リポジトリの URL を渡すとエラーになります)。
 - 抜けるときは tmux を detach (`Ctrl-b d`) します。Claude Code は tmux の中で動き続けます。SSH が切れた場合も同じで、もう一度 `connect` すれば戻れます。
 - `connect` は足りないものだけを用意します。既存のリポジトリを pull / reset することはありません。
 
@@ -138,6 +139,7 @@ VM cloud-coder (asia-northeast1-b): running, t2d-standard-8
 | 行 | 意味 |
 | --- | --- |
 | `VM ...: running` | VM の状態 (`running` / `stopped` / `absent` など)。`running` 以外ならこの行だけ表示されます |
+| `agent: unavailable: ...` | VM は動いているが agent に SSH で問い合わせられなかった。以降の行は表示されません |
 | `auto-stop: blocked` | 自動停止を妨げているものがある。下の `-` 行が理由です ([理由の読み方](#止まらないときに確認する)) |
 | `auto-stop: idle, shutdown in 420s` | idle で、あと 420 秒で停止する |
 | `auto-stop: idle, grace period starts at the next check` | idle で、次の判定 (1 分以内) から grace period が始まる |
@@ -193,7 +195,7 @@ cloud-coder connect --session cc-REPO-2           # 名前を指定して戻る
 - `connect REPO` (`--session` 無し) は、そのリポジトリで直近に connect したセッションに戻ります。
 - `--new` にはリポジトリ (名前か URL) が必要です。
 - 置き場所は `vm.workspace` / `vm.worktrees` で変えられます ([README のセッション](README.md#セッション))。
-- セッションや worktree を削除するコマンドはありません。不要な worktree は VM 上で `git worktree remove` などで片付けてください。
+- セッションや worktree を削除するコマンドはありません。不要になったら VM 上で `tmux kill-session -t cc-REPO-N` で Claude Code ごと終了し、`git worktree remove` などで worktree を片付けてください。セッションの登録は残るので、そのセッションに `connect` すると (直近のセッションなら `connect REPO` でも) worktree と Claude Code が作り直されます。
 
 ## スマホなどから Remote Control で操作する
 
@@ -256,7 +258,7 @@ cloud-coder connect REPO     # または connect / connect --session cc-REPO-N
 - `/clear` などで会話が切り替わっていた場合も、最後の会話に戻ります。
 - 再開されるのは `connect` したセッションだけです。他のセッションはそれぞれ `connect` したときに再開されます。
 - tmux の中で動かしていた他のプロセス (dev server など) は再開されません。
-- 停止中に動いていた作業は、停止した時点で中断されています。必要なら再開した会話で続きを指示してください。
+- 自動停止は idle のときにしか起きませんが、`cloud-coder stop` した時点で動いていた作業は中断されています。必要なら再開した会話で続きを指示してください。
 - resume しただけで何もしなければ、10 分 + grace period で再び停止します。
 
 ## マシンスペックを変える
@@ -267,7 +269,7 @@ cloud-coder connect REPO --machine-type t2d-standard-16   # 停止中なら変�
 ```
 
 - 既存の VM の machine type を変えるのは `--machine-type` を指定したときだけです。config.yaml の `gcp.machine_type` を書き換えても、既存の VM には反映されません (新しく作る VM に使われます)。今後も同じ machine type で作りたいなら config も合わせて書き換えてください。
-- VM が動いている間に `--machine-type` を指定しても変更されず、`cloud-coder stop` の後に適用する旨のメッセージが出ます。
+- VM が動いている間に `--machine-type` を指定しても変更されず、`cloud-coder stop` の後に適用する旨のメッセージが出ます。指定は記録されないので、`stop` した後にもう一度 `--machine-type` を付けて `connect` / `up` してください。
 - `status` の 1 行目で現在の machine type を確認できます。
 - disk のサイズや種類は VM 作成時にだけ使われ、cloud-coder は既存 disk を変更しません。
 - どの machine type を選ぶかは [README のマシンタイプの目安](README.md#マシンタイプの目安) (既定の t2d-standard-8、安価な E2、重い用途の 16 vCPU など) を参照してください。小さい VM で複数 agent を動かすときは [README の運用](README.md#小さい-vm-で複数-agent-を動かすときの運用) も役立ちます。
@@ -282,12 +284,14 @@ cloud-coder connect REPO --machine-type t2d-standard-16   # 停止中なら変�
 | --- | --- |
 | `claude cc-X-1 (%0) is BUSY` | 作業中なら待つ。作業していないのに残っている場合は下の「Esc で中断した後」を参照 |
 | `claude cc-X-1 (%0) is READY` | 応答直後。約 1〜2 分で idle になります |
-| `cc-X-1 %0: claude pid N has not reported state yet` | ログイン画面や trust 画面で止まっている可能性。attach して確認する |
+| `cc-X-1 %0: claude pid N has not reported state yet` | ログイン画面や trust 画面で止まっている可能性。attach して確認する。ログイン済みでも消えない場合は、組織の managed settings で cloud-coder の hook が読まれていない可能性があります ([README の自動停止](README.md#自動停止)) |
 | `cc-X-1 %1: running node` | その pane でコマンドが動いている。不要なら止める |
 | `cc-X-1 %1: shell has running processes ...` | シェルのバックグラウンドジョブが残っている。`jobs` で確認して止める |
 | `docker: running containers ...` | `docker compose down` などで止めるか、`vm.ignore_docker: true` |
 | `ssh login coder pts/1 from ... (no input for N min)` | tmux の外の SSH ログインが残っている。`exit` するか、30 分入力が無ければ数えられなくなる |
-| `cloud-coder launch in progress` | `connect` の処理中。終われば消えます |
+| `ssh login coder pts/1: running ...` | tmux の外の SSH ログインでコマンドが動いている。入力が無くても数えられ続けるので、止めて `exit` する |
+| `cloud-coder launch in progress` / `cloud-coder install in progress` | `connect` / agent のインストールの処理中。終われば消えます |
+| `docker could not be queried` / `tmux server could not be queried` | 問い合わせが失敗したため安全側で busy。続くなら VM に入って `docker ps` / `tmux ls` を確認する |
 
 VM 上のログは、VM に SSH して `journalctl -u cloud-coder-idle-check.service` で見られます。
 
@@ -323,7 +327,10 @@ dotfiles リポジトリの clone 失敗は警告だけで先へ進み、次の 
 
 ### docker が permission denied になる
 
-`coder` は `docker` グループに追加されますが、グループは新しいログインから有効です。cloud-coder が作る tmux session では sudo なしで使えるようにしていますが、追加より前からある pane や、同じ session に後から開いた window では使えないことがあります。新しいセッションを作るか、VM に入り直してください ([README の開発ツール](README.md#開発ツール))。
+`coder` は `docker` グループに追加されますが、グループは新しいログインから有効で、tmux の pane は tmux server のグループを引き継ぎます。docker を入れた時点で既に tmux server が動いていた場合 (後から `vm.tools` に docker を足したときなど) に起きます。初回の `up` → `connect` では起きません。
+
+- cloud-coder が新しく作る tmux session と window では sudo なしで使えるようにしています (`connect REPO --new` など)。
+- 自分で開いた window (`Ctrl-b c`) や既存の pane では使えません。SSH で入り直しても既存の tmux server は変わらないので、`cloud-coder stop` してから `connect` し直すのが確実です ([README の開発ツール](README.md#開発ツール))。
 
 ### 課金の注意
 
