@@ -7,7 +7,7 @@
 - [タスクを投げて放置する](#タスクを投げて放置する)
 - [複数のセッションを並行して使う](#複数のセッションを並行して使う)
 - [スマホなどから Remote Control で操作する](#スマホなどから-remote-control-で操作する)
-- [LLM クライアントから MCP で操作する](#llm-クライアントから-mcp-で操作する)
+- [MCP server として使う](#mcp-server-として使う)
 - [自動停止を使いこなす](#自動停止を使いこなす)
 - [停止した VM で作業を再開する](#停止した-vm-で作業を再開する)
 - [マシンスペックを変える](#マシンスペックを変える)
@@ -206,20 +206,55 @@ cloud-coder が起動する Claude Code は、すべて Remote Control 付き (`
 - Remote Control から指示が来ている間も、応答を終えて入力待ちになれば idle です。応答の約 1〜2 分後から idle とみなされ、grace period (既定 10 分) の後に VM が止まります。考えながらゆっくり指示を出すなら `vm.idle_grace_minutes` を長めにしてください。
 - Remote Control に必要なプランは [README の必要なもの](README.md#必要なもの) を参照してください。
 
-## LLM クライアントから MCP で操作する
+## MCP server として使う
 
-`cloud-coder mcp` を MCP server として登録すると、Claude Code などのエージェントが VM の起動、タスクの投入、進み具合や結果の確認を tool で行えます。tool の一覧は [README の MCP server](README.md#mcp-server) にあります。
-
-```bash
-claude mcp add --scope user cloud-coder -- cloud-coder mcp
-claude mcp list   # cloud-coder が Connected になっていること
-```
+`cloud-coder mcp` は、VM の起動、タスクの投入、進み具合や結果の確認を tool として公開する stdio の MCP server です。tool の一覧は [README の MCP server](README.md#mcp-server) にあります。
 
 - 対象の VM は `config.yaml` (と `cloud-coder mcp` に付けたオプション) で決まります。`gcp.project` が無いと server は起動せず、エラーになります。
 - 典型的な流れは `up` (ready になるまで繰り返す) → `start_session` (`repo` と `prompt`) → `status` で `BUSY` が終わるのを待つ → `read_session` で結果を読む → 必要なら `send_prompt` で追加の指示、です。作業が終われば VM は自動停止するので、`stop` を呼ぶ必要は普段ありません。
 - `read_session` は tmux の画面の文字列をそのまま返します。Claude Code の応答のほか、権限の確認や trust 画面など入力を待っている表示もそのまま読めます。
 - `send_prompt` は Claude Code が `BUSY` の間はエラーになります (CLI の `-p` と同じ)。
 - VM 上で行う初回の Claude Code のログイン (`/login`) と `gh auth login` は MCP からはできません。[初回セットアップ](#初回セットアップ)を CLI で済ませてから使ってください。
+
+### MCP Inspector で tool を直接呼ぶ
+
+試すだけなら、どこにも登録せずに [MCP Inspector](https://github.com/modelcontextprotocol/inspector) の CLI モードで tool を 1 回ずつ呼べます。Inspector は呼び出しごとに `cloud-coder mcp` を起動し、結果を JSON で表示して終了します。Node.js (`npx`) が必要です。
+
+```bash
+npx @modelcontextprotocol/inspector --cli cloud-coder mcp --method tools/list
+npx @modelcontextprotocol/inspector --cli cloud-coder mcp --method tools/call --tool-name status
+```
+
+引数のある tool は `--tool-arg key=value` を引数ごとに付けます。
+
+```bash
+npx @modelcontextprotocol/inspector --cli cloud-coder mcp \
+  --method tools/call --tool-name read_session --tool-arg session=cc-REPO-1 --tool-arg lines=50
+```
+
+- `status` と `read_session` は VM を起動しません。`up` / `start_session` / `send_prompt` は VM を起動し、`stop` は止めます。
+- tool がエラーを返すと、Inspector は終了コード 0 以外で終わります (例: VM が止まっているときの `read_session`)。
+- `--tool-arg` の値は JSON として読める場合は変換されます (`lines=50` は数値になる)。文字列のまま渡したいときは `--tool-args-json '{"session":"cc-REPO-1"}'` を使います。
+- `cloud-coder mcp` にオプションを付けるときは、server のコマンドの後に `--` を置き、Inspector のオプションをその後ろに書きます (Inspector CLI では `--` より前が server のコマンドです。`--config` は Inspector 自身のオプションとも重なります)。
+
+```bash
+npx @modelcontextprotocol/inspector --cli cloud-coder mcp --config ~/.config/cloud-coder/config.yaml \
+  -- --method tools/call --tool-name status
+```
+
+オプションの詳細は [Inspector CLI の README](https://github.com/modelcontextprotocol/inspector/blob/main/clients/cli/README.md) と [MCP server configuration](https://github.com/modelcontextprotocol/inspector/blob/main/docs/mcp-server-configuration.md#the----separator) を参照してください。
+
+### Claude Code に登録する (任意)
+
+Claude Code などのエージェントに tool として使わせる場合は登録します。scope を指定しない `claude mcp add` は local scope で、実行したディレクトリ (プロジェクト) でだけ読み込まれます。使いたいディレクトリで実行してください。
+
+```bash
+claude mcp add cloud-coder -- cloud-coder mcp
+claude mcp list   # cloud-coder が Connected になっていること
+```
+
+- `--scope user` を付けると、そのマシンのすべてのプロジェクトで読み込まれます。scope の違いは [Claude Code のドキュメント](https://code.claude.com/docs/en/mcp#mcp-installation-scopes) を参照してください。
+- 登録をやめるときは `claude mcp remove cloud-coder` を、同じディレクトリで実行します。
 
 ## 自動停止を使いこなす
 

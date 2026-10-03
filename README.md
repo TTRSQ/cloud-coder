@@ -164,9 +164,14 @@ claude:
 `cloud-coder mcp` は、VM とセッションを [MCP](https://modelcontextprotocol.io/) の tool として公開する stdio server です。Claude Code など MCP に対応したクライアントから、LLM が VM の起動・タスクの投入・結果の確認を行えます。
 
 ```bash
-claude mcp add --scope user cloud-coder -- cloud-coder mcp
-# 設定ファイルや対象を指定する場合: claude mcp add --scope user cloud-coder -- cloud-coder mcp --config ~/.config/cloud-coder/config.yaml
+# 登録せずに tool を直接呼ぶ (MCP Inspector の CLI モード)
+npx @modelcontextprotocol/inspector --cli cloud-coder mcp --method tools/call --tool-name status
+# Claude Code に登録する (local scope: 実行したディレクトリでだけ有効。全プロジェクトで使うなら --scope user)
+claude mcp add cloud-coder -- cloud-coder mcp
+# 設定ファイルや対象を指定する場合: claude mcp add cloud-coder -- cloud-coder mcp --config ~/.config/cloud-coder/config.yaml
 ```
+
+使い方の詳細は [how-to-use の MCP server として使う](how-to-use.md#mcp-server-として使う) を参照してください。
 
 | tool | 引数 | 動作 |
 | --- | --- | --- |
