@@ -85,7 +85,7 @@ def test_new_session_uses_a_worktree(cc):
     first = last_json(cc("connect", REPO, "--no-attach").stdout)
     second = last_json(cc("connect", REPO, "--new", "--no-attach").stdout)
     assert second["session"] != first["session"]
-    assert ".worktrees/" in second["workdir"]
+    assert "/git/wt/" in second["workdir"]
 
 
 def test_status_blocks_auto_stop_while_claude_has_not_reported(cc):
@@ -96,7 +96,7 @@ def test_status_blocks_auto_stop_while_claude_has_not_reported(cc):
 
 
 def test_idle_vm_stops_itself_and_keeps_the_workspace(cc):
-    vm_shell("tmux kill-server || true; echo kept > ~/workspace/e2e-marker")
+    vm_shell("tmux kill-server || true; echo kept > ~/git/e2e-marker")
     deadline = time.monotonic() + 8 * 60
     while time.monotonic() < deadline:
         if json.loads(cc("status", "--json").stdout)["vm"] == "stopped":
@@ -105,5 +105,5 @@ def test_idle_vm_stops_itself_and_keeps_the_workspace(cc):
     else:
         pytest.fail("VM did not stop itself")
     cc("up")
-    assert vm_shell("cat ~/workspace/e2e-marker").strip() == "kept"
+    assert vm_shell("cat ~/git/e2e-marker").strip() == "kept"
     assert "cc-" in vm_shell("cat ~/.local/share/cloud-coder/sessions.json")

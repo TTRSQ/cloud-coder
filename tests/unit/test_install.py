@@ -1,60 +1,187 @@
+import json
+import os
+import subprocess
+
 from cloud_coder_vm import paths
-from cloud_coder_vm.install import HOOK_EVENTS, merge_hooks
+from cloud_coder_vm.install import (
+    HOOK_EVENTS,
+    cloud_coder_hooks,
+    install_dotfiles,
+    remove_legacy_user_hooks,
+    without_cloud_coder_hooks,
+)
+from cloud_coder_vm.system_files import VmConfig, render_managed_hooks
 
 OURS = paths.HOOK_COMMAND
 
 
-def our_handlers(settings):
-    found = []
-    for event, groups in settings["hooks"].items():
-        for group in groups:
-            for h in group["hooks"]:
-                if h["command"] == OURS:
-                    found.append((event, group.get("matcher")))
-    return found
+def our_handlers(hooks):
+    return [
+        (event, group.get("matcher"))
+        for event, groups in hooks.items()
+        for group in groups
+        for h in group["hooks"]
+        if h["command"] == OURS
+    ]
 
 
-def test_merge_into_empty():
-    merged = merge_hooks({})
-    assert sorted(our_handlers(merged)) == sorted(HOOK_EVENTS)
-    note = merged["hooks"]["Notification"][0]
-    assert note["matcher"] == "idle_prompt"
+def test_managed_settings_hold_only_our_hooks():
+    data = json.loads(render_managed_hooks(cloud_coder_hooks()))
+    assert list(data) == ["hooks"]  # nothing that could restrict the user's own settings
+    assert sorted(our_handlers(data["hooks"])) == sorted(HOOK_EVENTS)
+    assert data["hooks"]["Notification"][0]["matcher"] == "idle_prompt"
 
 
-def test_merge_is_idempotent_and_keeps_user_hooks():
-    user = {
+def test_paths_are_the_documented_linux_managed_settings_dir():
+    assert str(paths.MANAGED_SETTINGS_FILE.parent) == "/etc/claude-code/managed-settings.d"
+    assert paths.MANAGED_SETTINGS_FILE.suffix == ".json"
+
+
+LEGACY = {
+    "model": "opus",
+    "hooks": {
+        "Stop": [
+            {"hooks": [{"type": "command", "command": OURS}, {"type": "command", "command": "x"}]}
+        ],
+        "SessionEnd": [{"hooks": [{"type": "command", "command": OURS, "timeout": 10}]}],
+        "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "guard"}]}],
+    },
+}
+
+
+def test_without_cloud_coder_hooks_keeps_everything_else():
+    cleaned = without_cloud_coder_hooks(LEGACY)
+    assert cleaned == {
         "model": "opus",
         "hooks": {
-            "Stop": [{"hooks": [{"type": "command", "command": "say done"}]}],
-            "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "x"}]}],
+            "Stop": [{"hooks": [{"type": "command", "command": "x"}]}],
+            "PreToolUse": LEGACY["hooks"]["PreToolUse"],
         },
     }
-    once = merge_hooks(user)
-    twice = merge_hooks(once)
-    assert once == twice
-    assert once["model"] == "opus"
-    assert once["hooks"]["PreToolUse"] == user["hooks"]["PreToolUse"]
-    assert {"type": "command", "command": "say done"} in once["hooks"]["Stop"][0]["hooks"]
-    assert len(our_handlers(once)) == len(HOOK_EVENTS)
-    assert user["hooks"]["Stop"] == [{"hooks": [{"type": "command", "command": "say done"}]}]
-
-
-def test_merge_separates_our_handler_from_shared_group():
-    shared = {
-        "hooks": {
-            "Stop": [
-                {
-                    "hooks": [
-                        {"type": "command", "command": OURS},
-                        {"type": "command", "command": "other"},
-                    ]
-                }
-            ]
-        }
+    assert without_cloud_coder_hooks(cleaned) == cleaned
+    only_ours = {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": OURS}]}]}}
+    assert without_cloud_coder_hooks(only_ours) == {}
+    # the user's own empty entries are not ours to tidy up
+    user_empty = {
+        "hooks": {"Stop": [{"hooks": [{"type": "command", "command": OURS}]}], "PreToolUse": []}
     }
-    merged = merge_hooks(shared)
-    assert len(our_handlers(merged)) == len(HOOK_EVENTS)
-    assert {"type": "command", "command": "other"} in merged["hooks"]["Stop"][0]["hooks"]
+    assert without_cloud_coder_hooks(user_empty) == {"hooks": {"PreToolUse": []}}
+    assert without_cloud_coder_hooks({"hooks": {}}) == {"hooks": {}}
+
+
+def test_remove_legacy_user_hooks_regular_file(tmp_path):
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps(LEGACY))
+    os.chmod(settings, 0o600)
+    assert remove_legacy_user_hooks(settings) == "removed"
+    assert OURS not in settings.read_text()
+    assert json.loads(settings.read_text())["model"] == "opus"
+    assert os.stat(settings).st_mode & 0o777 == 0o600
+    assert remove_legacy_user_hooks(settings) == "clean"
+    assert remove_legacy_user_hooks(tmp_path / "missing.json") == "clean"
+
+
+def test_remove_legacy_user_hooks_never_writes_through_a_symlink(tmp_path):
+    target = tmp_path / "dotfiles" / "settings.json"
+    target.parent.mkdir()
+    target.write_text(json.dumps(LEGACY))
+    link = tmp_path / "settings.json"
+    link.symlink_to(target)
+    assert remove_legacy_user_hooks(link) == "linked"
+    assert json.loads(target.read_text()) == LEGACY
+    assert link.is_symlink()
+
+
+def vm_config(**kw):
+    base = dict(
+        user="coder",
+        grace_seconds=600,
+        workspace="git",
+        worktrees="git/wt",
+        auto_trust_workspace=True,
+        swap_gb=0,
+        tools=[],
+        ignore_docker=False,
+        ignore_ssh_sessions=False,
+        ssh_session_idle_minutes=30,
+        github_https=True,
+        dotfiles_repo=None,
+        dotfiles_branch=None,
+        dotfiles_install="./install.sh",
+    )
+    base.update(kw)
+    return VmConfig(**base)
+
+
+def make_dotfiles_repo(tmp_path):
+    src = tmp_path / "src" / "dotClaude"
+    src.mkdir(parents=True)
+    (src / "install.sh").write_text('#!/bin/bash\necho run >> "$HOME/runs"\n')
+    os.chmod(src / "install.sh", 0o755)
+    for cmd in (
+        ["init", "-q", "-b", "main"],
+        ["add", "."],
+        ["-c", "user.email=a@b", "-c", "user.name=a", "commit", "-qm", "init"],
+    ):
+        subprocess.run(["git", *cmd], cwd=src, check=True)
+    return src
+
+
+def test_install_dotfiles_clones_once_and_reruns_install(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / "git").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    src = make_dotfiles_repo(tmp_path)
+    config = vm_config(dotfiles_repo=str(src))
+    assert install_dotfiles(config, home) == "installed"
+    assert (home / paths.DOTFILES_STAMP).exists()
+    clone = home / "git" / "dotClaude"
+    (clone / "local-edit").write_text("keep")
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=a@b",
+            "-c",
+            "user.name=a",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "upstream",
+        ],
+        cwd=src,
+        check=True,
+    )
+    assert install_dotfiles(config, home) == "installed"
+    assert (clone / "local-edit").read_text() == "keep"  # never pulled or reset
+    upstream = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=src, capture_output=True, text=True
+    ).stdout
+    local = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=clone, capture_output=True, text=True
+    ).stdout
+    assert local != upstream
+    assert (home / "runs").read_text() == "run\nrun\n"
+
+
+def test_failed_install_command_leaves_no_stamp_so_it_is_retried(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / "git").mkdir(parents=True)
+    src = make_dotfiles_repo(tmp_path)
+    failing = vm_config(dotfiles_repo=str(src), dotfiles_install="exit 3")
+    assert install_dotfiles(failing, home) == "install failed"
+    assert not (home / paths.DOTFILES_STAMP).exists()
+    monkeypatch.setenv("HOME", str(home))
+    assert install_dotfiles(vm_config(dotfiles_repo=str(src)), home) == "installed"
+    assert (home / paths.DOTFILES_STAMP).exists()
+
+
+def test_install_dotfiles_clone_failure_is_reported_not_fatal(tmp_path):
+    config = vm_config(dotfiles_repo=str(tmp_path / "nope.git"))
+    (tmp_path / "git").mkdir()
+    assert install_dotfiles(config, tmp_path) == "clone failed"
+    assert install_dotfiles(vm_config(), tmp_path) == "not configured"
 
 
 def test_git_url_rewrite_is_idempotent_and_keeps_other_values():

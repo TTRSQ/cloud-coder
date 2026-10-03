@@ -2,10 +2,11 @@ from pathlib import Path
 
 import pytest
 
-from cloud_coder_vm.launch import LaunchError, claude_command, resolve_target
+from cloud_coder_vm.launch import LaunchError, Layout, claude_command, resolve_target
 from cloud_coder_vm.session_registry import LogicalSession
 
-WS = Path("/home/coder/workspace")
+WS = Path("/home/coder/git")
+LAYOUT = Layout(WS, WS / "wt", Path("/home/coder/workspace"))
 
 
 def entry(name, repo, t, url=None):
@@ -15,7 +16,7 @@ def entry(name, repo, t, url=None):
 def resolve(sessions, **kw):
     args = {"repo_url": None, "repo": None, "session_name": None, "new": False, "now": 100.0}
     args.update(kw)
-    return resolve_target(sessions, WS, **args)
+    return resolve_target(sessions, LAYOUT, **args)
 
 
 def test_first_connect_creates_session_in_main_checkout():
@@ -36,7 +37,7 @@ def test_new_creates_worktree_session_and_never_reuses():
     s = {"cc-app-1": entry("cc-app-1", "app", 1, url="u")}
     t = resolve(s, repo="app", new=True)
     assert t.created and t.session.name == "cc-app-2"
-    assert t.session.workdir == str(WS / "app.worktrees" / "2")
+    assert t.session.workdir == "/home/coder/git/wt/app-2"
     assert t.session.repo_url == "u"
     assert t.session.claude_session_id != s["cc-app-1"].claude_session_id
 
@@ -104,3 +105,140 @@ def test_same_repo_name_from_another_owner_is_refused():
     assert not resolve(s, repo_url="https://github.com/me/app").created  # same repo
     with pytest.raises(LaunchError, match="cloned from"):
         resolve(s, repo_url="git@github.com:someone-else/app.git")
+
+
+def git(*args, cwd):
+    import subprocess
+
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+def make_clone(path, origin):
+    path.mkdir(parents=True)
+    git("init", "-q", "-b", "main", cwd=path)
+    git(
+        "-c",
+        "user.email=a@b",
+        "-c",
+        "user.name=a",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "i",
+        cwd=path,
+    )
+    git("remote", "add", "origin", origin, cwd=path)
+
+
+def tmp_layout(tmp_path):
+    return Layout(tmp_path / "git", tmp_path / "git" / "wt", tmp_path / "workspace")
+
+
+def test_trust_roots_have_no_duplicates(tmp_path):
+    layout = tmp_layout(tmp_path)
+    assert layout.trust_roots() == [tmp_path / "git", tmp_path / "git/wt", tmp_path / "workspace"]
+    same = Layout(tmp_path / "workspace", tmp_path / "wt", tmp_path / "workspace")
+    assert same.trust_roots() == [tmp_path / "workspace", tmp_path / "wt"]
+
+
+def test_legacy_clone_is_reused_and_new_worktrees_come_from_it(tmp_path):
+    from cloud_coder_vm.launch import ensure_repo, main_checkout
+
+    layout = tmp_layout(tmp_path)
+    legacy = tmp_path / "workspace" / "app"
+    make_clone(legacy, "git@github.com:me/app.git")
+    assert main_checkout(layout, "app") == legacy
+    s1 = LogicalSession("cc-app-1", "app", "u", str(legacy), "id", 0.0, 0.0)
+    assert ensure_repo(s1, layout) == "existing"
+    wt = tmp_path / "git" / "wt" / "app-2"
+    s2 = LogicalSession("cc-app-2", "app", "git@github.com:me/app.git", str(wt), "id2", 0.0, 0.0)
+    assert ensure_repo(s2, layout, created=True) == "worktree-added"
+    assert not (tmp_path / "git" / "app").exists()  # no second clone
+
+
+def test_new_session_does_not_adopt_a_directory_it_did_not_create(tmp_path):
+    from cloud_coder_vm.launch import ensure_repo
+
+    layout = tmp_layout(tmp_path)
+    taken = tmp_path / "git" / "wt" / "app-2"
+    taken.mkdir(parents=True)
+    s2 = LogicalSession("cc-app-2", "app", None, str(taken), "id2", 0.0, 0.0)
+    with pytest.raises(LaunchError, match="not created by cloud-coder"):
+        ensure_repo(s2, layout, created=True)
+
+
+def test_existing_clone_is_adopted_only_for_the_same_repository(tmp_path):
+    from cloud_coder_vm.launch import ensure_repo
+
+    layout = tmp_layout(tmp_path)
+    clone = tmp_path / "git" / "app"
+    make_clone(clone, "git@github.com:me/app.git")
+
+    def session(url):
+        return LogicalSession("cc-app-1", "app", url, str(clone), "id", 0.0, 0.0)
+
+    assert ensure_repo(session("https://github.com/me/app"), layout, created=True) == "existing"
+    assert ensure_repo(session(None), layout, created=True) == "existing"  # named by the user
+    with pytest.raises(LaunchError, match="not a clone of"):
+        ensure_repo(session("git@github.com:other/app.git"), layout, created=True)
+
+
+def test_legacy_clone_stays_the_main_checkout_when_a_current_one_appears(tmp_path):
+    from cloud_coder_vm.launch import main_checkout
+
+    layout = tmp_layout(tmp_path)
+    make_clone(tmp_path / "workspace" / "app", "git@github.com:me/app.git")
+    make_clone(tmp_path / "git" / "app", "git@github.com:other/app.git")  # cloned by hand
+    assert main_checkout(layout, "app") == tmp_path / "workspace" / "app"
+    assert main_checkout(layout, "lib") == tmp_path / "git" / "lib"
+
+
+def test_new_worktree_is_refused_from_a_clone_of_another_repository(tmp_path):
+    from cloud_coder_vm.launch import ensure_repo
+
+    layout = tmp_layout(tmp_path)
+    make_clone(tmp_path / "git" / "app", "git@github.com:other/app.git")
+    wt = tmp_path / "git" / "wt" / "app-2"
+    s2 = LogicalSession("cc-app-2", "app", "git@github.com:me/app.git", str(wt), "id", 0.0, 0.0)
+    with pytest.raises(LaunchError, match="not a clone of"):
+        ensure_repo(s2, layout, created=True)
+    assert not wt.exists()
+
+
+def test_trust_only_for_clones_verified_against_the_session_url(tmp_path):
+    import json
+
+    from cloud_coder_vm.launch import trust_session
+
+    home = tmp_path
+    layout = tmp_layout(tmp_path)
+    clone = tmp_path / "git" / "app"
+    make_clone(clone, "git@github.com:me/app.git")
+    claude_json = home / ".claude.json"
+
+    def trusted():
+        if not claude_json.exists():
+            return set()
+        return set(json.loads(claude_json.read_text()).get("projects", {}))
+
+    by_name = LogicalSession("cc-app-1", "app", None, str(clone), "id", 0.0, 0.0)
+    assert trust_session(by_name, layout, home).startswith("skipped")  # every connect, not once
+    assert trust_session(by_name, layout, home).startswith("skipped")
+    other = LogicalSession("cc-app-1", "app", "git@github.com:x/app.git", str(clone), "i", 0, 0)
+    assert trust_session(other, layout, home).startswith("skipped")
+    assert trusted() == set()
+    same = LogicalSession("cc-app-1", "app", "https://github.com/me/app", str(clone), "i", 0, 0)
+    assert trust_session(same, layout, home) is True
+    assert trusted() == {str(clone.resolve())}
+
+
+def test_existing_session_does_not_add_a_worktree_from_a_foreign_clone(tmp_path):
+    from cloud_coder_vm.launch import ensure_repo
+
+    layout = tmp_layout(tmp_path)
+    make_clone(tmp_path / "workspace" / "app", "git@github.com:other/app.git")  # appeared later
+    wt = tmp_path / "git" / "wt" / "app-2"
+    s2 = LogicalSession("cc-app-2", "app", "git@github.com:me/app.git", str(wt), "id", 0.0, 0.0)
+    with pytest.raises(LaunchError, match="not a clone of"):
+        ensure_repo(s2, layout, created=False)

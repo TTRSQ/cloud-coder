@@ -28,7 +28,8 @@ class Config:
     ssh_user: str = "coder"
     iap: bool = False
     # vm
-    workspace: str = "workspace"
+    workspace: str = "git"  # clones: ~/<workspace>/<repo>
+    worktrees: str = "git/wt"  # --new worktrees: ~/<worktrees>/<repo>-<n>
     idle_grace_minutes: int = 10
     swap_gb: int = 0  # 0 = do not create a swapfile
     tools: tuple[str, ...] = DEFAULT_TOOLS
@@ -39,6 +40,9 @@ class Config:
     github_https: bool = True  # use https://github.com/ for git@github.com: URLs on the VM
     # claude
     auto_trust_workspace: bool = True
+    dotfiles_repo: str | None = None  # e.g. https://github.com/OWNER/dotClaude.git
+    dotfiles_branch: str | None = None  # None = the repository's default branch
+    dotfiles_install: str = "./install.sh"  # run in the clone after cloning
 
 
 # YAML section -> {yaml key: Config field}
@@ -56,6 +60,7 @@ SECTIONS: dict[str, dict[str, str]] = {
     "ssh": {"user": "ssh_user", "iap": "iap"},
     "vm": {
         "workspace": "workspace",
+        "worktrees": "worktrees",
         "idle_grace_minutes": "idle_grace_minutes",
         "swap_gb": "swap_gb",
         "tools": "tools",
@@ -64,7 +69,12 @@ SECTIONS: dict[str, dict[str, str]] = {
         "ssh_session_idle_minutes": "ssh_session_idle_minutes",
     },
     "git": {"github_https": "github_https"},
-    "claude": {"auto_trust_workspace": "auto_trust_workspace"},
+    "claude": {
+        "auto_trust_workspace": "auto_trust_workspace",
+        "dotfiles_repo": "dotfiles_repo",
+        "dotfiles_branch": "dotfiles_branch",
+        "dotfiles_install": "dotfiles_install",
+    },
 }
 
 

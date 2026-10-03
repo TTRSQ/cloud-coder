@@ -14,7 +14,8 @@ from cloud_coder_vm import paths
 class VmConfig:
     user: str
     grace_seconds: int
-    workspace: str  # relative to the user's HOME
+    workspace: str  # clones, relative to the user's HOME
+    worktrees: str  # --new worktrees, relative to the user's HOME
     auto_trust_workspace: bool
     swap_gb: int  # 0 = leave swap alone
     tools: list[str]  # names in dev_tools.TOOLS
@@ -22,6 +23,9 @@ class VmConfig:
     ignore_ssh_sessions: bool  # do not let interactive SSH logins block auto-stop
     ssh_session_idle_minutes: int  # an SSH shell without input for this long stops counting
     github_https: bool  # rewrite GitHub SSH URLs to HTTPS in the user's git config
+    dotfiles_repo: str | None  # Claude Code config repository cloned into the workspace
+    dotfiles_branch: str | None
+    dotfiles_install: str  # shell command run in the clone
 
 
 def render_config(config: VmConfig) -> str:
@@ -30,6 +34,10 @@ def render_config(config: VmConfig) -> str:
 
 def parse_config(text: str) -> VmConfig:
     return VmConfig(**json.loads(text))
+
+
+def render_managed_hooks(hooks: dict) -> str:
+    return json.dumps({"hooks": hooks}, indent=2, sort_keys=True) + "\n"
 
 
 def render_tmpfiles(user: str) -> str:

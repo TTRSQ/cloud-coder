@@ -40,17 +40,37 @@ class Target:
     created: bool
 
 
-def main_checkout(workspace: Path, repo: str) -> Path:
-    return workspace / repo
+@dataclass(frozen=True)
+class Layout:
+    """Where cloud-coder puts repositories on the VM."""
+
+    workspace: Path  # clones: <workspace>/<repo>
+    worktrees: Path  # --new sessions: <worktrees>/<repo>-<n>
+    legacy_workspace: Path  # the older default; clones there keep being used
+
+    @classmethod
+    def of(cls, config: VmConfig, home: Path) -> "Layout":
+        return cls(home / config.workspace, home / config.worktrees, home / paths.LEGACY_WORKSPACE)
+
+    def trust_roots(self) -> list[Path]:
+        return list(dict.fromkeys([self.workspace, self.worktrees, self.legacy_workspace]))
 
 
-def worktree_dir(workspace: Path, repo: str, index: int) -> Path:
-    return workspace / f"{repo}.worktrees" / str(index)
+def main_checkout(layout: Layout, repo: str) -> Path:
+    """The one clone of ``repo`` that sessions and worktrees use. A clone under the legacy
+    workspace wins, since cloud-coder no longer creates clones there. Whatever this
+    returns is checked against the session's URL before it is built on or trusted."""
+    legacy = layout.legacy_workspace / repo
+    return legacy if legacy.is_dir() else layout.workspace / repo
+
+
+def worktree_dir(layout: Layout, repo: str, index: int) -> Path:
+    return layout.worktrees / f"{repo}-{index}"
 
 
 def resolve_target(
     sessions: dict[str, LogicalSession],
-    workspace: Path,
+    layout: Layout,
     *,
     repo_url: str | None,
     repo: str | None,
@@ -88,7 +108,7 @@ def resolve_target(
         if last is not None:
             return Target(last, created=False)
     index = session_registry.next_index(sessions, repo)
-    workdir = main_checkout(workspace, repo) if index == 1 else worktree_dir(workspace, repo, index)
+    workdir = main_checkout(layout, repo) if index == 1 else worktree_dir(layout, repo, index)
     known_url = repo_url or next((s.repo_url for s in sessions.values() if s.repo == repo), None)
     session = LogicalSession(
         name=session_registry.session_name(repo, index),
@@ -113,10 +133,33 @@ def _check(args: list[str], cwd: Path | None = None) -> str:
     return result.stdout
 
 
-def ensure_repo(session: LogicalSession, workspace: Path) -> str:
-    """Clone / add a worktree only when the directory is missing. Returns what was done."""
-    main = main_checkout(workspace, session.repo)
+def is_clone_of(clone: Path, repo_url: str | None) -> bool:
+    """Whether ``clone`` is a clone of ``repo_url`` (whatever the transport)."""
+    if repo_url is None:
+        return False
+    origin = _run(["git", "remote", "get-url", "origin"], cwd=clone).stdout.strip()
+    return bool(origin) and (
+        session_registry.canonical_url(origin) == session_registry.canonical_url(repo_url)
+    )
+
+
+def ensure_repo(session: LogicalSession, layout: Layout, created: bool = False) -> str:
+    """Clone / add a worktree only when the directory is missing. Returns what was done.
+
+    A clone cloud-coder builds on without making it now (an existing clone for a new
+    session, or the source of a new worktree) must be of the session's repository;
+    with only a repo name (``connect <name>``) the user vouches for the directory."""
+    main = main_checkout(layout, session.repo)
     workdir = Path(session.workdir)
+    if created and workdir != main and workdir.exists():
+        raise LaunchError(f"{workdir} already exists and was not created by cloud-coder")
+    builds_on_main = main.exists() and (created or not workdir.exists())
+    if builds_on_main and session.repo_url and not is_clone_of(main, session.repo_url):
+        raise LaunchError(
+            f"{main} is not a clone of {session.repo_url}; move it away or connect with its URL"
+        )
+    if workdir.exists():
+        return "existing"
     actions = []
     if not main.exists():
         if not session.repo_url:
@@ -315,6 +358,24 @@ def ensure_claude(
     return result
 
 
+def trust_session(session: LogicalSession, layout: Layout, home: Path) -> bool | str:
+    """Pre-accept Claude Code's trust dialog for the session's checkout, but only when it
+    is verified to be a clone of the session's URL. A session known only by repo name,
+    or a clone whose origin changed, is left to Claude Code's own trust dialog.
+    Returns whether ~/.claude.json was written, or why trust was skipped."""
+    main = main_checkout(layout, session.repo)
+    if not is_clone_of(main, session.repo_url):
+        return "skipped: not verified as a clone of the session's URL"
+    try:
+        return workspace_trust.trust(
+            paths.claude_global_config_path(home),
+            sorted({main, Path(session.workdir)}),
+            layout.trust_roots(),
+        )
+    except ValueError as e:
+        raise LaunchError(str(e)) from e
+
+
 def launch(
     config: VmConfig,
     home: Path,
@@ -330,7 +391,7 @@ def launch(
         raise LaunchError("the prompt is empty")
     if prompt is not None and not start_claude:
         raise LaunchError("a prompt needs Claude Code; drop --no-claude")
-    workspace = home / config.workspace
+    layout = Layout.of(config, home)
     registry_file = paths.registry_path(home)
     # The marker keeps the idle check from stopping the VM while we clone / start
     # Claude Code; the state lock is held only for the short registry updates so
@@ -341,7 +402,7 @@ def launch(
             sessions = session_registry.load(registry_file)
             target = resolve_target(
                 sessions,
-                workspace,
+                layout,
                 repo_url=repo_url,
                 repo=repo,
                 session_name=session_name,
@@ -359,15 +420,9 @@ def launch(
             "created": target.created,
         }
         try:
-            result["repo"] = ensure_repo(session, workspace)
+            result["repo"] = ensure_repo(session, layout, target.created)
             if config.auto_trust_workspace:
-                trusted = {main_checkout(workspace, session.repo), Path(session.workdir)}
-                try:
-                    result["trust_written"] = workspace_trust.trust(
-                        paths.claude_global_config_path(home), sorted(trusted), workspace
-                    )
-                except ValueError as e:
-                    raise LaunchError(str(e)) from e
+                result["trust_written"] = trust_session(session, layout, home)
         except LaunchError:
             if target.created:
                 with state_lock():

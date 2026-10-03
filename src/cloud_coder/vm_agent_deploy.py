@@ -45,6 +45,7 @@ def vm_config(cfg: Config) -> VmConfig:
         user=cfg.ssh_user,
         grace_seconds=cfg.idle_grace_minutes * 60,
         workspace=cfg.workspace,
+        worktrees=cfg.worktrees,
         auto_trust_workspace=cfg.auto_trust_workspace,
         swap_gb=cfg.swap_gb,
         tools=list(cfg.tools),
@@ -52,6 +53,9 @@ def vm_config(cfg: Config) -> VmConfig:
         ignore_ssh_sessions=cfg.ignore_ssh_sessions,
         ssh_session_idle_minutes=cfg.ssh_session_idle_minutes,
         github_https=cfg.github_https,
+        dotfiles_repo=cfg.dotfiles_repo,
+        dotfiles_branch=cfg.dotfiles_branch,
+        dotfiles_install=cfg.dotfiles_install,
     )
 
 
@@ -59,15 +63,19 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-CHECK_COMMAND = (
-    f"sha256sum {paths.AGENT_PYZ} {paths.CONFIG_PATH} 2>/dev/null; "
-    f"test -x ~/.local/bin/claude && echo claude-installed; "
-    f"test -f ~/.claude/settings.json && grep -q {shlex.quote(str(paths.AGENT_PYZ))} "
-    f"~/.claude/settings.json && echo hooks-installed; true"
-)
+def check_command(cfg: Config) -> str:
+    """Prints the installed hashes plus a marker for each thing that must be present."""
+    parts = [
+        f"sha256sum {paths.AGENT_PYZ} {paths.CONFIG_PATH} 2>/dev/null",
+        "test -x ~/.local/bin/claude && echo claude-installed",
+        f"test -f {paths.MANAGED_SETTINGS_FILE} && echo hooks-installed",
+    ]
+    if cfg.dotfiles_repo:
+        parts.append(f"test -f ~/{paths.DOTFILES_STAMP} && echo dotfiles-installed")
+    return "; ".join(parts) + "; true"
 
 
-def is_current(check_output: str, pyz_sha: str, config_sha: str) -> bool:
+def is_current(check_output: str, pyz_sha: str, config_sha: str, dotfiles: bool = False) -> bool:
     hashes = {}
     for line in check_output.splitlines():
         parts = line.split()
@@ -78,6 +86,7 @@ def is_current(check_output: str, pyz_sha: str, config_sha: str) -> bool:
         and hashes.get(str(paths.CONFIG_PATH)) == config_sha
         and "claude-installed" in check_output
         and "hooks-installed" in check_output
+        and (not dotfiles or "dotfiles-installed" in check_output)
     )
 
 
@@ -87,8 +96,9 @@ def ensure_installed(cfg: Config) -> bool:
     config_text = render_config(vm_config(cfg))
     pyz_sha, config_sha = sha256(pyz), sha256(config_text.encode())
 
-    check = ssh.run(cfg, CHECK_COMMAND)
-    if check.returncode == 0 and is_current(check.stdout, pyz_sha, config_sha):
+    check = ssh.run(cfg, check_command(cfg))
+    current = is_current(check.stdout, pyz_sha, config_sha, dotfiles=bool(cfg.dotfiles_repo))
+    if check.returncode == 0 and current:
         return False
 
     print("cloud-coder: installing the VM agent", file=sys.stderr, flush=True)
@@ -98,13 +108,14 @@ def ensure_installed(cfg: Config) -> bool:
         local = Path(tmp) / "cloud-coder-vm.pyz"
         local.write_bytes(pyz)
         ssh.scp(cfg, str(local), remote)
-    command = " && ".join(
+    install = " && ".join(
         [
             shlex.join(["sudo", "python3", remote, "install-system", "--config", config_text]),
             shlex.join(["python3", str(paths.AGENT_PYZ), "install-user"]),
-            shlex.join(["rm", "-f", remote]),
         ]
     )
+    # remove the uploaded copy whether or not the install succeeded
+    command = f"{install}; status=$?; rm -f {shlex.quote(remote)}; exit $status"
     result = ssh.run(cfg, command, capture=False)
     if result.returncode != 0:
         raise RuntimeError("installing the VM agent failed (see output above)")

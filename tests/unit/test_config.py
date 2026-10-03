@@ -84,3 +84,20 @@ def test_ssh_and_git_config():
     )
     assert cfg.ignore_ssh_sessions and cfg.ssh_session_idle_minutes == 5
     assert cfg.github_https is False
+
+
+def test_layout_and_dotfiles_config():
+    cfg = Config()
+    assert (cfg.workspace, cfg.worktrees) == ("git", "git/wt")
+    assert cfg.dotfiles_repo is None and cfg.dotfiles_install == "./install.sh"
+    cfg = from_mapping(
+        {
+            "vm": {"workspace": "src", "worktrees": "src/wt"},
+            "claude": {
+                "dotfiles_repo": "https://github.com/TTRSQ/dotClaude.git",
+                "dotfiles_branch": "main",
+                "dotfiles_install": "./install.sh --dry-run",
+            },
+        }
+    )
+    assert cfg.worktrees == "src/wt" and cfg.dotfiles_branch == "main"
