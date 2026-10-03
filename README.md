@@ -189,6 +189,10 @@ claude mcp add cloud-coder -- cloud-coder mcp
 - MCP server は ssh-agent を VM に転送しません (`connect` は転送します)。private repository は HTTPS + `gh auth setup-git` で clone してください ([GitHub の認証](#github-の認証))。
 - server は transport に依存しない作りです (`cloud_coder.mcp_server.build_server`)。現在提供しているのは stdio だけです。
 
+### Claude Code のスキル
+
+このリポジトリには、cloud-coder を Claude Code から操作する project skill [`.claude/skills/cloud-coder/SKILL.md`](.claude/skills/cloud-coder/SKILL.md) が入っています。このリポジトリで起動した Claude Code で `/cloud-coder <依頼>` と打つと、Sonnet が `uv run cloud-coder` (このチェックアウトの CLI) と MCP Inspector CLI (`read_session`) を使って、状態確認・起動・タスクの投入・画面の読み取り・停止を行います。使い方は [how-to-use の Claude Code のスキルで操作する](how-to-use.md#claude-code-のスキルで操作する) を参照してください。
+
 ## 自動停止
 
 VM 上の systemd timer が 1 分ごとに VM 全体を評価します。次をすべて満たすと grace period (既定 10 分) が始まり、grace period 終了時の評価でもまだ満たしていれば `shutdown -h now` します。

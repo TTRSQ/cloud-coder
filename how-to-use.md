@@ -8,6 +8,7 @@
 - [複数のセッションを並行して使う](#複数のセッションを並行して使う)
 - [スマホなどから Remote Control で操作する](#スマホなどから-remote-control-で操作する)
 - [MCP server として使う](#mcp-server-として使う)
+- [Claude Code のスキルで操作する](#claude-code-のスキルで操作する)
 - [自動停止を使いこなす](#自動停止を使いこなす)
 - [停止した VM で作業を再開する](#停止した-vm-で作業を再開する)
 - [マシンスペックを変える](#マシンスペックを変える)
@@ -254,6 +255,27 @@ claude mcp list   # cloud-coder が Connected になっていること
 
 - `--scope user` を付けると、そのマシンのすべてのプロジェクトで読み込まれます。scope の違いは [Claude Code のドキュメント](https://code.claude.com/docs/en/mcp#mcp-installation-scopes) を参照してください。
 - 登録をやめるときは `claude mcp remove cloud-coder` を、同じディレクトリで実行します。
+
+## Claude Code のスキルで操作する
+
+このリポジトリの [`.claude/skills/cloud-coder/SKILL.md`](.claude/skills/cloud-coder/SKILL.md) は Claude Code の [project skill](https://code.claude.com/docs/en/skills#where-skills-live) です。インストールは不要で、このリポジトリ (と、その git worktree) で起動した Claude Code でだけ使えます。
+
+```text
+/cloud-coder status
+/cloud-coder up
+/cloud-coder https://github.com/OWNER/REPO.git テストが落ちている原因を調べて直して
+/cloud-coder cc-REPO-1 に「修正を PR にして」と送って
+/cloud-coder read cc-REPO-1
+/cloud-coder stop
+```
+
+- [初回セットアップ](#初回セットアップ)の 2〜5 (gcloud の認証、config.yaml、`gh auth login`、Claude Code の `/login`) を済ませてから使います。CLI は `uv run cloud-coder` で、このチェックアウトのものが使われます (`uv tool install` は不要です)。画面の読み取りには MCP Inspector (バージョン固定) を `npx` で使うので、Node.js 22.19 以上が必要です。
+- スキルは Sonnet で動きます (frontmatter の `model: sonnet`)。モデルの切り替えはそのターンだけで、次に入力したときは元のモデルに戻ります。
+- `/cloud-coder` と打ったときだけ動きます (`disable-model-invocation: true`)。このリポジトリでは cloud-coder 自体の開発で status や stop の話が頻繁に出るため、Claude が会話から判断して VM を起動・停止しないようにしています。
+- タスクは `connect --detach` で渡すだけで、結果は待ちません。後で `/cloud-coder read <セッション名>` で画面を読みます。VM が止まっていれば、読む前に起動するかを聞きます。
+- 感嘆符で始まる指示 (Claude Code の shell モード) は送りません。対象の VM を変えるオプション (`--project` など) も付けません。
+- VM を止めるのは `stop` を頼んだときだけです。作業を渡した後は自動停止に任せます。`stop` のときは先に status を見て、作業中 (`BUSY`) のセッションがあれば止めずに確認を求めます。
+- status・起動・タスクの投入・画面の読み取りのコマンドは、スキルを呼んだターンの間だけ許可なしで実行されます (frontmatter の `allowed-tools`)。`stop` は許可を求めます。許可ルールはコマンドの先頭部分だけを見るので、オプションの追加 (`--project`、Inspector の `--tool-name` の上書きなど) までは防げません。それらはスキルの指示で禁じています。
 
 ## 自動停止を使いこなす
 
