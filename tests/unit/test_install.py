@@ -55,3 +55,16 @@ def test_merge_separates_our_handler_from_shared_group():
     merged = merge_hooks(shared)
     assert len(our_handlers(merged)) == len(HOOK_EVENTS)
     assert {"type": "command", "command": "other"} in merged["hooks"]["Stop"][0]["hooks"]
+
+
+def test_install_in_progress(tmp_path):
+    import os
+
+    from cloud_coder_vm.install import install_in_progress
+
+    marker = tmp_path / "installing"
+    assert not install_in_progress(marker)
+    marker.write_text(f"{os.getpid()}\n")
+    assert install_in_progress(marker)
+    marker.write_text("999999999\n")
+    assert not install_in_progress(marker)

@@ -60,3 +60,13 @@ def test_invalid_config_rejected(data):
 
 def test_default_machine_type_is_t2d_standard_8():
     assert DEFAULT_MACHINE_TYPE == "t2d-standard-8"
+
+
+def test_tools_config(tmp_path):
+    assert Config().tools == ("gh", "node", "rust", "docker", "uv")
+    assert from_mapping({"vm": {"tools": []}}).tools == ()
+    assert from_mapping({"vm": {"tools": ["uv"], "ignore_docker": True}}).ignore_docker
+    with pytest.raises(ConfigError):
+        from_mapping({"vm": {"tools": ["emacs"]}})
+    with pytest.raises(ConfigError):
+        from_mapping({"vm": {"tools": "gh"}})

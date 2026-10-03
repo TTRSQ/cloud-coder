@@ -177,3 +177,24 @@ def test_busy_never_times_out():
     st = state("pane-1", BUSY, "%1", pid=11)
     st.updated_at = NOW - 10 * READY_IDLE_AFTER_SECONDS
     assert not evaluate([PANE1], p, [st]).idle
+
+
+def test_running_containers_block_auto_stop():
+    p = procs(shell(10))
+    ev = evaluate_with_containers([PANE1], p, ["web", "db"])
+    assert not ev.idle and "db, web" in ev.busy_reasons[0]
+    assert evaluate_with_containers([PANE1], p, []).idle
+    assert not evaluate_with_containers([PANE1], p, None).idle
+
+
+def evaluate_with_containers(panes, procs_, containers):
+    from cloud_coder_vm.idle_check import evaluate as real
+
+    return real(panes, procs_, [], NOW, containers)
+
+
+def test_sg_wrapped_shell_at_prompt_is_idle():
+    p = procs(Process(10, 1, "sg", "/usr/bin/sg", 1), shell(11, 10))
+    assert evaluate([PANE1], p, []).idle
+    p[12] = other(12, 11, "make")
+    assert not evaluate([PANE1], p, []).idle

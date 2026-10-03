@@ -72,7 +72,9 @@ cloud-coder up                                      # VM の作成・起動と a
 - Claude Code を新しく起動 / resume するときは、`claude ... --remote-control <名前> -- "<prompt>"` の位置引数として最初のプロンプトを渡します。プロンプトは base64 で VM に送り、一時ファイル経由で展開するので、複数行・引用符・`$` などもそのまま届きます。
 - 既に Claude Code が動いているセッションには、その Claude Code が `READY` か `IDLE` のときだけ tmux の bracketed paste で入力して Enter を送ります。`BUSY` やまだ状態を報告していない場合は何も入力せずにエラー終了します (作業中の入力を壊さないため)。
 - `--detach` と組み合わせると、タスクを投げて放置し、終わって idle になったら VM が自動停止する、という使い方が CLI だけでできます。
-- private repository を SSH URL で clone する場合、`connect` はローカルの ssh-agent を VM に転送します (`ssh -A`)。鍵を agent に登録しておいてください。
+- private repository の clone 方法は 2 通りあります。
+  - SSH URL (`git@github.com:OWNER/REPO.git`): `connect` はローカルの ssh-agent を VM に転送します (`ssh -A`) ので、鍵を agent に登録しておけば clone できます。転送は `connect` の間だけなので、VM 上での後の `git push` などには使えません。
+  - HTTPS URL (`https://github.com/OWNER/REPO.git`): 下の「GitHub の認証」で `gh auth setup-git` を済ませておけば、clone も push も gh の認証で行えます。継続的に使うならこちらを推奨します。
 
 ### セッション
 
@@ -87,6 +89,35 @@ cloud-coder up                                      # VM の作成・起動と a
 - 対応表は VM の `~/.local/share/cloud-coder/sessions.json` (Persistent Disk) に保存されます。`/clear` などで Claude Code の session ID が変わると hook が対応表を更新します。
 - VM の停止後に `connect` すると tmux session を作り直し、`claude --resume <session-id> --remote-control <セッション名>` で同じ会話を再開します。
 - 既に Claude Code が動いているセッションへの `connect` は attach だけ行い、二重に起動しません。何かが動いている pane には入力しません。
+
+### 開発ツール
+
+VM には次のツールを入れます (`vm.tools` で選択、既定はすべて)。いずれも boot disk (Persistent Disk) 上に入るので停止しても残ります。インストールは agent か config が変わったときだけ実行され、既に入っているツールは飛ばします。
+
+| ツール | 入れ方 | 場所 |
+| --- | --- | --- |
+| `gh` | GitHub CLI 公式 apt repository ([手順](https://github.com/cli/cli/blob/trunk/docs/install_linux.md)) | `/usr/bin/gh` |
+| `node` | NodeSource の apt repository、現在の LTS 系列 ([手順](https://github.com/nodesource/distributions))。npm 同梱、corepack があれば有効化 | `/usr/bin/node` |
+| `docker` | Docker 公式 apt repository の Docker Engine + buildx / compose plugin ([手順](https://docs.docker.com/engine/install/ubuntu/))。`coder` を `docker` グループに追加 | `/usr/bin/docker`、データは `/var/lib/docker` |
+| `rust` | rustup ([手順](https://www.rust-lang.org/tools/install))、stable | `~/.cargo`, `~/.rustup` |
+| `uv` | 公式インストーラ ([手順](https://docs.astral.sh/uv/getting-started/installation/)) | `~/.local/bin/uv` |
+
+- 常に入れる前提パッケージは `tmux git curl ca-certificates build-essential` です。
+- Node は nvm などのユーザー単位の管理ではなく apt で入れています。Claude Code の hook や systemd などシェル初期化を通らないプロセスからも同じ `node` が見え、`apt upgrade` で更新できるためです。
+- `docker` グループは新しいログインから有効になります。グループ追加より前から動いている tmux server に新しいセッションを作るときは、`sg docker` 経由でシェルを起動して sudo なしで `docker` を使えるようにします。既存の pane で使うには、新しい tmux window ではなく新しいセッションを作るか再ログインしてください。
+- 稼働中のコンテナ (`docker compose up -d` など tmux の外で動くもの) があると自動停止しません。止めてよい場合は `vm.ignore_docker: true` にしてください。
+
+### GitHub の認証
+
+gh の認証は対話操作なので cloud-coder は行いません。初回だけ VM に入って設定してください。
+
+```bash
+gcloud compute ssh coder@cloud-coder --project <project> --zone <zone>
+gh auth login        # GitHub.com → HTTPS → ブラウザか token で認証
+gh auth setup-git    # git の HTTPS credential helper に gh を使う
+```
+
+認証情報は VM の `~/.config/gh` (Persistent Disk) に保存されます。
 
 ### 初回の Claude Code 設定
 
@@ -127,8 +158,8 @@ Claude Code の状態は hook で更新されます。
 - `Esc` でターンを中断した場合は `Stop` もほかの hook も発火しないため、次のプロンプトまで `BUSY` のまま残ります。
 - 未送信の入力をプロンプト欄に入れたまま grace period を超えて放置すると、新規起動のセッションは停止対象になります。
 - `connect` も grace period を取り消します。判定と新規セッションの作成は `/run/cloud-coder/state.lock` の flock で直列化しています。
-- `idle_prompt` は Claude Code が応答を終えて約 60 秒間入力が無いときに送られます。ただし Remote Control が有効なセッションでは送られないことを確認しています (Claude Code 2.1.288)。そのため、`READY` のまま 2 分間イベントが無いセッションも idle とみなします。`READY` は直前の `Stop` で background task も cron も無いと報告されている状態なので、`idle_prompt` を待つ場合と同じ根拠で判定しています。
-- tmux の外 (SSH で直接実行したプロセスなど) は判定の対象外です。
+- `idle_prompt` は Claude Code が応答を終えて約 60 秒間入力が無いときに送られます。ただし Remote Control のセッションで、送られないケースを確認しています (Claude Code 2.1.288。スマホから接続中、あるいはダイアログ表示中と思われる。同じ RC セッションでも別のタイミングでは約 60 秒で送られた)。そのため、`READY` のまま 2 分間イベントが無いセッションも idle とみなします。`READY` は直前の `Stop` で background task も cron も無いと報告されている状態なので、`idle_prompt` を待つ場合と同じ根拠で判定しています。
+- tmux の外 (SSH で直接実行したプロセスなど) は判定の対象外です。例外として、稼働中の Docker コンテナと cloud-coder agent のインストール中は busy 扱いです。
 
 `cloud-coder status` で、自動停止を妨げている理由と停止までの残り時間を確認できます。VM 上のログは `journalctl -u cloud-coder-idle-check.service` で見られます。
 
@@ -153,6 +184,8 @@ vm:
   workspace: workspace       # HOME からの相対パス
   idle_grace_minutes: 10
   swap_gb: 0                 # 1 以上で /swapfile を作成する (既存の swapfile は変更しない)
+  tools: [gh, node, rust, docker, uv]   # [] で何も入れない
+  ignore_docker: false       # true で稼働中のコンテナを自動停止の判定から外す
 claude:
   auto_trust_workspace: true
 ```

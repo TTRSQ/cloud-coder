@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from cloud_coder_vm import paths, process_table, session_state, tmux_panes
+from cloud_coder_vm import install, paths, process_table, session_state, tmux_panes
 from cloud_coder_vm.process_table import Process
 from cloud_coder_vm.session_state import IDLE, READY, SessionState
 from cloud_coder_vm.state_lock import state_lock, write_atomic
@@ -35,25 +35,10 @@ def _state_is_live(state: SessionState, procs: dict[int, Process], claude_panes:
     return state.tmux_pane in claude_panes
 
 
-def _pane_subtree(pane: Pane, procs, children) -> tuple[list[Process], list[Process]]:
-    """Return (claude processes, other processes) under the pane, not descending into Claude."""
-    claudes, others = [], []
-    stack = [pane.pane_pid]
-    while stack:
-        proc = procs.get(stack.pop())
-        if proc is None:
-            continue
-        if process_table.is_claude(proc):
-            claudes.append(proc)
-            continue
-        others.append(proc)
-        stack.extend(children.get(proc.pid, []))
-    return claudes, others
-
-
 # A READY session (its last Stop reported no background tasks and no crons) that has
 # seen no event for this long counts as idle even without Notification(idle_prompt).
-# Claude Code does not send idle_prompt while Remote Control is on (observed on 2.1.288).
+# Claude Code 2.1.288 was observed not sending idle_prompt for a Remote Control session
+# (while a phone was connected / a dialog was open), which left the VM up forever.
 READY_IDLE_AFTER_SECONDS = 120
 
 
@@ -68,12 +53,17 @@ def evaluate(
     procs: dict[int, Process],
     states: list[SessionState],
     now: float,
+    containers: list[str] | None = (),
 ) -> Evaluation:
+    """``containers``: names of running Docker containers, None if Docker could not be
+    queried; pass () when Docker is absent or ignored."""
     if panes is None:
         return Evaluation(idle=False, busy_reasons=["tmux server could not be queried"])
 
     children = process_table.children_map(procs)
-    subtrees = {pane.pane_id: _pane_subtree(pane, procs, children) for pane in panes}
+    subtrees = {
+        pane.pane_id: process_table.pane_subtree(pane.pane_pid, procs, children) for pane in panes
+    }
     claude_panes = {pane_id for pane_id, (claudes, _) in subtrees.items() if claudes}
 
     ev = Evaluation(idle=True)
@@ -107,6 +97,12 @@ def evaluate(
         elif rest:
             names = sorted({os.path.basename(p.argv0) or "?" for p in rest})
             ev.busy_reasons.append(f"{where}: shell has running processes {', '.join(names)}")
+
+    # Containers run outside tmux (docker compose up -d), so tmux cannot see them.
+    if containers is None:
+        ev.busy_reasons.append("docker could not be queried")
+    elif containers:
+        ev.busy_reasons.append(f"docker: running containers {', '.join(sorted(containers))}")
 
     ev.idle = not ev.busy_reasons
     return ev
@@ -142,23 +138,43 @@ def cancel_grace(path: Path = paths.IDLE_SINCE) -> None:
     path.unlink(missing_ok=True)
 
 
-def scan(user: str | None) -> Evaluation:
+def running_containers() -> list[str] | None:
+    """Running container names; [] when Docker is not installed or its daemon is down."""
+    if not Path("/usr/bin/docker").exists():
+        return []
+    active = subprocess.run(["systemctl", "is-active", "--quiet", "docker"], check=False)
+    if active.returncode != 0:
+        return []
+    result = subprocess.run(
+        ["docker", "ps", "--format", "{{.Names}}"], capture_output=True, text=True, timeout=30
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.split()
+
+
+def scan(user: str | None, ignore_docker: bool = False) -> Evaluation:
     return evaluate(
         tmux_panes.list_panes(user),
         process_table.snapshot(),
         session_state.load_all(paths.SESSION_STATE_DIR),
         time.time(),
+        () if ignore_docker else running_containers(),
     )
 
 
 def run(
     user: str,
     grace_seconds: float,
+    ignore_docker: bool = False,
     shutdown: Callable[[], None] | None = None,
     now: Callable[[], float] = time.time,
 ) -> Decision:
     with state_lock():
-        ev = scan(user)
+        ev = scan(user, ignore_docker)
+        if install.install_in_progress():
+            ev.idle = False
+            ev.busy_reasons.append("cloud-coder agent install in progress")
         for key in ev.stale_keys:
             session_state.remove(paths.SESSION_STATE_DIR, key)
         decision = decide(ev.idle, read_idle_since(), now(), grace_seconds)

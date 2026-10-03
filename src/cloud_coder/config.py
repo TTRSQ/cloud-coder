@@ -6,6 +6,8 @@ from pathlib import Path
 
 import yaml
 
+from cloud_coder_vm.dev_tools import DEFAULT_TOOLS, TOOLS
+
 DEFAULT_CONFIG_PATH = Path("~/.config/cloud-coder/config.yaml")
 # Single source of the default machine type (README and tests refer to it).
 DEFAULT_MACHINE_TYPE = "t2d-standard-8"
@@ -29,6 +31,8 @@ class Config:
     workspace: str = "workspace"
     idle_grace_minutes: int = 10
     swap_gb: int = 0  # 0 = do not create a swapfile
+    tools: tuple[str, ...] = DEFAULT_TOOLS
+    ignore_docker: bool = False  # running containers block auto-stop unless true
     # claude
     auto_trust_workspace: bool = True
 
@@ -50,6 +54,8 @@ SECTIONS: dict[str, dict[str, str]] = {
         "workspace": "workspace",
         "idle_grace_minutes": "idle_grace_minutes",
         "swap_gb": "swap_gb",
+        "tools": "tools",
+        "ignore_docker": "ignore_docker",
     },
     "claude": {"auto_trust_workspace": "auto_trust_workspace"},
 }
@@ -88,6 +94,10 @@ def from_mapping(data: dict | None, base: Config | None = None) -> Config:
                 raise ConfigError(f"{section}.{key} must be an integer")
             if expected in (bool, "bool") and not isinstance(value, bool):
                 raise ConfigError(f"{section}.{key} must be true or false")
+            if name == "tools":
+                if not isinstance(value, list) or not all(v in TOOLS for v in value):
+                    raise ConfigError(f"{section}.{key} must be a list of: {', '.join(TOOLS)}")
+                value = tuple(value)
             values[name] = value
     return replace(base, **values)
 

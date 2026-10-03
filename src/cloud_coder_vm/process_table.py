@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 SHELLS = frozenset({"bash", "zsh", "sh", "dash", "fish", "ksh", "tcsh", "csh"})
+# Run a shell with other credentials and wait for it (launch uses `sg docker`).
+WRAPPERS = frozenset({"sg", "newgrp"})
 
 
 @dataclass(frozen=True)
@@ -25,6 +27,30 @@ def is_claude(proc: Process) -> bool:
     if os.path.basename(proc.argv0) == "claude":
         return True
     return "/claude/versions/" in proc.exe or "@anthropic-ai/claude-code" in proc.argv0
+
+
+def is_wrapper(proc: Process) -> bool:
+    return os.path.basename(proc.argv0) in WRAPPERS
+
+
+def pane_subtree(
+    pane_pid: int, procs: dict[int, Process], children: dict[int, list[int]]
+) -> tuple[list[Process], list[Process]]:
+    """(Claude processes, other processes) under a pane. Does not descend into Claude
+    and skips credential wrappers, so the first "other" is the pane's shell."""
+    claudes, others = [], []
+    stack = [pane_pid]
+    while stack:
+        proc = procs.get(stack.pop())
+        if proc is None:
+            continue
+        if is_claude(proc):
+            claudes.append(proc)
+            continue
+        if not (is_wrapper(proc) and proc.pid == pane_pid):
+            others.append(proc)
+        stack.extend(children.get(proc.pid, []))
+    return claudes, others
 
 
 def children_map(procs: dict[int, Process]) -> dict[int, list[int]]:

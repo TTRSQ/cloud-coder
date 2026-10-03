@@ -5,6 +5,7 @@ so ``connect`` can be re-run at any point. Existing working trees are never
 pulled or reset, and a pane where something is running is never typed into.
 """
 
+import grp
 import os
 import shlex
 import subprocess
@@ -128,9 +129,39 @@ def ensure_repo(session: LogicalSession, workspace: Path) -> str:
     return ",".join(actions) or "existing"
 
 
+def _tmux_server_groups() -> set[int] | None:
+    sessions = _run(["tmux", "list-sessions", "-F", "#{session_name}"]).stdout.split()
+    if not sessions:
+        return None  # no server yet: the new one inherits this login's groups
+    pid = _run(["tmux", "display-message", "-p", "-t", f"={sessions[0]}", "#{pid}"]).stdout
+    try:
+        status = Path(f"/proc/{pid.strip()}/status").read_text()
+    except OSError:
+        return None
+    line = next((x for x in status.splitlines() if x.startswith("Groups:")), "Groups:")
+    return {int(g) for g in line.split()[1:]}
+
+
+def regroup_command(
+    group: str, login_groups: set[int], server_groups: set[int] | None
+) -> list[str]:
+    """Shell for a new pane that has ``group`` although the tmux server predates it.
+
+    usermod -aG only affects new logins, and panes inherit the tmux server's groups.
+    """
+    try:
+        gid = grp.getgrnam(group).gr_gid
+    except KeyError:
+        return []
+    if server_groups is None or gid in server_groups or gid not in login_groups:
+        return []
+    return ["sg", group, "-c", 'exec "${SHELL:-/bin/bash}" -l']
+
+
 def ensure_tmux_session(session: LogicalSession) -> str:
     if _run(["tmux", "has-session", "-t", f"={session.name}"]).returncode == 0:
         return "existing"
+    shell = regroup_command("docker", set(os.getgroups()), _tmux_server_groups())
     _check(
         [
             "tmux",
@@ -142,6 +173,7 @@ def ensure_tmux_session(session: LogicalSession) -> str:
             session.workdir,
             "-e",
             f"CLOUD_CODER_SESSION={session.name}",
+            *shell,
         ]
     )
     return "created"
@@ -222,20 +254,14 @@ def ensure_claude(session: LogicalSession, home: Path, prompt: str | None = None
 
     free_pane = None
     for pane in panes:
-        stack, others = [pane.pane_pid], []
-        while stack:
-            proc = procs.get(stack.pop())
-            if proc is None:
-                continue
-            if process_table.is_claude(proc):
-                remote = "--remote-control" in _cmdline(proc.pid) or "--rc" in _cmdline(proc.pid)
-                result = {"claude": "running", "remote_control": remote, "pane": pane.pane_id}
-                if prompt is not None:
-                    send_prompt_to_running(pane.pane_id, proc.pid, prompt)
-                    result["prompt"] = "sent"
-                return result
-            others.append(proc)
-            stack.extend(children.get(proc.pid, []))
+        claudes, others = process_table.pane_subtree(pane.pane_pid, procs, children)
+        for proc in claudes:
+            remote = "--remote-control" in _cmdline(proc.pid) or "--rc" in _cmdline(proc.pid)
+            result = {"claude": "running", "remote_control": remote, "pane": pane.pane_id}
+            if prompt is not None:
+                send_prompt_to_running(pane.pane_id, proc.pid, prompt)
+                result["prompt"] = "sent"
+            return result
         if free_pane is None and len(others) == 1 and process_table.is_shell(others[0]):
             free_pane = pane.pane_id
 
@@ -251,6 +277,7 @@ def ensure_claude(session: LogicalSession, home: Path, prompt: str | None = None
                 "-P",
                 "-F",
                 "#{pane_id}",
+                *regroup_command("docker", set(os.getgroups()), _tmux_server_groups()),
             ]
         ).strip()
     resume = transcript_exists(home, session.claude_session_id)

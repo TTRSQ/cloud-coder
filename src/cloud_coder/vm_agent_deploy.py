@@ -47,6 +47,8 @@ def vm_config(cfg: Config) -> VmConfig:
         workspace=cfg.workspace,
         auto_trust_workspace=cfg.auto_trust_workspace,
         swap_gb=cfg.swap_gb,
+        tools=list(cfg.tools),
+        ignore_docker=cfg.ignore_docker,
     )
 
 

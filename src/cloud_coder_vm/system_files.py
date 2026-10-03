@@ -17,6 +17,8 @@ class VmConfig:
     workspace: str  # relative to the user's HOME
     auto_trust_workspace: bool
     swap_gb: int  # 0 = leave swap alone
+    tools: list[str]  # names in dev_tools.TOOLS
+    ignore_docker: bool  # do not let running containers block auto-stop
 
 
 def render_config(config: VmConfig) -> str:

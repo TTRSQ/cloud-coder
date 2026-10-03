@@ -80,3 +80,20 @@ def test_claude_command_reads_first_prompt_from_file_verbatim(tmp_path):
     argv = out.stdout.split("\0")[:-1]
     assert argv[-2:] == ["--", prompt]
     assert not prompt_file.exists()
+
+
+def test_regroup_command(monkeypatch):
+    import grp
+
+    from cloud_coder_vm.launch import regroup_command
+
+    monkeypatch.setattr(grp, "getgrnam", lambda name: type("G", (), {"gr_gid": 999})())
+    assert regroup_command("docker", {999}, {1000}) == [
+        "sg",
+        "docker",
+        "-c",
+        'exec "${SHELL:-/bin/bash}" -l',
+    ]
+    assert regroup_command("docker", {999}, {999}) == []  # server already has it
+    assert regroup_command("docker", {999}, None) == []  # new server inherits it
+    assert regroup_command("docker", {1000}, {1000}) == []  # this login lacks it too

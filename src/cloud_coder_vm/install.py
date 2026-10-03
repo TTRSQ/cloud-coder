@@ -6,11 +6,14 @@
 
 import copy
 import json
+import os
 import shutil
 import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from pathlib import Path
 
-from cloud_coder_vm import paths, system_files
+from cloud_coder_vm import dev_tools, paths, system_files
 from cloud_coder_vm.state_lock import write_atomic
 from cloud_coder_vm.system_files import VmConfig
 
@@ -22,8 +25,35 @@ HOOK_EVENTS: list[tuple[str, str | None]] = [
     ("Notification", "idle_prompt"),
     ("SessionEnd", None),
 ]
-APT_PACKAGES = {"tmux": "tmux", "git": "git", "curl": "curl"}
+# Always installed: what cloud-coder itself and most toolchains (cargo, node-gyp) need.
+BASE_APT_PACKAGES = ["tmux", "git", "curl", "ca-certificates", "build-essential"]
 CLAUDE_INSTALLER = "curl -fsSL https://claude.ai/install.sh | bash"
+
+
+@contextmanager
+def installing() -> Iterator[None]:
+    """Mark an install in progress so the idle check does not shut the VM down under it."""
+    marker = paths.INSTALL_MARKER
+    with suppress(OSError):  # runtime dir not created yet (first install)
+        marker.write_text(f"{os.getpid()}\n")
+    try:
+        yield
+    finally:
+        marker.unlink(missing_ok=True)
+
+
+def install_in_progress(marker: Path = paths.INSTALL_MARKER) -> bool:
+    try:
+        pid = int(marker.read_text().strip())
+    except (OSError, ValueError):
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def merge_hooks(settings: dict, command: str = paths.HOOK_COMMAND) -> dict:
@@ -72,8 +102,16 @@ def ensure_swapfile(size_gb: int) -> None:
             fstab.write(f"{SWAPFILE} none swap sw 0 0\n")
 
 
+def _apt_installed(package: str) -> bool:
+    result = subprocess.run(
+        ["dpkg-query", "-W", "-f=${Status}", package], capture_output=True, text=True
+    )
+    return result.stdout.strip() == "install ok installed"
+
+
 def install_system(pyz_source: Path, config: VmConfig) -> None:
-    missing = [pkg for binary, pkg in APT_PACKAGES.items() if shutil.which(binary) is None]
+    os.environ["DEBIAN_FRONTEND"] = "noninteractive"
+    missing = [pkg for pkg in BASE_APT_PACKAGES if not _apt_installed(pkg)]
     if missing:
         lock = ["-o", "DPkg::Lock::Timeout=600"]
         subprocess.run(["apt-get", *lock, "update", "-q"], check=True)
@@ -92,6 +130,10 @@ def install_system(pyz_source: Path, config: VmConfig) -> None:
     _write_if_changed(paths.SYSTEMD_DIR / paths.IDLE_TIMER, system_files.render_idle_timer())
 
     ensure_swapfile(config.swap_gb)
+    dev_tools.install(dev_tools.missing(config.tools, "system"))
+    if "docker" in config.tools:
+        # takes effect for new logins; launch starts tmux sessions with the group (see launch)
+        subprocess.run(["usermod", "-aG", "docker", config.user], check=True)
     subprocess.run(["systemd-tmpfiles", "--create", str(paths.TMPFILES_CONF)], check=True)
     subprocess.run(["systemctl", "daemon-reload"], check=True)
     subprocess.run(["systemctl", "enable", "--now", paths.IDLE_TIMER], check=True)
@@ -108,3 +150,4 @@ def install_user(config: VmConfig, home: Path) -> None:
 
     if not paths.claude_bin(home).exists():
         subprocess.run(["bash", "-c", CLAUDE_INSTALLER], check=True)
+    dev_tools.install(dev_tools.missing(config.tools, "user", home))
