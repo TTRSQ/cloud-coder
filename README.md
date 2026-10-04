@@ -216,6 +216,8 @@ curl -H "Authorization: Bearer $CLOUD_CODER_API_WRITE_TOKENS" -X POST localhost:
 | `GET /v1/sessions/{name}?lines=200` | read | `read_session`。`lines` は 1〜2000。VM は起動しない |
 
 - token は環境変数 `CLOUD_CODER_API_READ_TOKENS` (読み取り) と `CLOUD_CODER_API_WRITE_TOKENS` (読み取りと操作) にカンマ区切りで指定します。複数指定できるので、新しい token を足してクライアントを切り替えてから古い token を消す、という順でローテーションできます。どちらも空なら server は起動しません。
+- token は起動時に一度だけ読みます。変えたら `cloud-coder api` を再起動してください。
+- `POST /v1/vm/start` と、VM を ready にする `POST /v1/sessions` / `POST /v1/sessions/{name}/prompts` は、VM が動いていれば agent の確認・更新をその場で行います。初回のインストールは数分かかり、その間は応答が返りません (MCP の `up` と同じ)。クライアントのタイムアウトは長めにしてください。
 - token は `Authorization: Bearer <token>` ヘッダでだけ受け付けます (query string では受け付けません)。
 - エラーは `{"error": "..."}` の JSON で返します。
 
@@ -225,7 +227,7 @@ curl -H "Authorization: Bearer $CLOUD_CODER_API_WRITE_TOKENS" -X POST localhost:
 | 403 | read token で write の操作をした |
 | 404 | 存在しないセッション |
 | 409 | Claude Code が `BUSY` などでプロンプトを送れない、または VM が動いていない (`GET /v1/sessions`、`GET /v1/sessions/{name}`) |
-| 422 | body や `lines` が不正、または `!` で始まる / 制御文字を含むプロンプト |
+| 422 | body や `lines` が不正、または空の / `!` で始まる / 制御文字を含むプロンプト |
 | 503 | VM が ready でない。起動は要求済みなので、`Retry-After` 秒後に再実行するか、`POST /v1/vm/start` で `ready: true` を待つ |
 | 502 | `gcloud` や VM 上の agent のエラー |
 

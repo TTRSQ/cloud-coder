@@ -270,3 +270,31 @@ def test_unknown_routes_are_json(client):
     response = client.get("/v1/nothing", headers=READ)
     assert response.status_code == 404 and "error" in response.json()
     assert client.delete("/v1/status", headers=READ).status_code == 405
+
+
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        ("/v1/sessions/cc-a-1/prompts", {"text": ""}),
+        ("/v1/sessions/cc-a-1/prompts", {"text": " \n\t"}),
+        ("/v1/sessions", {"repo": "r", "prompt": ""}),
+    ],
+)
+def test_empty_prompts_are_422_before_reaching_the_vm(client, path, body):
+    assert client.post(path, headers=WRITE, json=body).status_code == 422
+
+
+def test_status_mapping_matches_the_vm_agent_messages(monkeypatch):
+    """The VM agent reports errors as text; pin the texts the status mapping relies on."""
+    from cloud_coder_vm import launch, session_state
+
+    with pytest.raises(launch.LaunchError) as unknown:
+        launch.resolve_target(
+            {}, None, repo_url=None, repo=None, session_name="cc-x-9", new=False, now=0
+        )
+    assert http_api._agent_error_status(str(unknown.value)) == 404
+
+    monkeypatch.setattr(session_state, "load_all", lambda directory: [])
+    with pytest.raises(launch.LaunchError) as no_state:
+        launch.send_prompt_to_running("%1", 123, "go")
+    assert http_api._agent_error_status(str(no_state.value)) == 409

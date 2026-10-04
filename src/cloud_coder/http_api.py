@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 import uvicorn
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
@@ -105,13 +105,14 @@ class SessionRequest(BaseModel):
     repo: str | None = None
     new: bool = False
     session: str | None = None
-    prompt: str | None = None
+    # An empty prompt is the client's mistake; without this the VM agent would report it.
+    prompt: str | None = Field(default=None, pattern=r"\S")
 
 
 class PromptRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    text: str
+    text: str = Field(pattern=r"\S")
 
 
 async def _body[M: BaseModel](request: Request, model: type[M]) -> M:
@@ -179,6 +180,7 @@ HANDLED_ERRORS = (
     guards.PromptRejected,
     guards.VmNotReady,
     guards.VmNotRunning,
+    connect.AgentError,
     gce.GcloudError,
     RuntimeError,
     TimeoutError,

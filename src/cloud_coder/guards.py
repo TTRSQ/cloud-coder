@@ -31,7 +31,8 @@ class VmNotRunning(Exception):
         self.vm_status = vm_status
 
 
-# Adapters serve requests concurrently; installing the agent twice at once would race.
+# An adapter serves requests concurrently; installing the agent twice at once would race.
+# This serializes calls within one process only, not across `cloud-coder` processes.
 _up_lock = threading.Lock()
 
 
