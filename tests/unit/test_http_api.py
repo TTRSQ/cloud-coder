@@ -298,3 +298,23 @@ def test_status_mapping_matches_the_vm_agent_messages(monkeypatch):
     with pytest.raises(launch.LaunchError) as no_state:
         launch.send_prompt_to_running("%1", 123, "go")
     assert http_api._agent_error_status(str(no_state.value)) == 409
+
+
+def test_read_session_never_forwards_the_ssh_agent(client, monkeypatch):
+    """A read token must not make the server's ssh-agent reach the VM."""
+    import subprocess
+
+    commands = []
+
+    def fake_run(cmd, **kw):
+        commands.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout='{"output": ""}', stderr="")
+
+    monkeypatch.setattr(gce, "describe", lambda cfg: gce.Vm(gce.RUNNING))
+    monkeypatch.setattr(connect, "read_session", READ_SESSION)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert client.get("/v1/sessions/cc-a-1", headers=READ).status_code == 200
+    assert len(commands) == 1 and "-A" not in commands[0]
+
+
+READ_SESSION = connect.read_session
