@@ -108,6 +108,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "mcp", parents=[common], help="serve the VM and its sessions as MCP tools over stdio"
     )
+    p = sub.add_parser(
+        "api",
+        parents=[common],
+        help="serve the VM and its sessions as an HTTP API (tokens from the environment)",
+    )
+    p.add_argument("--host", default="127.0.0.1", help="address to bind (default 127.0.0.1)")
+    p.add_argument("--port", type=int, default=8787, help="port to bind (default 8787)")
     return parser
 
 
@@ -160,6 +167,11 @@ def main(argv: list[str] | None = None) -> int:
             from cloud_coder import mcp_server
 
             mcp_server.build_server(cfg).run("stdio")
+            return 0
+        if args.command == "api":
+            from cloud_coder import http_api
+
+            http_api.serve(cfg, args.host, args.port)
             return 0
     except (config_mod.ConfigError, gce.GcloudError, RuntimeError, TimeoutError, OSError) as e:
         print(f"cloud-coder: error: {e}", file=sys.stderr)

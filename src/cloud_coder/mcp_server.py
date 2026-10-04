@@ -6,8 +6,6 @@ return quickly: starting or stopping the VM is only requested, and the caller po
 The server does not depend on a transport: `cloud-coder mcp` serves it over stdio.
 """
 
-import threading
-import unicodedata
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict
@@ -19,7 +17,7 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from cloud_coder import config as config_mod
-from cloud_coder import connect, gce
+from cloud_coder import connect, gce, guards
 from cloud_coder.config import Config
 
 INSTRUCTIONS = """\
@@ -42,6 +40,7 @@ STOPS = ToolAnnotations(destructive_hint=True, idempotent_hint=True, open_world_
 # Failures the tools expect; anything else is a bug and reaches the client only as
 # "Error executing tool".
 EXPECTED_ERRORS = (
+    guards.PromptRejected,
     config_mod.ConfigError,
     gce.GcloudError,
     connect.AgentError,
@@ -51,41 +50,16 @@ EXPECTED_ERRORS = (
 )
 
 
-# The SDK runs tools concurrently; installing the agent twice at once would race.
-_up_lock = threading.Lock()
-
-
-def up_now(cfg: Config) -> connect.UpResult:
-    with _up_lock:
-        return connect.up(cfg, wait=False)
-
-
-def checked_prompt(text: str) -> str:
-    """Claude Code runs input starting with ``!`` as a shell command, unchecked: refuse it,
-    so that the tools never run arbitrary commands on the VM. Control characters are
-    refused too: an escape sequence could end the bracketed paste and type ``!`` as keys."""
-    if text.lstrip().startswith("!"):
-        raise ToolError("a prompt must not start with '!' (Claude Code's shell mode)")
-    if any(unicodedata.category(c) == "Cc" and c not in "\n\t" for c in text):
-        raise ToolError("a prompt must not contain control characters other than newline and tab")
-    return text
-
-
 @contextmanager
 def tool_errors() -> Iterator[None]:
     try:
         yield
+    except guards.VmNotReady as e:
+        raise ToolError(f"{e}; call `up` until it reports ready, then retry") from e
+    except guards.VmNotRunning as e:
+        raise ToolError(f"{e}; nothing to read") from e
     except EXPECTED_ERRORS as e:
         raise ToolError(str(e)) from e
-
-
-def require_ready(cfg: Config) -> None:
-    result = up_now(cfg)
-    if not result.ready:
-        raise ToolError(
-            f"the VM is not ready yet (VM {result.vm_action}); "
-            "call `up` until it reports ready, then retry"
-        )
 
 
 def build_server(cfg: Config) -> MCPServer:
@@ -103,7 +77,7 @@ def build_server(cfg: Config) -> MCPServer:
         also install or update the cloud-coder agent on it (the first install can take
         several minutes). Call again until `ready` is true."""
         with tool_errors():
-            return asdict(up_now(cfg))
+            return asdict(guards.up_now(cfg))
 
     @server.tool(annotations=ACTS)
     def start_session(
@@ -131,10 +105,10 @@ def build_server(cfg: Config) -> MCPServer:
     ) -> dict:
         """Make sure a session (git checkout, tmux session and Claude Code) exists and
         runs, and return its name. Requires a ready VM (see `up`)."""
-        if prompt is not None:
-            checked_prompt(prompt)
         with tool_errors():
-            require_ready(cfg)
+            if prompt is not None:
+                guards.checked_prompt(prompt)
+            guards.require_ready(cfg)
             return connect.launch(
                 cfg, repo, new=new, session=session, prompt=prompt, forward_agent=False
             )
@@ -147,9 +121,9 @@ def build_server(cfg: Config) -> MCPServer:
         """Type an instruction into the session's Claude Code and submit it. Refused
         unless Claude Code is READY or IDLE; if Claude Code is not running it is
         started (or resumed) with this instruction."""
-        checked_prompt(text)
         with tool_errors():
-            require_ready(cfg)
+            guards.checked_prompt(text)
+            guards.require_ready(cfg)
             return connect.launch(cfg, None, session=session, prompt=text, forward_agent=False)
 
     @server.tool(annotations=READ_ONLY)
@@ -162,9 +136,7 @@ def build_server(cfg: Config) -> MCPServer:
         """Recent text of the session's Claude Code screen (scrollback included) and
         Claude Code's state. Does not start the VM."""
         with tool_errors():
-            vm = gce.describe(cfg)
-            if vm.status != gce.RUNNING:
-                raise ToolError(f"the VM is {vm.status}; nothing to read")
+            guards.require_running(cfg)
             return connect.read_session(cfg, session, lines)
 
     @server.tool(annotations=STOPS)
