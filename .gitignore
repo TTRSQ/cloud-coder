@@ -5,3 +5,7 @@ __pycache__/
 .ruff_cache/
 dist/
 *.pyz
+infra/.terraform/
+infra/*.tfstate
+infra/*.tfstate.*
+infra/terraform.tfvars
