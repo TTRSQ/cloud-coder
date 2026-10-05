@@ -108,6 +108,15 @@ cloud-coder api                                     # HTTP API を 127.0.0.1:878
 - VM の停止後に `connect` すると tmux session を作り直し、`claude --resume <session-id> --remote-control <セッション名>` で同じ会話を再開します。
 - 既に Claude Code が動いているセッションへの `connect` は attach だけ行い、二重に起動しません。Claude Code が終了していた場合は、入力途中の行を壊さないよう既存の pane ではなく新しい window で起動します (pane を使うのは tmux session をその場で作ったときだけです)。
 
+### tmux server の分離
+
+cloud-coder のセッションは、VM ユーザーの既定の tmux server ではなく専用の server (`tmux -L cloud-coder`) で動きます。Claude Code は環境変数 `TMUX` を外して起動します (`env -u TMUX claude ...`)。Claude Code やそのサブエージェントがテストなどで素の `tmux` を実行しても (`tmux kill-server` を含む)、届くのは既定の server で、cloud-coder のセッションは落ちません。`TMUX_PANE` は hook が状態をどの pane のものか判別するのに使うので残しています。
+
+- VM 上でセッションを手で操作するときは `-L cloud-coder` を付けます (`tmux -L cloud-coder ls`、`tmux -L cloud-coder attach -t cc-REPO-1`)。`connect` の attach は自動で付けます。
+- 自分で開いた window や pane のシェルには tmux が `TMUX` を設定するので、そこで打つ `tmux` は cloud-coder の server に届きます (人が操作する前提)。
+- 自動停止の判定は、cloud-coder の server と既定の server の両方の pane を見ます。Claude Code が素の `tmux` で起動したコマンドが動いている間も VM は止まりません。
+- 移行: 以前の版は既定の server でセッションを動かしていました。agent を更新した時点で動いていたセッションはそのまま既定の server で動き続け、自動停止の判定にも入ります。そのセッションへの `connect` は、同じ会話を 2 つの Claude Code で開かないようエラーにします。VM 上で `tmux kill-session -t =cc-REPO-N` で終了するか、VM を停止してから `connect` し直すと専用の server で起動します。
+
 ### 開発ツール
 
 VM には次のツールを入れます (`vm.tools` で選択、既定はすべて)。いずれも boot disk (Persistent Disk) 上に入るので停止しても残ります。インストールは agent か config が変わったときだけ実行され、既に入っているツールは飛ばします。
@@ -276,7 +285,7 @@ OAuth の流れ: クライアントは `/.well-known/oauth-protected-resource/mc
 VM 上の systemd timer が 1 分ごとに VM 全体を評価します。次をすべて満たすと grace period (既定 10 分) が始まり、grace period 終了時の評価でもまだ満たしていれば `shutdown -h now` します。
 
 - 全 Claude Code セッションが `IDLE`
-- tmux の全 pane がシェルのプロンプト待ち (フォアグラウンドのコマンドも、シェル配下のバックグラウンドジョブもない)
+- tmux の全 pane がシェルのプロンプト待ち (フォアグラウンドのコマンドも、シェル配下のバックグラウンドジョブもない)。cloud-coder の server と既定の server の両方を見ます ([tmux server の分離](#tmux-server-の分離))
 
 Claude Code の状態は hook で更新されます。hook は Claude Code の managed settings (`/etc/claude-code/managed-settings.d/50-cloud-coder.json`) に置きます。cloud-coder が `~/.claude/settings.json` に hook を書き込むことはありません (dotfiles でシンボリックリンクにしている場合を壊さないため)。例外は下記の移行処理だけです。
 
@@ -319,7 +328,12 @@ tmux の外で SSH にログインしている間は自動停止しません。�
 - シェルのプロンプト待ちのまま `vm.ssh_session_idle_minutes` (既定 30 分) 端末への入力が無いログインは数えません (`w` の IDLE と同じ、端末デバイスの atime で判定)。閉じ忘れた端末や、切断されたのに残ったログインで VM が止まらなくなるのを防ぐためです。sshd プロセスが既に無い utmp の記録も無視します。
 - `tmux attach` している SSH は数えません。判定は tmux の pane 側に任せます (attach の有無で二重に止めないため)。tmux pane 自身の utmp 記録 (`tmux(<pid>).%N`) も同様です。
 
-`cloud-coder status` で、自動停止を妨げている理由と停止までの残り時間を確認できます。VM 上のログは `journalctl -u cloud-coder-idle-check.service` で見られます。
+`cloud-coder status` で、自動停止を妨げている理由と停止までの残り時間を確認できます。
+
+VM 上のログは journal (`/var/log/journal`、Persistent Disk 上) に残り、VM の停止後も後から調べられます。
+
+- `journalctl -u cloud-coder-idle-check.service`: 毎分の判定。busy ならその理由、grace period の開始と停止時には idle と判断した根拠 (各 Claude Code の状態と最後のイベント、pane の数)、プロセスが消えて削除した状態ファイル。
+- `journalctl -t cloud-coder-hook`: hook のイベントごとに 1 行。イベント名、セッションと pane、その結果の状態、`source` / `notification_type` / `reason`、`Stop` の `background_tasks` と `session_crons` の件数と種類。hook の失敗もここに出ます (traceback は tmpfs の `/run/cloud-coder/hook.log`)。
 
 ## 設定
 

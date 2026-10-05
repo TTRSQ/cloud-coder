@@ -88,6 +88,17 @@ def test_new_session_uses_a_worktree(cc):
     assert "/git/wt/" in second["workdir"]
 
 
+def test_tmux_run_by_claudes_tools_cannot_reach_the_sessions(cc):
+    session = last_json(cc("connect", REPO, "--no-attach").stdout)["session"]
+    pid = vm_shell(f"pgrep -n -f 'remote-control {session}$'").strip()
+    env = vm_shell(f"tr '\\0' '\\n' < /proc/{pid}/environ").splitlines()
+    assert not any(line.startswith("TMUX=") for line in env)
+    assert any(line.startswith("TMUX_PANE=") for line in env)
+    # a bare tmux, as Claude Code's tools run it (no $TMUX), talks to the default server
+    vm_shell("tmux kill-server || true")
+    vm_shell(f"tmux -L cloud-coder has-session -t ={session}")
+
+
 def test_status_blocks_auto_stop_while_claude_has_not_reported(cc):
     st = json.loads(cc("status", "--json").stdout)
     assert st["vm"] == "running"
@@ -96,7 +107,7 @@ def test_status_blocks_auto_stop_while_claude_has_not_reported(cc):
 
 
 def test_idle_vm_stops_itself_and_keeps_the_workspace(cc):
-    vm_shell("tmux kill-server || true; echo kept > ~/git/e2e-marker")
+    vm_shell("tmux -L cloud-coder kill-server || true; echo kept > ~/git/e2e-marker")
     deadline = time.monotonic() + 8 * 60
     while time.monotonic() < deadline:
         if json.loads(cc("status", "--json").stdout)["vm"] == "stopped":

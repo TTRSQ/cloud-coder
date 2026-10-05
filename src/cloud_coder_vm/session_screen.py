@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 
 from cloud_coder_vm import paths, process_table, session_registry, session_state
-from cloud_coder_vm.tmux_panes import PANE_FORMAT, Pane, parse_list_panes
+from cloud_coder_vm.tmux_panes import PANE_FORMAT, Pane, parse_list_panes, tmux_command
 
 
 class ScreenError(Exception):
@@ -34,7 +34,7 @@ def read(home: Path, session_name: str, lines: int) -> dict:
     if session_name not in session_registry.load(paths.registry_path(home)):
         raise ScreenError(f"unknown session {session_name!r}")
     listed = subprocess.run(
-        ["tmux", "list-panes", "-s", "-t", f"={session_name}", "-F", PANE_FORMAT],
+        [*tmux_command(), "list-panes", "-s", "-t", f"={session_name}", "-F", PANE_FORMAT],
         capture_output=True,
         text=True,
     )
@@ -50,7 +50,7 @@ def read(home: Path, session_name: str, lines: int) -> dict:
         }
     pane, claude_pid = claude_pane(panes)
     captured = subprocess.run(
-        ["tmux", "capture-pane", "-p", "-J", "-S", f"-{lines}", "-t", pane.pane_id],
+        [*tmux_command(), "capture-pane", "-p", "-J", "-S", f"-{lines}", "-t", pane.pane_id],
         capture_output=True,
         text=True,
     )

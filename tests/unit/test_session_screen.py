@@ -31,7 +31,7 @@ def test_reads_the_claude_pane_and_its_state(home, monkeypatch):
 
     def fake_run(args, **kw):
         calls.append(args)
-        if args[1] == "list-panes":
+        if "list-panes" in args:
             return subprocess.CompletedProcess(args, 0, "cc-a-1\t%3\t100\tbash\n", "")
         return subprocess.CompletedProcess(args, 0, "old\n> fix it\n● Done.\n\n\n", "")
 
@@ -45,7 +45,19 @@ def test_reads_the_claude_pane_and_its_state(home, monkeypatch):
         lambda d: [SessionState("pane-3", "s", "READY", tmux_pane="%3", claude_pid=200)],
     )
     out = session_screen.read(home, "cc-a-1", 2)
-    assert calls[1] == ["tmux", "capture-pane", "-p", "-J", "-S", "-2", "-t", "%3"]
+    assert calls[0][:3] == ["tmux", "-L", "cloud-coder"]
+    assert calls[1] == [
+        "tmux",
+        "-L",
+        "cloud-coder",
+        "capture-pane",
+        "-p",
+        "-J",
+        "-S",
+        "-2",
+        "-t",
+        "%3",
+    ]
     assert out == {
         "session": "cc-a-1",
         "tmux": "running",

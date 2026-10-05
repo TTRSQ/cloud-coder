@@ -2,11 +2,14 @@
 
 Registered for SessionStart, UserPromptSubmit, Stop, Notification(idle_prompt)
 and SessionEnd. Reads the hook payload from stdin and never fails the hook.
+Each event is logged as one line to the journal (`journalctl -t cloud-coder-hook`),
+which outlives the VM's shutdown unlike the state on tmpfs.
 """
 
 import json
 import os
 import sys
+import syslog
 import time
 import traceback
 from collections.abc import Mapping
@@ -88,6 +91,33 @@ def apply_event(
     return new
 
 
+def describe(payload: dict, env: Mapping[str, str], new: str | None) -> str:
+    """One log line for a hook event: what happened and the state it led to."""
+    who = env.get("CLOUD_CODER_SESSION") or f"session {payload.get('session_id', '?')}"
+    parts = [
+        str(payload.get("hook_event_name")),
+        f"{who} ({env.get('TMUX_PANE') or 'no tmux'})",
+        f"-> {new or 'no state'}",
+    ]
+    for key in ("source", "notification_type", "reason"):
+        if key in payload:
+            parts.append(f"{key}={payload[key]}")
+    for key in ("background_tasks", "session_crons"):
+        if key in payload:
+            items = payload[key]
+            if not isinstance(items, list):
+                parts.append(f"{key}={items!r}")
+                continue
+            kinds = sorted({str(i.get("type", "?")) if isinstance(i, dict) else "?" for i in items})
+            parts.append(f"{key}={len(items)}" + (f" ({','.join(kinds)})" if kinds else ""))
+    return " ".join(parts)
+
+
+def _journal(line: str) -> None:
+    syslog.openlog("cloud-coder-hook", 0, syslog.LOG_USER)
+    syslog.syslog(syslog.LOG_INFO, line)
+
+
 def main(stdin=sys.stdin) -> int:
     if not paths.RUNTIME_DIR.is_dir():
         return 0
@@ -105,7 +135,9 @@ def main(stdin=sys.stdin) -> int:
             )
             if new == BUSY:
                 idle_check.cancel_grace()
-    except Exception:
+        _journal(describe(payload, os.environ, new))
+    except Exception as e:
+        _journal(f"hook failed: {e!r} (traceback in {paths.HOOK_LOG})")
         try:
             with open(paths.HOOK_LOG, "a") as log:
                 log.write(f"{time.strftime('%FT%T')} {traceback.format_exc()}\n")
