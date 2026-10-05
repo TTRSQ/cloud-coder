@@ -24,7 +24,7 @@ class Evaluation:
     idle: bool
     busy_reasons: list[str] = field(default_factory=list)
     live_states: list[SessionState] = field(default_factory=list)
-    stale_keys: list[str] = field(default_factory=list)
+    stale_states: list[SessionState] = field(default_factory=list)  # Claude Code gone
 
 
 def _state_is_live(state: SessionState, procs: dict[int, Process], claude_panes: set[str]) -> bool:
@@ -63,6 +63,27 @@ def is_idle_state(state: SessionState, now: float) -> bool:
     )
 
 
+def _claude_name(state: SessionState) -> str:
+    name = state.cloud_coder_session or state.session_id
+    return f"claude {name} ({state.tmux_pane or 'no tmux'})"
+
+
+def _where(pane: Pane) -> str:
+    where = f"{pane.session} {pane.pane_id}"
+    return where if pane.socket == tmux_panes.SOCKET else f"{where} (tmux -L {pane.socket})"
+
+
+def idle_reasons(ev: Evaluation, panes: list[Pane], now: float) -> list[str]:
+    """Why an idle VM counts as idle, for the log: each live Claude Code's state and
+    what the tmux panes run."""
+    reasons = [
+        f"{_claude_name(s)} is {s.state} after {s.last_event} {now - s.updated_at:.0f}s ago"
+        for s in ev.live_states
+    ] or ["no Claude Code reports a state"]
+    reasons.append(f"{len(panes)} tmux panes, all at a shell prompt or running claude")
+    return reasons
+
+
 def evaluate(
     panes: list[Pane] | None,
     procs: dict[int, Process],
@@ -78,31 +99,26 @@ def evaluate(
         return Evaluation(idle=False, busy_reasons=["tmux server could not be queried"])
 
     children = process_table.children_map(procs)
-    subtrees = {
-        pane.pane_id: process_table.pane_subtree(pane.pane_pid, procs, children) for pane in panes
-    }
-    claude_panes = {pane_id for pane_id, (claudes, _) in subtrees.items() if claudes}
+    subtrees = {pane: process_table.pane_subtree(pane.pane_pid, procs, children) for pane in panes}
+    claude_panes = {pane.pane_id for pane, (claudes, _) in subtrees.items() if claudes}
 
     ev = Evaluation(idle=True)
     for state in states:
         if _state_is_live(state, procs, claude_panes):
             ev.live_states.append(state)
         else:
-            ev.stale_keys.append(state.key)
+            ev.stale_states.append(state)
 
     registered_pids = {s.claude_pid for s in ev.live_states if s.claude_pid is not None}
     registered_panes = {s.tmux_pane for s in ev.live_states if s.claude_pid is None}
 
     for state in ev.live_states:
         if not is_idle_state(state, now):
-            name = state.cloud_coder_session or state.session_id
-            ev.busy_reasons.append(
-                f"claude {name} ({state.tmux_pane or 'no tmux'}) is {state.state}"
-            )
+            ev.busy_reasons.append(f"{_claude_name(state)} is {state.state}")
 
     for pane in panes:
-        claudes, others = subtrees[pane.pane_id]
-        where = f"{pane.session} {pane.pane_id}"
+        claudes, others = subtrees[pane]
+        where = _where(pane)
         for proc in claudes:
             if proc.pid not in registered_pids and pane.pane_id not in registered_panes:
                 ev.busy_reasons.append(f"{where}: claude pid {proc.pid} has not reported state yet")
@@ -196,7 +212,7 @@ class Observation:
 
 def observe(config: VmConfig) -> Observation:
     return Observation(
-        tmux_panes.list_panes(config.user, timeout=SUBPROCESS_TIMEOUT),
+        tmux_panes.list_all_panes(config.user, timeout=SUBPROCESS_TIMEOUT),
         process_table.snapshot(),
         () if config.ignore_docker else running_containers(),
         () if config.ignore_ssh_sessions else ssh_logins.read_logins(),
@@ -235,20 +251,30 @@ def run(
     obs = observe(config)
     with state_lock():
         ev = judge(config, obs)
-        for key in ev.stale_keys:
-            session_state.remove(paths.SESSION_STATE_DIR, key)
+        for state in ev.stale_states:
+            session_state.remove(paths.SESSION_STATE_DIR, state.key)
+            print(f"removed the state of {_claude_name(state)}: its process is gone", flush=True)
         grace_seconds = config.grace_seconds
-        decision = decide(ev.idle, read_idle_since(), now(), grace_seconds)
+        at = now()
+        decision = decide(ev.idle, read_idle_since(), at, grace_seconds)
         if decision.action == "busy":
             cancel_grace()
             print("busy: " + "; ".join(ev.busy_reasons), flush=True)
         elif decision.action == "grace-started":
             write_atomic(paths.IDLE_SINCE, f"{decision.idle_since}\n")
-            print(f"idle: grace period of {grace_seconds:.0f}s started", flush=True)
+            print(
+                f"idle: grace period of {grace_seconds:.0f}s started: "
+                + "; ".join(idle_reasons(ev, obs.panes, at)),
+                flush=True,
+            )
         elif decision.action == "grace":
             print(f"idle: shutdown in {decision.remaining_seconds:.0f}s", flush=True)
         else:
-            print("idle: grace period over and still idle; shutting down", flush=True)
+            print(
+                "idle: grace period over and still idle; shutting down: "
+                + "; ".join(idle_reasons(ev, obs.panes, at)),
+                flush=True,
+            )
             (shutdown or _shutdown_now)()
         return decision
 

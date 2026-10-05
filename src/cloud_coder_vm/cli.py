@@ -22,6 +22,7 @@ from cloud_coder_vm import (
     session_screen,
     system_files,
 )
+from cloud_coder_vm.tmux_panes import tmux_command
 
 
 def _load_config() -> system_files.VmConfig:
@@ -35,7 +36,7 @@ def cmd_status(_args) -> int:
     idle_since = idle_check.read_idle_since()
     decision = idle_check.decide(ev.idle, idle_since, time.time(), config.grace_seconds)
     tmux_sessions = subprocess.run(
-        ["tmux", "list-sessions", "-F", "#{session_name}"], capture_output=True, text=True
+        [*tmux_command(), "list-sessions", "-F", "#{session_name}"], capture_output=True, text=True
     ).stdout.split()
     timer = subprocess.run(
         ["systemctl", "is-active", paths.IDLE_TIMER], capture_output=True, text=True

@@ -2,7 +2,9 @@
 
 One record per running Claude Code process. The record is keyed by the tmux
 pane the process runs in (session_id changes on /clear, so it is only an
-attribute); outside tmux it falls back to the session_id.
+attribute); outside tmux it falls back to the session_id. The key does not tell
+tmux servers apart: a Claude Code in pane %N of the default server (see tmux_panes)
+shares the record of the one in %N of cloud-coder's. That only errs towards busy.
 """
 
 import json

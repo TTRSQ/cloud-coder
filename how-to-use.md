@@ -201,7 +201,7 @@ cloud-coder close cc-REPO-2                       # 終わったセッション�
 | `cc-REPO-1` | `~/git/REPO` (clone) | clone したときのまま |
 | `cc-REPO-N` (2 つ目以降) | `~/git/wt/REPO-N` (git worktree) | `cloud-coder/cc-REPO-N` |
 
-- セッション名は tmux の session 名と、Remote Control の名前を兼ねます。
+- セッション名は tmux の session 名と、Remote Control の名前を兼ねます。セッションは cloud-coder 専用の tmux server で動くので、VM 上で手で tmux を操作するときは `tmux -L cloud-coder ...` とします ([README の tmux server の分離](README.md#tmux-server-の分離))。
 - プロンプト無しの `connect REPO` (`--session` 無し) は、そのリポジトリで直近に connect したセッションに戻ります。プロンプト付きなら新しいセッションです。
 - `--new` と、`--session` 無しでプロンプトを渡すときは、リポジトリ (名前か URL) が必要です。
 - 置き場所は `vm.workspace` / `vm.worktrees` で変えられます ([README のセッション](README.md#セッション))。
@@ -440,9 +440,9 @@ cloud-coder connect REPO --machine-type t2d-standard-16   # 停止中なら変�
 | `ssh login coder pts/1 from ... (no input for N min)` | tmux の外の SSH ログインが残っている。`exit` するか、30 分入力が無ければ数えられなくなる |
 | `ssh login coder pts/1: running ...` | tmux の外の SSH ログインでコマンドが動いている。入力が無くても数えられ続けるので、止めて `exit` する |
 | `cloud-coder launch in progress` / `cloud-coder install in progress` | `connect` / agent のインストールの処理中。終われば消えます |
-| `docker could not be queried` / `tmux server could not be queried` | 問い合わせが失敗したため安全側で busy。続くなら VM に入って `docker ps` / `tmux ls` を確認する |
+| `docker could not be queried` / `tmux server could not be queried` | 問い合わせが失敗したため安全側で busy。続くなら VM に入って `docker ps` / `tmux -L cloud-coder ls` を確認する |
 
-VM 上のログは、VM に SSH して `journalctl -u cloud-coder-idle-check.service` で見られます。
+VM 上のログは、VM に SSH して `journalctl -u cloud-coder-idle-check.service` (毎分の判定。grace period の開始時と停止時には idle と判断した根拠も出ます) と `journalctl -t cloud-coder-hook` (hook のイベントごとの状態の変化) で見られます。VM が止まった後も残ります。
 
 ### Esc で中断した後は BUSY が残る
 

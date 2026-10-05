@@ -123,13 +123,13 @@ def test_stale_state_of_dead_claude_is_dropped_not_trusted():
     # claude crashed without SessionEnd; its BUSY record must not keep the VM up forever
     ev = evaluate([PANE1], procs(shell(10)), [state("pane-1", BUSY, "%1", pid=11)])
     assert ev.idle
-    assert ev.stale_keys == ["pane-1"]
+    assert [s.key for s in ev.stale_states] == ["pane-1"]
 
 
 def test_stale_state_with_reused_pid_is_dropped():
     p = procs(shell(10), claude(11, 10, start=999))
     ev = evaluate([PANE1], p, [state("pane-1", IDLE, "%1", pid=11, start=500)])
-    assert ev.stale_keys == ["pane-1"]
+    assert [s.key for s in ev.stale_states] == ["pane-1"]
     assert not ev.idle  # the new claude in that pane has not reported yet
 
 
@@ -137,15 +137,15 @@ def test_stale_idle_state_does_not_hide_busy_shell():
     p = procs(shell(10), other(11, 10, "make"))
     ev = evaluate([PANE1], p, [state("pane-1", IDLE, "%1", pid=99)])
     assert not ev.idle
-    assert ev.stale_keys == ["pane-1"]
+    assert [s.key for s in ev.stale_states] == ["pane-1"]
 
 
 def test_state_without_pid_is_matched_by_pane():
     p = procs(shell(10), claude(11, 10))
     ev = evaluate([PANE1], p, [state("pane-1", IDLE, "%1", pid=None)])
-    assert ev.idle and ev.stale_keys == []
+    assert ev.idle and ev.stale_states == []
     ev = evaluate([PANE1], procs(shell(10)), [state("pane-1", BUSY, "%1", pid=None)])
-    assert ev.idle and ev.stale_keys == ["pane-1"]
+    assert ev.idle and [s.key for s in ev.stale_states] == ["pane-1"]
 
 
 def test_busy_claude_outside_tmux_blocks():
@@ -221,3 +221,27 @@ def test_restarted_session_without_a_turn_becomes_idle_after_ten_minutes():
     assert evaluate([PANE1], p, [st]).idle
     st.last_event = "UserPromptSubmit"  # a turn in progress never times out
     assert not evaluate([PANE1], p, [st]).idle
+
+
+def test_panes_of_both_tmux_servers_count_even_with_the_same_pane_id():
+    own = Pane("cc-repo-1", "%1", 10, "bash")
+    default = Pane("test", "%1", 30, "bash", "default")
+    ev = evaluate([own, default], procs(shell(10), shell(30), other(31, 30, "sleep")), [])
+    assert ev.busy_reasons == ["test %1 (tmux -L default): shell has running processes sleep"]
+
+
+def test_idle_reasons_say_why_the_vm_counts_as_idle():
+    from cloud_coder_vm.idle_check import idle_reasons
+
+    st = state("pane-1", IDLE, "%1", pid=11)
+    st.last_event = "Notification"
+    ev = evaluate([PANE1], procs(shell(10), claude(11, 10)), [st])
+    assert ev.idle
+    assert idle_reasons(ev, [PANE1], NOW + 30) == [
+        "claude cc-repo-1 (%1) is IDLE after Notification 30s ago",
+        "1 tmux panes, all at a shell prompt or running claude",
+    ]
+    assert idle_reasons(evaluate([], {}, []), [], NOW) == [
+        "no Claude Code reports a state",
+        "0 tmux panes, all at a shell prompt or running claude",
+    ]

@@ -69,7 +69,7 @@ def test_claude_command_new_vs_resume():
     s = entry("cc-a-1", "a", 1)
     new = claude_command(Path("/home/coder"), s, resume=False)
     assert new == (
-        "CLOUD_CODER_SESSION=cc-a-1 /home/coder/.local/bin/claude "
+        "env -u TMUX CLOUD_CODER_SESSION=cc-a-1 /home/coder/.local/bin/claude "
         "--session-id id-cc-a-1 --remote-control cc-a-1"
     )
     assert "--resume id-cc-a-1" in claude_command(Path("/home/coder"), s, resume=True)
@@ -363,3 +363,37 @@ def test_result_says_whether_the_conversation_is_new_or_continued(
     fake_tmux(monkeypatch, claude_running=claude_running, transcript=transcript)
     result = ensure_claude(entry("cc-app-1", "app", 1), Path("/home/coder"), "go", True)
     assert (result["claude"], result["conversation"]) == (claude, conversation)
+
+
+def test_claude_runs_without_tmux_but_keeps_its_pane(tmp_path):
+    """Claude Code's tools must not reach cloud-coder's tmux server through $TMUX; the
+    hook still needs $TMUX_PANE."""
+    import subprocess
+
+    s = entry("cc-a-1", "a", 1)
+    probe = claude_command(Path("/home/coder"), s, resume=False).replace(
+        "/home/coder/.local/bin/claude", "printenv"
+    )
+    probe = probe.split(" --session-id")[0]
+    env = {"PATH": "/usr/bin:/bin", "TMUX": "/tmp/tmux-1000/cloud-coder,1,0", "TMUX_PANE": "%3"}
+    out = subprocess.run(["bash", "-c", probe], env=env, capture_output=True, text=True).stdout
+    assert "TMUX=" not in out.replace("TMUX_PANE=", "")
+    assert "TMUX_PANE=%3" in out and "CLOUD_CODER_SESSION=cc-a-1" in out
+
+
+def test_a_session_left_on_the_default_tmux_server_is_not_started_twice(monkeypatch):
+    import subprocess
+
+    from cloud_coder_vm import launch
+
+    calls = []
+
+    def fake_run(args, cwd=None):
+        calls.append(args)
+        found = args[:3] == ["tmux", "-L", "default"]
+        return subprocess.CompletedProcess(args, 0 if found else 1, "", "")
+
+    monkeypatch.setattr(launch, "_run", fake_run)
+    with pytest.raises(LaunchError, match="default tmux server"):
+        launch.ensure_tmux_session(entry("cc-a-1", "a", 1))
+    assert calls[0][:3] == ["tmux", "-L", "cloud-coder"]
