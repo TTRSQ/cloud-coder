@@ -13,6 +13,14 @@ def entry(name, repo, t, url=None):
     return LogicalSession(name, repo, url, f"{WS}/{repo}", f"id-{name}", 0.0, t)
 
 
+@pytest.fixture(autouse=True)
+def nothing_left_behind(monkeypatch):
+    """LAYOUT is a real path: keep resolve_target off this host's disk and git."""
+    from cloud_coder_vm import launch
+
+    monkeypatch.setattr(launch, "left_behind", lambda layout, repo, index: False)
+
+
 def resolve(sessions, **kw):
     args = {"repo_url": None, "repo": None, "session_name": None, "new": False}
     args |= {"has_prompt": False, "now": 100.0}
