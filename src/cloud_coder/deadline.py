@@ -36,4 +36,8 @@ def run(args: list[str], **kwargs) -> subprocess.CompletedProcess:
     try:
         return subprocess.run(args, timeout=remaining, **kwargs)
     except subprocess.TimeoutExpired as e:
-        raise TimeoutError(f"`{command}` did not finish in time") from e
+        # Only the gcloud process is killed: what it started on the VM may still finish.
+        raise TimeoutError(
+            f"`{command}` did not finish in time; what it started may still complete, "
+            "so check the state before retrying"
+        ) from e

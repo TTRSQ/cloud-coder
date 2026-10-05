@@ -1,12 +1,13 @@
 import json
 import logging
+import subprocess
 import time
 
 import anyio
 import pytest
 from mcp import Client
 
-from cloud_coder import connect, deadline, gce, mcp_server
+from cloud_coder import connect, gce, mcp_server
 from cloud_coder.config import Config
 
 CFG = Config(project="p")
@@ -239,15 +240,15 @@ def test_busy_reads_expire():
 
 
 def test_each_call_is_logged_and_bounded_by_a_deadline(monkeypatch, caplog):
-    seen = {}
+    timeouts = []
 
-    def fake_status(cfg):
-        seen["deadline"] = deadline._deadline.get()
-        raise TimeoutError("`gcloud compute ssh` did not finish in time")
+    def slow_gcloud(args, **kw):
+        timeouts.append(kw["timeout"])
+        raise subprocess.TimeoutExpired(args, kw["timeout"])
 
-    monkeypatch.setattr(connect, "status", fake_status)
+    monkeypatch.setattr(subprocess, "run", slow_gcloud)
     with caplog.at_level(logging.INFO, logger="cloud_coder"):
         result = call("status")
     assert result.is_error and "did not finish in time" in result.content[0].text
-    assert seen["deadline"] is not None
+    assert len(timeouts) == 1 and 0 < timeouts[0] <= mcp_server.CALL_SECONDS
     assert any(r.getMessage().startswith("MCP tool status: failed in") for r in caplog.records)

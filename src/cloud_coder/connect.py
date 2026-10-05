@@ -5,12 +5,10 @@ The command line and the MCP server are thin adapters over them.
 """
 
 import base64
-import contextvars
 import json
 import logging
 import shlex
 import subprocess
-from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 
 from cloud_coder import gce, ssh, vm_agent_deploy
@@ -28,19 +26,14 @@ class AgentError(RuntimeError):
 class UpResult:
     vm_action: str  # created / started / resumed / running / stopping
     ready: bool  # VM running, SSH reachable and the agent installed
-    agent_installed: bool  # this call (re)installed the agent, or found that done
-    agent_installing: bool = False  # the agent is being installed in the background
-
-
-# The background agent install of `up(wait=False)`; callers serialize `up` (guards.up_now).
-_installer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cloud-coder-install")
-_install: Future | None = None
+    agent_installed: bool  # this call installed the agent (only when it waits)
+    agent_installing: bool = False  # an install runs on the VM; call `up` again later
 
 
 def up(cfg: Config, machine_type_requested: bool = False, *, wait: bool = True) -> UpResult:
     """Make the VM ready for sessions. With ``wait=False`` a VM that is not running yet is
-    only asked to start, an agent install runs in the background, and the result is not
-    ready until a later call finds both done: call again until it is ready."""
+    only asked to start, a missing or outdated agent is installed by a process left
+    running on the VM, and the result is not ready until a later call finds both done."""
     action = gce.ensure_running(cfg, machine_type_requested, wait=wait)
     log.info(f"VM {cfg.instance}: {action}")
     if wait:
@@ -49,21 +42,23 @@ def up(cfg: Config, machine_type_requested: bool = False, *, wait: bool = True) 
         return UpResult(action, ready=True, agent_installed=installed)
     if action != gce.RUNNING or not ssh.reachable(cfg):
         return UpResult(action, ready=False, agent_installed=False)
-    return _install_in_background(cfg, action)
+    return _agent_ready_without_waiting(cfg, action)
 
 
-def _install_in_background(cfg: Config, action: str) -> UpResult:
-    global _install
-    if _install is not None:
-        if not _install.done():
-            return UpResult(action, ready=False, agent_installed=False, agent_installing=True)
-        finished, _install = _install, None
-        finished.result()  # raises when the install failed; the next call retries
-        return UpResult(action, ready=True, agent_installed=True)
-    if vm_agent_deploy.is_installed(cfg):
+def _agent_ready_without_waiting(cfg: Config, action: str) -> UpResult:
+    """Start a missing or outdated agent install on the VM, and report whether one is
+    done; the install runs there on its own."""
+    state = vm_agent_deploy.install_state(cfg)
+    if state == vm_agent_deploy.INSTALLED:
         return UpResult(action, ready=True, agent_installed=False)
-    # an empty context: the install is not bounded by the caller's deadline
-    _install = _installer.submit(contextvars.Context().run, vm_agent_deploy.install, cfg)
+    if state == vm_agent_deploy.FAILED:
+        vm_agent_deploy.forget_failed_install(cfg)
+        raise RuntimeError(
+            "installing the VM agent failed; see ~/"
+            f"{vm_agent_deploy.INSTALL_LOG} on the VM. The next `up` starts it again"
+        )
+    if state == vm_agent_deploy.MISSING:
+        vm_agent_deploy.start_install(cfg)
     return UpResult(action, ready=False, agent_installed=False, agent_installing=True)
 
 

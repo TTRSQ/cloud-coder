@@ -3,11 +3,10 @@ import io
 import json
 import shlex
 import subprocess
-import threading
 
 import pytest
 
-from cloud_coder import cli, connect, deadline, gce, ssh, vm_agent_deploy
+from cloud_coder import cli, connect, gce, ssh, vm_agent_deploy
 from cloud_coder.config import Config
 from cloud_coder.connect import launch_command
 
@@ -61,8 +60,8 @@ def test_up_without_waiting_is_not_ready_until_the_vm_runs(monkeypatch):
     assert not connect.up(Config(), wait=False).ready
 
     monkeypatch.setattr(ssh, "reachable", lambda cfg: True)
-    monkeypatch.setattr(vm_agent_deploy, "is_installed", lambda cfg: True)
-    monkeypatch.setattr(vm_agent_deploy, "install", lambda cfg: pytest.fail("installed"))
+    monkeypatch.setattr(vm_agent_deploy, "install_state", lambda cfg: vm_agent_deploy.INSTALLED)
+    monkeypatch.setattr(vm_agent_deploy, "start_install", lambda cfg: pytest.fail("installed"))
     assert connect.up(Config(), wait=False) == connect.UpResult("running", True, False)
 
 
@@ -70,44 +69,28 @@ def test_up_without_waiting_is_not_ready_until_the_vm_runs(monkeypatch):
 def running_vm(monkeypatch):
     monkeypatch.setattr(gce, "ensure_running", lambda cfg, mt, wait: "running")
     monkeypatch.setattr(ssh, "reachable", lambda cfg: True)
-    monkeypatch.setattr(connect, "_install", None)
+    started = []
+    monkeypatch.setattr(vm_agent_deploy, "start_install", lambda cfg: started.append(1))
+    return started
 
 
-def test_up_without_waiting_installs_the_agent_in_the_background(monkeypatch, running_vm):
-    release = threading.Event()
-    seen = {}
-
-    def slow_install(cfg):
-        seen["deadline"] = deadline._deadline.get()
-        assert release.wait(5)
-
-    monkeypatch.setattr(vm_agent_deploy, "is_installed", lambda cfg: False)
-    monkeypatch.setattr(vm_agent_deploy, "install", slow_install)
+def test_up_without_waiting_leaves_the_agent_install_running_on_the_vm(monkeypatch, running_vm):
     installing = connect.UpResult("running", False, False, agent_installing=True)
-    with deadline.within(30):
+    for state, started in [(vm_agent_deploy.MISSING, 1), (vm_agent_deploy.INSTALLING, 1)]:
+        monkeypatch.setattr(vm_agent_deploy, "install_state", lambda cfg, s=state: s)
         assert connect.up(Config(), wait=False) == installing
-        assert connect.up(Config(), wait=False) == installing
-    release.set()
-    connect._install.result(timeout=5)
-    assert connect.up(Config(), wait=False) == connect.UpResult("running", True, True)
-    # the caller's deadline does not cut the install short
-    assert seen == {"deadline": None}
-
-    monkeypatch.setattr(vm_agent_deploy, "is_installed", lambda cfg: True)
+        assert len(running_vm) == started
+    monkeypatch.setattr(vm_agent_deploy, "install_state", lambda cfg: vm_agent_deploy.INSTALLED)
     assert connect.up(Config(), wait=False) == connect.UpResult("running", True, False)
 
 
-def test_a_failed_background_install_is_reported_once_then_retried(monkeypatch, running_vm):
-    def fail(cfg):
-        raise RuntimeError("installing the VM agent failed (see output above)")
-
-    monkeypatch.setattr(vm_agent_deploy, "is_installed", lambda cfg: False)
-    monkeypatch.setattr(vm_agent_deploy, "install", fail)
-    assert connect.up(Config(), wait=False).agent_installing
-    connect._install.exception(timeout=5)
-    with pytest.raises(RuntimeError, match="installing the VM agent failed"):
+def test_a_failed_agent_install_is_reported_and_cleared_for_a_retry(monkeypatch, running_vm):
+    forgotten = []
+    monkeypatch.setattr(vm_agent_deploy, "install_state", lambda cfg: vm_agent_deploy.FAILED)
+    monkeypatch.setattr(vm_agent_deploy, "forget_failed_install", lambda cfg: forgotten.append(1))
+    with pytest.raises(RuntimeError, match="installing the VM agent failed; see ~/"):
         connect.up(Config(), wait=False)
-    assert connect.up(Config(), wait=False).agent_installing
+    assert forgotten == [1] and running_vm == []
 
 
 def test_up_with_waiting_installs_the_agent_before_returning(monkeypatch):

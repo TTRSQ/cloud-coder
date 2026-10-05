@@ -180,7 +180,7 @@ claude mcp add cloud-coder -- cloud-coder mcp
 | tool | 引数 | 動作 |
 | --- | --- | --- |
 | `status` | なし | VM の状態、セッション一覧、各 Claude Code の状態 (`BUSY` / `READY` / `IDLE`)、自動停止の状態 (`status --json` と同じ内容) |
-| `up` | なし | VM が止まっていれば起動を要求して**待たずに**返す。動いていれば agent を確認し、必要ならインストール・更新をバックグラウンドで始める (`agent_installing: true`)。`ready: true` になるまで間をおいて呼び直す |
+| `up` | なし | VM が止まっていれば起動を要求して**待たずに**返す。動いていれば agent を確認し、必要なら VM 上でインストール・更新を始める (`agent_installing: true`。インストールは VM 上の切り離したプロセスで進み、ログは VM の `~/cloud-coder-install.log`)。`ready: true` になるまで間をおいて呼び直す |
 | `start_session` | `repo?`, `new?`, `session?`, `prompt?` | `connect --detach` と同じ。repository の clone、tmux、Claude Code の起動 (または resume) を行い、セッション名と `accepted: true`、次の行動の指示 `next` を返す |
 | `send_prompt` | `session`, `text` | `connect --session <session> -p <text> --detach` と同じ。Claude Code が `READY` / `IDLE` のときだけ送る。応答は `start_session` と同じく `accepted` と `next` を含む |
 | `read_session` | `session`, `lines?` (1〜2000、既定 200) | セッションの Claude Code の画面 (tmux pane、scrollback 含む) の最後の `lines` 行と状態。VM は起動しない |
@@ -188,7 +188,7 @@ claude mcp add cloud-coder -- cloud-coder mcp
 
 - 操作対象の VM は起動時の設定 (`config.yaml` と `cloud-coder mcp` に付けたオプション) だけで決まります。tool は project / zone / instance を引数に取らず、任意のコマンドを実行する tool もありません。`!` で始まるプロンプト (Claude Code の shell モード) と、改行・タブ以外の制御文字を含むプロンプトは拒否します。
 - `cloud-coder mcp --machine-type` などの VM 作成用のオプションは、VM を新しく作るときにだけ使われます。既存 VM の machine type は CLI で変えてください ([マシンスペックを変える](how-to-use.md#マシンスペックを変える))。
-- tool は長く待ちません。VM の起動・停止と agent のインストールは要求・開始だけ行い、呼び出し側が `up` / `status` で確認します。どの tool の呼び出しも 45 秒で打ち切り、エラーを返します (ChatGPT は tool の呼び出し 1 回を約 60 秒で打ち切るため)。
+- tool は長く待ちません。VM の起動・停止と agent のインストールは要求・開始だけ行い、呼び出し側が `up` / `status` で確認します。どの tool の呼び出しも 45 秒で打ち切り、エラーを返します (ChatGPT は tool の呼び出し 1 回を約 60 秒で打ち切るため)。打ち切られても VM 上の処理は続いていることがあるので、再実行の前に `status` で確かめてください。大きな repository の初回 clone のように時間のかかる `start_session` は、CLI の `connect` で済ませておくと確実です。
 - Claude Code の作業は数分〜数時間かかり、LLM の 1 ターンには収まりません。server の instructions と tool の説明は、作業を始めたらユーザーに報告してターンを終え、`BUSY` が終わるのを `status` / `read_session` のポーリングで待たないよう LLM に指示します。`start_session` / `send_prompt` の応答の `next`、`BUSY` のときの `status` / `read_session` の応答の `note` も同じ指示です。`BUSY` で拒否された `send_prompt` のエラーには、再送しないよう書き添えます。
 - `status` / `read_session` で `BUSY` と分かってから 60 秒以内に同じもの (`status`、または同じセッションの `read_session`) を呼ぶと、VM に問い合わせずに `rechecked: false` と前回の確認からの秒数、ポーリングをやめるよう求める `note` だけを返します。60 秒以内に続けて確認したい場合は、時間をおいてから呼び直してください。書き込みの tool (`up` / `start_session` / `send_prompt` / `stop`) を呼ぶと、この記録は消えます。記録は server のプロセスのメモリにだけあります。
 - server は tool の呼び出しごとに、tool 名・成否・所要時間を stderr のログに出します (例: `cloud-coder: MCP tool read_session: ok in 6.4s`)。
@@ -220,7 +220,7 @@ curl -H "Authorization: Bearer $CLOUD_CODER_API_WRITE_TOKENS" -X POST localhost:
 
 - token は環境変数 `CLOUD_CODER_API_READ_TOKENS` (読み取り) と `CLOUD_CODER_API_WRITE_TOKENS` (読み取りと操作) にカンマ区切りで指定します。複数指定できるので、新しい token を足してクライアントを切り替えてから古い token を消す、という順でローテーションできます。どちらも空なら server は起動しません。
 - token は起動時に一度だけ読みます。変えたら `cloud-coder api` を再起動してください。
-- `POST /v1/vm/start` と、VM を ready にする `POST /v1/sessions` / `POST /v1/sessions/{name}/prompts` は、VM が動いていれば agent を確認し、インストール・更新が必要ならバックグラウンドで始めて ready でない応答 (`agent_installing: true`、または 503) を返します (MCP の `up` と同じ)。初回のインストールは数分かかるので、`ready: true` になるまで間をおいて呼び直してください。
+- `POST /v1/vm/start` と、VM を ready にする `POST /v1/sessions` / `POST /v1/sessions/{name}/prompts` は、VM が動いていれば agent を確認し、インストール・更新が必要なら VM 上で始めて ready でない応答 (`agent_installing: true`、または 503) を返します (MCP の `up` と同じ)。初回のインストールは数分かかるので、`ready: true` になるまで間をおいて呼び直してください。
 - token は `Authorization: Bearer <token>` ヘッダでだけ受け付けます (query string では受け付けません)。
 - エラーは `{"error": "..."}` の JSON で返します。
 

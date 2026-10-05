@@ -1,6 +1,11 @@
+import os
 import subprocess
 import sys
+import time
 
+import pytest
+
+from cloud_coder import ssh, vm_agent_deploy
 from cloud_coder.config import Config
 from cloud_coder.vm_agent_deploy import build_pyz, is_current, sha256, vm_config
 from cloud_coder_vm import paths
@@ -41,3 +46,44 @@ def test_check_command_and_dotfiles_marker():
     assert is_current(out, "aaa", "bbb")
     assert not is_current(out, "aaa", "bbb", dotfiles=True)
     assert is_current(out + "dotfiles-installed\n", "aaa", "bbb", dotfiles=True)
+
+
+def run_on_fake_vm(home):
+    """ssh.run that runs the command with a local shell in ``home``."""
+
+    def run(cfg, command, **kw):
+        env = {**os.environ, "HOME": str(home)}
+        return subprocess.run(
+            ["sh", "-c", command], capture_output=True, text=True, env=env, cwd=home
+        )
+
+    return run
+
+
+@pytest.mark.parametrize(
+    ("install", "final"),
+    [("true", vm_agent_deploy.MISSING), ("false", vm_agent_deploy.FAILED)],
+)
+def test_a_started_install_runs_detached_and_reports_its_end(monkeypatch, tmp_path, install, final):
+    """MISSING after a successful install: the hashes, not the status, tell it is current."""
+    monkeypatch.setattr(ssh, "run", run_on_fake_vm(tmp_path))
+    monkeypatch.setattr(ssh, "scp", lambda *a: None)
+    gate = tmp_path / "gate"
+    monkeypatch.setattr(
+        vm_agent_deploy,
+        "install_command",
+        lambda cfg, remote: f"while [ ! -e {gate} ]; do sleep 0.05; done; {install}; status=$?",
+    )
+    cfg = Config(project="p")
+    started = time.monotonic()
+    vm_agent_deploy.start_install(cfg)
+    assert time.monotonic() - started < 2  # returns while the install still runs
+    deadline = time.monotonic() + 5
+    while vm_agent_deploy.install_state(cfg) != vm_agent_deploy.INSTALLING:
+        assert time.monotonic() < deadline
+    gate.touch()
+    while vm_agent_deploy.install_state(cfg) == vm_agent_deploy.INSTALLING:
+        assert time.monotonic() < deadline
+    assert vm_agent_deploy.install_state(cfg) == final
+    vm_agent_deploy.forget_failed_install(cfg)
+    assert vm_agent_deploy.install_state(cfg) == vm_agent_deploy.MISSING
