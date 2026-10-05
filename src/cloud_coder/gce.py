@@ -29,6 +29,7 @@ _GCE_STATUS = {
 }
 
 LABEL = "cloud-coder"
+NETWORK_TAG = "cloud-coder"
 
 log = logging.getLogger(__name__)
 
@@ -92,6 +93,8 @@ def create_args(cfg: Config) -> list[str]:
         f"--boot-disk-size={cfg.disk_size_gb}GB",
         f"--boot-disk-type={cfg.disk_type}",
         f"--labels={LABEL}=worker",
+        # Firewall rules for this VM (such as SSH from IAP) target this network tag.
+        f"--tags={NETWORK_TAG}",
         # SSH keys are then added to this instance only, never to project metadata.
         "--metadata=block-project-ssh-keys=TRUE",
         # The worker needs no Google API access.

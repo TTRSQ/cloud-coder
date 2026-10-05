@@ -234,6 +234,7 @@ curl -H "Authorization: Bearer $CLOUD_CODER_API_WRITE_TOKENS" -X POST localhost:
 セキュリティ:
 
 - 既定では `127.0.0.1` にだけ bind します。token は平文で送られるので、他の端末から使う場合も `--host 0.0.0.0` で直接公開せず、TLS を終端する reverse proxy やトンネルの内側に置いてください。
+- Cloud Run に置いてインターネットから使う構成は [infra/README.md](infra/README.md) にあります (Terraform と `Dockerfile`)。その endpoint は公開され、token だけで守られます。
 - write token を持つ相手は VM を起動・停止し、任意の repository を clone して Claude Code にプロンプトを渡せます。Claude Code はプロンプト次第で VM 上のコマンドを実行するため、write token は VM のシェルと同等の権限として扱ってください。
 - 操作対象の VM、プロンプトの検査、ssh-agent を転送しないことは MCP server と同じです (上の「MCP server」の注意を参照)。
 - server は token をログに出しません。uvicorn のアクセスログには method、path、query string、status が出ます。
@@ -331,7 +332,7 @@ claude:
 各コマンドは最初に操作対象 (project / zone / instance) を標準エラー出力に表示します。
 machine type / disk は VM 作成時に使われます。既存 VM に `--machine-type` を指定した場合、VM が停止中なら `set-machine-type` で変更してから起動します。
 
-作成される VM には `cloud-coder=worker` のラベルが付き、SSH 鍵は project ではなくこの VM の metadata にだけ追加されます (`block-project-ssh-keys`)。VM には service account を付けません。
+作成される VM には `cloud-coder=worker` のラベルと network tag `cloud-coder` (IAP からの SSH を許可する firewall ルールの対象) が付き、SSH 鍵は project ではなくこの VM の metadata にだけ追加されます (`block-project-ssh-keys`)。VM には service account を付けません。
 
 ## マシンタイプの目安
 

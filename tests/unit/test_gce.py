@@ -33,6 +33,7 @@ def test_create_args_use_config():
     assert "--image-family=ubuntu-2404-lts-amd64" in args
     assert "--metadata=block-project-ssh-keys=TRUE" in args
     assert any(a.startswith("--labels=cloud-coder=") for a in args)
+    assert "--tags=cloud-coder" in args
 
 
 class FakeGcloud:
