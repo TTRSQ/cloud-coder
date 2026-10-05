@@ -1,8 +1,9 @@
 """A deadline for the external commands (gcloud, its ssh and scp) of one operation.
 
-The MCP server sets one per tool call so that no call outlasts the client's limit (about
-60 seconds per tool call for ChatGPT). Outside a deadline commands run as long as they
-take, as the command line needs (waiting for a VM, a first agent install, a long clone).
+The MCP server sets one per tool call so that a stuck command cannot hold a tool call
+open indefinitely (clients such as ChatGPT give up on a tool call after a while).
+Outside a deadline commands run as long as they take, as the command line needs
+(waiting for a VM, a first agent install, a long clone).
 """
 
 import subprocess

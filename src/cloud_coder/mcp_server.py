@@ -72,8 +72,10 @@ PROMPT_NOT_RESENT = (
     "tell the user and end your turn"
 )
 
-# A tool call ends within this, below ChatGPT's limit of about 60 s per tool call.
-CALL_SECONDS = 45
+# A tool call ends within this. Clients cut tool calls off after a limit of their own
+# (unpublished for ChatGPT): this keeps a stuck gcloud or ssh from outlasting it by far,
+# while leaving room for the slow steps of a normal call (VM start, SSH to a new VM).
+CALL_SECONDS = 120
 # A session (or status) found BUSY is not read again from the VM within this window.
 REREAD_SECONDS = 60
 
