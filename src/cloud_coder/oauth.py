@@ -33,6 +33,7 @@ from mcp.server.auth.provider import (
     AuthorizeError,
     RefreshToken,
     RegistrationError,
+    TokenError,
     construct_redirect_uri,
 )
 from mcp.server.auth.routes import build_metadata, cors_middleware, create_auth_routes
@@ -167,6 +168,7 @@ class SignedTokens:
 
 class SignedAuthorizationCode(AuthorizationCode):
     signer: int
+    jti: str
 
 
 class SignedRefreshToken(RefreshToken):
@@ -258,6 +260,9 @@ class AuthorizationServer:
         if opened is None:
             return None
         registered, signer = opened
+        # Registered under an allowlist that may have been narrowed since.
+        if not all(self._redirect_uris.fullmatch(u) for u in registered["redirect_uris"]):
+            return None
         secret = None
         if registered.get("token_endpoint_auth_method") != "none":
             secret = self._signed.derive("client_secret", client_id, signer)
@@ -321,13 +326,6 @@ class AuthorizationServer:
         if opened is None:
             return None
         claims, signer = opened
-        # Codes are single use, best effort: a restart forgets the used ones, but a code
-        # lives only CODE_TTL seconds and needs the client's PKCE verifier as well.
-        now = time.time()
-        self._used_codes = {jti: exp for jti, exp in self._used_codes.items() if exp > now}
-        if claims["jti"] in self._used_codes:
-            return None
-        self._used_codes[claims["jti"]] = claims["exp"]
         return SignedAuthorizationCode(
             code=authorization_code,
             scopes=claims["scopes"],
@@ -338,6 +336,7 @@ class AuthorizationServer:
             redirect_uri_provided_explicitly=claims["redirect_uri_provided_explicitly"],
             resource=self.settings.resource_url,
             signer=signer,
+            jti=claims["jti"],
         )
 
     # --- tokens ----------------------------------------------------------------------
@@ -360,6 +359,14 @@ class AuthorizationServer:
     async def exchange_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code: SignedAuthorizationCode
     ) -> OAuthToken:
+        # Called once the client and its PKCE verifier are checked. Codes are single use,
+        # best effort: a restart forgets the used ones, but a code lives only CODE_TTL
+        # seconds and needs the verifier as well.
+        now = time.time()
+        self._used_codes = {jti: exp for jti, exp in self._used_codes.items() if exp > now}
+        if authorization_code.jti in self._used_codes:
+            raise TokenError("invalid_grant", "authorization code already used")
+        self._used_codes[authorization_code.jti] = authorization_code.expires_at
         return self._issue(client, authorization_code.scopes, authorization_code.signer)
 
     async def load_refresh_token(
@@ -455,11 +462,14 @@ _TOO_MANY = "<p>Too many wrong tokens. Try again in a few minutes.</p>"
 
 def _form(sealed: str, request: dict[str, Any], error: str | None) -> str:
     client = html.escape(request.get("client_name") or "An application")
-    redirect_host = html.escape(urlparse(request["redirect_uri"]).netloc)
+    redirect_uri = html.escape(request["redirect_uri"])
     problem = f'<p class="error">{html.escape(error)}</p>' if error else ""
     return f"""
-<p><b>{client}</b> ({redirect_host}) asks for full access to this cloud-coder worker:
-start and stop the VM, open sessions and send prompts to Claude Code.</p>
+<p><b>{client}</b> asks for full access to this cloud-coder worker: start and stop the
+VM, open sessions and send prompts to Claude Code. It will receive the grant at
+<code>{redirect_uri}</code>.</p>
+<p><b>Allow only if you started this connection yourself</b> (for example from ChatGPT)
+just now. Anyone can send you a link to this page.</p>
 <p>Paste a write token of the cloud-coder API to allow it.</p>
 {problem}
 <form method="post">

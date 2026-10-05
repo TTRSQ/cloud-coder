@@ -417,3 +417,18 @@ def test_removing_the_approving_write_token_revokes_its_grants(vm_calls):
     removed = {**ENV, http_api.WRITE_TOKENS_ENV: "write-1"}
     with TestClient(build(env=removed), base_url=BASE) as c:
         assert rpc(c, tokens["access_token"], "tools/list").status_code == 401
+
+
+def test_narrowing_the_redirect_allowlist_drops_registered_clients(vm_calls):
+    with TestClient(build(), base_url=BASE) as c:
+        client_id = register(c).json()["client_id"]
+    narrowed = oauth.OAuthSettings(BASE, ("https://chatgpt.com/connector/oauth/*",))
+    with TestClient(build(settings=narrowed), base_url=BASE) as c:
+        assert authorize(c, client_id).status_code == 400
+
+
+def test_code_presented_without_the_verifier_stays_usable(client):
+    client_id = register(client).json()["client_id"]
+    code = code_for(client, client_id)
+    assert exchange(client, client_id, code, verifier="w" * 64).status_code == 400
+    assert exchange(client, client_id, code).status_code == 200

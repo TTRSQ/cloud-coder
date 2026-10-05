@@ -128,7 +128,7 @@ token の環境変数はインスタンスの起動時に読まれます。
 - この endpoint はインターネットに公開されています。守っているのはアプリの Bearer token だけです。
 - **write token は VM のシェルと同等の権限です。** write token を持つ相手は VM を起動・停止し、任意の repository を clone して Claude Code にプロンプトを渡せます。Claude Code は VM 上でコマンドを実行でき、VM には Claude Code と GitHub の認証情報があります。状態を見るだけのクライアントには read token を渡してください。
 - API の実行 SA が操作できるのはこの VM 1 台 (起動・停止・metadata) と IAP トンネルだけで、project 全体への権限は `compute.projects.get` だけです。VM を作成・削除することはできません。
-- `/mcp` の OAuth は、write token を承認ページに貼った相手にだけ grant を出します。OAuth で得た access token は write token と同じ権限 (VM のシェルと同等) を持ちます。access token は 1 時間で切れますが、refresh token (30 日。更新のたびに新しいものが出る) で使われ続ける限り更新できます。止めるには write token を入れ替えます。
+- `/mcp` の OAuth は、write token を承認ページに貼った相手にだけ grant を出します。OAuth で得た access token は write token と同じ権限 (VM のシェルと同等) を持ちます。access token は 1 時間で切れますが、refresh token (30 日) で更新でき、更新のたびに新しい refresh token が出るので使われ続ける限り続きます。古い refresh token も期限まで有効です。止めるには write token を入れ替えます。
 - 最大インスタンス数を 1 にしているので、大量のリクエストを受けても費用は 1 インスタンス分に収まります。
 
 ## 費用

@@ -313,7 +313,7 @@ Cloud Run に置いた API は `/mcp` で MCP server も提供しているので
 4. ChatGPT が cloud-coder の承認ページ (「cloud-coder」と、write token の入力欄だけのページ) を開くので、手順 1 の **write token** を貼り付けて **Allow** を押す。ChatGPT に戻れば接続完了です。
 5. 会話でアプリを選び、「cloud-coder の status を見て」のように頼む。`up` / `start_session` / `send_prompt` / `stop` は書き込みの tool なので、ChatGPT が実行前に確認を求めます。
 
-- 承認ページに貼るのは write token だけです (read token では承認できません)。
+- 承認ページに貼るのは write token だけです (read token では承認できません)。自分で ChatGPT から接続を始めた直後に開いたページにだけ貼ってください。人から送られたリンクの承認ページに貼ると、その人の ChatGPT に権限が渡ります。
 - write token をローテーションして古い token を外すと、ChatGPT の接続は無効になります。アプリの接続をやり直してください。
 - ChatGPT が書き込みの tool を呼べるかはプランによります。OpenAI の developer mode のドキュメントは Plus / Pro でも書き込みを許可 (実行前に確認) としていますが、他のページでは制限がある書き方もあるので、呼べない場合はプランの制限を確認してください。
 

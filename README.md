@@ -253,13 +253,14 @@ curl -H "Authorization: Bearer $CLOUD_CODER_API_WRITE_TOKENS" -X POST localhost:
 claude mcp add --transport http cloud-coder <公開 URL>/mcp --header "Authorization: Bearer <token>"
 ```
 
-OAuth の流れ: クライアントは `/.well-known/oauth-protected-resource/mcp` と `/.well-known/oauth-authorization-server` を読み、`/register` で登録 (Dynamic Client Registration) し、利用者のブラウザを `/authorize` に送ります。cloud-coder の承認ページで **write token** を貼り付けると承認され、クライアントは code を `/token` で access token (1 時間) と refresh token (30 日。更新のたびに新しいものを出す) に交換します (PKCE S256 必須)。
+OAuth の流れ: クライアントは `/.well-known/oauth-protected-resource/mcp` と `/.well-known/oauth-authorization-server` を読み、`/register` で登録 (Dynamic Client Registration) し、利用者のブラウザを `/authorize` に送ります。cloud-coder の承認ページで **write token** を貼り付けると承認され、クライアントは code を `/token` で access token (1 時間) と refresh token (30 日) に交換します (PKCE S256 必須)。refresh のたびに新しい refresh token も出しますが、状態を持たないので古い refresh token も期限までは使えます。
 
 - サーバは何も保存しません。client ID、承認コード、access / refresh token は、中身 (client、scope、期限、`aud` = `<公開 URL>/mcp`) に HMAC-SHA256 の署名を付けた自己完結の値です。署名鍵は承認に使った write token から HKDF で導出します (client ID は 1 つ目の write token)。新しい secret は要らず、Cloud Run の再起動後も有効です。
-- **取り消し**: write token を設定から外すと、その token で承認したすべての grant と、その token で署名された client 登録が無効になります。個別の grant の取り消しや `/revoke` はありません。外した後はクライアント側で接続し直します。
+- **取り消し**: write token を設定から外すと、その token で承認したすべての grant と、その token で署名された client 登録が無効になります。個別の grant の取り消しや `/revoke` はなく、漏れた refresh token を止める手段も write token の入れ替えだけです。外した後はクライアント側で接続し直します。
 - 承認すると read と write の両方の scope が付きます (承認できるのは write token だけ)。read 専用のアプリが必要なら、OAuth ではなく read token をヘッダで渡してください。
-- 承認後の redirect 先は、環境変数 `CLOUD_CODER_OAUTH_REDIRECT_URIS` (カンマ区切り、`*` はパスの 1 区間) に一致するものだけ登録できます。既定は ChatGPT の `https://chatgpt.com/connector_platform_oauth_redirect` と `https://chatgpt.com/connector/oauth/*` です。MCP Inspector など他のクライアントを使うときは、その redirect URI を加えてください。
-- 承認ページで誤った token が 10 分間に 10 回入力されると、しばらく 429 を返します (インスタンス内で数えます)。承認コードは 5 分で失効し、1 回しか使えません (インスタンスの再起動を挟んだ場合を除く)。
+- 承認後の redirect 先は、環境変数 `CLOUD_CODER_OAUTH_REDIRECT_URIS` (カンマ区切り、`*` はパスの 1 区間) に一致するものだけ登録できます。既定は ChatGPT の `https://chatgpt.com/connector_platform_oauth_redirect` と `https://chatgpt.com/connector/oauth/*` です。設定すると既定を**置き換える**ので、MCP Inspector など他のクライアントも使うときは ChatGPT の 2 つと一緒に書いてください (Terraform はこの変数を設定せず、Cloud Run では既定のままです)。一覧から外した redirect URI で登録済みの client は使えなくなります。
+- 承認ページは、誰かが送ってきたリンクからも開けます。ChatGPT の redirect URI はすべての ChatGPT 利用者に共通なので、他人の ChatGPT が始めた接続を承認すると grant はその人に渡ります。自分で接続を始めた直後にだけ write token を貼ってください。
+- 承認ページで誤った token が 10 分間に 10 回入力されると、しばらく 429 を返します (インスタンス全体で 1 つのカウンタ)。誰でも誤入力を送れるので、429 が続くときは時間を置くか、新しい revision でインスタンスを入れ替えてください。token は推測できない長さなので、これは総当たり対策としては補助です。承認コードは 5 分で失効し、1 回しか使えません (インスタンスの再起動を挟んだ場合を除く)。
 - OAuth の access token は `/mcp` 専用で、`/v1` は API の token だけを受け付けます。
 - token、承認コード、承認ページで入力された token はログに出しません。アクセスログには `/authorize` と承認ページの query string (client ID と承認要求。どちらも秘密ではない) が出ます。
 
