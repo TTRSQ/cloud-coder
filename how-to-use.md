@@ -281,6 +281,20 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 - 状態を見るだけのクライアントには read token を渡してください。read token では `GET` しかできません。
 - VM が ready でないときの `POST /v1/sessions` などは 503 と `Retry-After` を返します。起動は要求済みなので、その秒数待って同じリクエストを再実行すれば進みます。
 
+### Cloud Run に置いてどこからでも使う
+
+[infra/README.md](infra/README.md) の Terraform で、API を Cloud Run に公開できます。構築後は URL と token を取り出し、上の `localhost:8787` を URL に置き換えて使います。
+
+```bash
+URL=$(terraform -chdir=infra output -raw url)
+AUTH="Authorization: Bearer $(gcloud secrets versions access latest --secret cloud-coder-api-write-tokens --project <project>)"
+curl -s -X POST -H "$AUTH" "$URL/v1/vm/start"
+```
+
+- endpoint はインターネットに公開され、token だけで守られます。write token は VM のシェルと同等の権限なので、渡す相手と保存場所に注意してください。見るだけのクライアントには read token (`cloud-coder-api-read-tokens`) を渡します。
+- Cloud Run 上では `/healthz` に届きません (Cloud Run の予約パス)。生存確認には `GET /v1/status` を使います。
+- 1 回の呼び出しに数秒かかります (IAP 経由の SSH)。
+
 ## Claude Code のスキルで操作する
 
 このリポジトリの [`.claude/skills/cloud-coder/SKILL.md`](.claude/skills/cloud-coder/SKILL.md) は Claude Code の [project skill](https://code.claude.com/docs/en/skills#where-skills-live) です。インストールは不要で、このリポジトリ (と、その git worktree) で起動した Claude Code でだけ使えます。
