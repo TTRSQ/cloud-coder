@@ -137,7 +137,11 @@ def main(stdin=sys.stdin) -> int:
                 idle_check.cancel_grace()
         _journal(describe(payload, os.environ, new))
     except Exception as e:
-        _journal(f"hook failed: {e!r} (traceback in {paths.HOOK_LOG})")
+        where = traceback.extract_tb(e.__traceback__)[-1]
+        _journal(
+            f"hook failed: {e!r} at {Path(where.filename).name}:{where.lineno} "
+            f"(traceback in {paths.HOOK_LOG})"
+        )
         try:
             with open(paths.HOOK_LOG, "a") as log:
                 log.write(f"{time.strftime('%FT%T')} {traceback.format_exc()}\n")

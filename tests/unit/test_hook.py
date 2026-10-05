@@ -97,3 +97,17 @@ def test_describe_logs_event_state_and_task_registry():
     )
     end = {"hook_event_name": "SessionEnd", "session_id": "A", "reason": "other"}
     assert describe(end, ENV, None) == "SessionEnd cc-app-1 (%4) -> no state reason=other"
+
+
+def test_a_failing_hook_says_where_in_the_journal(monkeypatch, tmp_path):
+    import io
+
+    from cloud_coder_vm import hook, paths
+
+    lines = []
+    monkeypatch.setattr(hook, "_journal", lines.append)
+    monkeypatch.setattr(paths, "RUNTIME_DIR", tmp_path)
+    monkeypatch.setattr(paths, "HOOK_LOG", tmp_path / "hook.log")
+    assert hook.main(io.StringIO("not json")) == 0
+    assert lines[0].startswith("hook failed: JSONDecodeError(")
+    assert "(traceback in" in lines[0] and (tmp_path / "hook.log").exists()

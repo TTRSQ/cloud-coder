@@ -222,8 +222,8 @@ def ensure_tmux_session(session: LogicalSession) -> str:
         # A second Claude Code would resume the conversation the old one still runs.
         raise LaunchError(
             f"{session.name} still runs on the default tmux server (started by an older "
-            f"cloud-coder); end it with `tmux kill-session -t ={session.name}` on the VM "
-            "and connect again"
+            f"cloud-coder); end it with `tmux -L default kill-session -t ={session.name}` "
+            "on the VM and connect again"
         )
     shell = regroup_command("docker", set(os.getgroups()), _tmux_server_groups())
     _check(

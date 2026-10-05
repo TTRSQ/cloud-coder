@@ -94,8 +94,9 @@ def test_tmux_run_by_claudes_tools_cannot_reach_the_sessions(cc):
     env = vm_shell(f"tr '\\0' '\\n' < /proc/{pid}/environ").splitlines()
     assert not any(line.startswith("TMUX=") for line in env)
     assert any(line.startswith("TMUX_PANE=") for line in env)
-    # a bare tmux, as Claude Code's tools run it (no $TMUX), talks to the default server
-    vm_shell("tmux kill-server || true")
+    # the incident: Claude Code's tools run tmux kill-server with Claude Code's environment
+    replay = 'exec env -i "$@" tmux kill-server'
+    vm_shell(f"xargs -0 -a /proc/{pid}/environ sh -c '{replay}' sh || true")
     vm_shell(f"tmux -L cloud-coder has-session -t ={session}")
 
 

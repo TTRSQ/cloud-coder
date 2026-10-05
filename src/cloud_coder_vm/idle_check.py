@@ -73,14 +73,14 @@ def _where(pane: Pane) -> str:
     return where if pane.socket == tmux_panes.SOCKET else f"{where} (tmux -L {pane.socket})"
 
 
-def idle_reasons(ev: Evaluation, panes: list[Pane] | None, now: float) -> list[str]:
+def idle_reasons(ev: Evaluation, panes: list[Pane], now: float) -> list[str]:
     """Why an idle VM counts as idle, for the log: each live Claude Code's state and
     what the tmux panes run."""
     reasons = [
         f"{_claude_name(s)} is {s.state} after {s.last_event} {now - s.updated_at:.0f}s ago"
         for s in ev.live_states
     ] or ["no Claude Code reports a state"]
-    reasons.append(f"{len(panes or [])} tmux panes, all at a shell prompt or running claude")
+    reasons.append(f"{len(panes)} tmux panes, all at a shell prompt or running claude")
     return reasons
 
 
