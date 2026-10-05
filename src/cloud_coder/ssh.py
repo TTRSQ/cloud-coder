@@ -76,12 +76,12 @@ def reachable(cfg: Config) -> bool:
 
 
 def wait_ready(cfg: Config, timeout: float = 300) -> None:
-    deadline = time.monotonic() + timeout
+    give_up_at = time.monotonic() + timeout
     while True:
         result = run(cfg, "true")
         if result.returncode == 0:
             return
-        if time.monotonic() > deadline:
+        if time.monotonic() > give_up_at:
             raise TimeoutError(f"SSH to {cfg.instance} not ready: {result.stderr.strip()[-500:]}")
         log.info("waiting for SSH...")
         time.sleep(5)

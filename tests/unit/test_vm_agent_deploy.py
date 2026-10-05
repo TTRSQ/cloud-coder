@@ -60,30 +60,71 @@ def run_on_fake_vm(home):
     return run
 
 
-@pytest.mark.parametrize(
-    ("install", "final"),
-    [("true", vm_agent_deploy.MISSING), ("false", vm_agent_deploy.FAILED)],
-)
-def test_a_started_install_runs_detached_and_reports_its_end(monkeypatch, tmp_path, install, final):
-    """MISSING after a successful install: the hashes, not the status, tell it is current."""
+@pytest.fixture
+def fake_vm(monkeypatch, tmp_path):
+    """The VM is a local shell in tmp_path; the install waits for tmp_path/gate."""
     monkeypatch.setattr(ssh, "run", run_on_fake_vm(tmp_path))
     monkeypatch.setattr(ssh, "scp", lambda *a: None)
     gate = tmp_path / "gate"
+    outcome = {"install": "true"}
     monkeypatch.setattr(
         vm_agent_deploy,
         "install_command",
-        lambda cfg, remote: f"while [ ! -e {gate} ]; do sleep 0.05; done; {install}; status=$?",
+        lambda cfg, remote: (
+            f"while [ ! -e {gate} ]; do sleep 0.05; done; {outcome['install']}; status=$?"
+        ),
     )
+    return gate, outcome
+
+
+def wait_while(cfg, state):
+    give_up_at = time.monotonic() + 5
+    while vm_agent_deploy.install_state(cfg) == state:
+        assert time.monotonic() < give_up_at
+
+
+@pytest.mark.parametrize(
+    ("install", "final"),
+    [("true", vm_agent_deploy.INSTALLED), ("false", vm_agent_deploy.FAILED)],
+)
+def test_a_started_install_runs_detached_and_reports_its_end(
+    monkeypatch, tmp_path, fake_vm, install, final
+):
+    gate, outcome = fake_vm
+    outcome["install"] = install
+    # an update replaces the agent and config early: the hashes match while it runs
+    monkeypatch.setattr(vm_agent_deploy, "is_current", lambda *a, **kw: True)
     cfg = Config(project="p")
     started = time.monotonic()
     vm_agent_deploy.start_install(cfg)
     assert time.monotonic() - started < 2  # returns while the install still runs
-    deadline = time.monotonic() + 5
-    while vm_agent_deploy.install_state(cfg) != vm_agent_deploy.INSTALLING:
-        assert time.monotonic() < deadline
+    wait_while(cfg, vm_agent_deploy.INSTALLED)  # until the detached install holds the lock
+    assert vm_agent_deploy.install_state(cfg) == vm_agent_deploy.INSTALLING
     gate.touch()
-    while vm_agent_deploy.install_state(cfg) == vm_agent_deploy.INSTALLING:
-        assert time.monotonic() < deadline
+    wait_while(cfg, vm_agent_deploy.INSTALLING)
     assert vm_agent_deploy.install_state(cfg) == final
-    vm_agent_deploy.forget_failed_install(cfg)
-    assert vm_agent_deploy.install_state(cfg) == vm_agent_deploy.MISSING
+
+
+def test_a_failed_install_keeps_its_log_when_started_again(tmp_path, fake_vm):
+    gate, outcome = fake_vm
+    gate.touch()
+    outcome["install"] = "echo first attempt; false"
+    cfg = Config(project="p")
+    vm_agent_deploy.start_install(cfg)
+    wait_while(cfg, vm_agent_deploy.MISSING)
+    wait_while(cfg, vm_agent_deploy.INSTALLING)
+    assert vm_agent_deploy.install_state(cfg) == vm_agent_deploy.FAILED
+    outcome["install"] = "true"
+    vm_agent_deploy.start_install(cfg)
+    assert "first attempt" in (tmp_path / f"{vm_agent_deploy.INSTALL_LOG}.prev").read_text()
+
+
+def test_a_waiting_install_waits_for_one_running_on_the_vm(monkeypatch, tmp_path, fake_vm):
+    gate, _ = fake_vm
+    cfg = Config(project="p")
+    vm_agent_deploy.start_install(cfg)
+    wait_while(cfg, vm_agent_deploy.MISSING)
+    monkeypatch.setattr(time, "sleep", lambda s: gate.touch())
+    monkeypatch.setattr(vm_agent_deploy, "upload", lambda cfg: pytest.fail("installed twice"))
+    monkeypatch.setattr(vm_agent_deploy, "is_current", lambda *a, **kw: True)
+    assert vm_agent_deploy.ensure_installed(cfg) is False

@@ -84,13 +84,11 @@ def test_up_without_waiting_leaves_the_agent_install_running_on_the_vm(monkeypat
     assert connect.up(Config(), wait=False) == connect.UpResult("running", True, False)
 
 
-def test_a_failed_agent_install_is_reported_and_cleared_for_a_retry(monkeypatch, running_vm):
-    forgotten = []
+def test_a_failed_agent_install_is_reported_and_started_again(monkeypatch, running_vm):
     monkeypatch.setattr(vm_agent_deploy, "install_state", lambda cfg: vm_agent_deploy.FAILED)
-    monkeypatch.setattr(vm_agent_deploy, "forget_failed_install", lambda cfg: forgotten.append(1))
-    with pytest.raises(RuntimeError, match="installing the VM agent failed; see ~/"):
+    with pytest.raises(RuntimeError, match=r"installing the VM agent failed .*started it again"):
         connect.up(Config(), wait=False)
-    assert forgotten == [1] and running_vm == []
+    assert running_vm == [1]
 
 
 def test_up_with_waiting_installs_the_agent_before_returning(monkeypatch):

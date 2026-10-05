@@ -46,19 +46,19 @@ def up(cfg: Config, machine_type_requested: bool = False, *, wait: bool = True) 
 
 
 def _agent_ready_without_waiting(cfg: Config, action: str) -> UpResult:
-    """Start a missing or outdated agent install on the VM, and report whether one is
-    done; the install runs there on its own."""
+    """Start a missing, outdated or failed agent install on the VM, and report whether
+    one is done; the install runs there on its own."""
     state = vm_agent_deploy.install_state(cfg)
     if state == vm_agent_deploy.INSTALLED:
         return UpResult(action, ready=True, agent_installed=False)
+    if state == vm_agent_deploy.INSTALLING:
+        return UpResult(action, ready=False, agent_installed=False, agent_installing=True)
+    vm_agent_deploy.start_install(cfg)
     if state == vm_agent_deploy.FAILED:
-        vm_agent_deploy.forget_failed_install(cfg)
         raise RuntimeError(
-            "installing the VM agent failed; see ~/"
-            f"{vm_agent_deploy.INSTALL_LOG} on the VM. The next `up` starts it again"
+            f"installing the VM agent failed (log: ~/{vm_agent_deploy.INSTALL_LOG}.prev on "
+            "the VM); started it again, call `up` later"
         )
-    if state == vm_agent_deploy.MISSING:
-        vm_agent_deploy.start_install(cfg)
     return UpResult(action, ready=False, agent_installed=False, agent_installing=True)
 
 

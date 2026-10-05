@@ -106,12 +106,12 @@ def create_args(cfg: Config) -> list[str]:
 
 
 def wait_for(cfg: Config, wanted: set[str], timeout: float = 600) -> Vm:
-    deadline = time.monotonic() + timeout
+    give_up_at = time.monotonic() + timeout
     while True:
         vm = describe(cfg)
         if vm.status in wanted:
             return vm
-        if time.monotonic() > deadline:
+        if time.monotonic() > give_up_at:
             raise GcloudError(f"VM stayed {vm.status}; expected {sorted(wanted)}")
         time.sleep(5)
 
