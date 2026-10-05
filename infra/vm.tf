@@ -42,6 +42,8 @@ resource "google_project_iam_custom_role" "vm_operator" {
     "compute.instances.start",
     "compute.instances.stop",
   ]
+
+  depends_on = [google_project_service.this]
 }
 
 # gcloud compute ssh reads the project (for project-wide SSH keys and OS Login settings).
@@ -50,6 +52,8 @@ resource "google_project_iam_custom_role" "project_reader" {
   title       = "cloud-coder project reader"
   description = "compute.projects.get, which gcloud compute ssh needs."
   permissions = ["compute.projects.get"]
+
+  depends_on = [google_project_service.this]
 }
 
 resource "google_compute_instance_iam_member" "api_vm_operator" {

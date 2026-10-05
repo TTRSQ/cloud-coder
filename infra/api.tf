@@ -6,6 +6,8 @@ resource "google_service_account" "api" {
   account_id   = "cloud-coder-api"
   display_name = "cloud-coder HTTP API"
   description  = "Runs cloud-coder api on Cloud Run; may operate the cloud-coder VM only."
+
+  depends_on = [google_project_service.this]
 }
 
 resource "google_artifact_registry_repository" "api" {

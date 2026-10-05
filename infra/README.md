@@ -63,10 +63,10 @@ API が使う config.yaml の `gcp` セクションと `ssh` セクションは�
 ```bash
 cd infra
 terraform init -backend-config="bucket=$PROJECT-tfstate"
+# firewall ルール cloud-coder-allow-iap-ssh を手で作ってある場合だけ、先に state へ取り込む
+# terraform import google_compute_firewall.iap_ssh projects/$PROJECT/global/firewalls/cloud-coder-allow-iap-ssh
 terraform apply   # image_tag が未設定の間は Cloud Run service を作らない
 ```
-
-firewall ルール `cloud-coder-allow-iap-ssh` を手で作ってある場合は、apply の前に state へ取り込みます: `terraform import google_compute_firewall.iap_ssh projects/$PROJECT/global/firewalls/cloud-coder-allow-iap-ssh`。有効化済みの API はそのまま取り込まれます。
 
 ### 3. secret の値を入れる
 
