@@ -3,6 +3,11 @@ output "url" {
   value       = one(google_cloud_run_v2_service.api[*].uri)
 }
 
+output "mcp_url" {
+  description = "URL of the MCP endpoint (Streamable HTTP) to enter in MCP clients such as ChatGPT."
+  value       = "${local.public_url}/mcp"
+}
+
 output "image" {
   description = "Image name to build and push; append :<tag>."
   value       = "${google_artifact_registry_repository.api.registry_uri}/api"

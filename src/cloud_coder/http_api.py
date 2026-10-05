@@ -3,7 +3,9 @@
 Like the MCP server, it is built for one target VM, fixed by the configuration it is
 created with, and returns quickly: starting or stopping the VM is only requested, and
 the caller polls. Every route under /v1 needs a bearer token; GET routes accept a read
-or write token, the others only a write token. `cloud-coder api` serves it with uvicorn.
+or write token, the others only a write token. With a public URL configured it also serves
+the MCP server at /mcp (Streamable HTTP) for OAuth clients such as ChatGPT; see oauth.py.
+`cloud-coder api` serves it with uvicorn.
 """
 
 import functools
@@ -15,21 +17,24 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 import uvicorn
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from mcp.server.auth.provider import AccessToken
+from mcp.server.auth.settings import AuthSettings
+from mcp.server.transport_security import TransportSecuritySettings
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, ValidationError
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import JSONResponse
-from starlette.routing import Route
+from starlette.routing import Mount, Route
 
-from cloud_coder import connect, gce, guards
+from cloud_coder import connect, gce, guards, mcp_server
 from cloud_coder.config import Config, ConfigError
+from cloud_coder.guards import READ, WRITE
+from cloud_coder.oauth import AuthorizationServer, OAuthSettings
 
 READ_TOKENS_ENV = "CLOUD_CODER_API_READ_TOKENS"
 WRITE_TOKENS_ENV = "CLOUD_CODER_API_WRITE_TOKENS"
-READ = "read"
-WRITE = "write"
 RETRY_AFTER_SECONDS = 10
 MAX_LINES = 2000
 
@@ -64,6 +69,27 @@ class ApiTokens:
         if any(is_write):
             return {READ, WRITE}
         return {READ} if any(is_read) else set()
+
+
+@dataclass(frozen=True)
+class McpTokenVerifier:
+    """The bearer tokens /mcp accepts: the API's own tokens, for clients that can send a
+    header, and the access tokens of the OAuth authorization server, for those that cannot.
+    """
+
+    tokens: ApiTokens
+    oauth: AuthorizationServer
+
+    async def verify_token(self, token: str) -> AccessToken | None:
+        granted = self.tokens.scopes(token.encode())
+        if not granted:
+            return await self.oauth.load_access_token(token)
+        return AccessToken(
+            token=token,
+            client_id="api-token",
+            scopes=sorted(granted),
+            resource=self.oauth.settings.resource_url,
+        )
 
 
 class ApiError(Exception):
@@ -191,7 +217,7 @@ HANDLED_ERRORS = (
 Endpoint = Callable[[Request], Awaitable[JSONResponse]]
 
 
-def build_app(cfg: Config, tokens: ApiTokens) -> Starlette:
+def build_app(cfg: Config, tokens: ApiTokens, oauth: OAuthSettings | None = None) -> Starlette:
     def requires(scope: str) -> Callable[[Endpoint], Endpoint]:
         def decorate(endpoint: Endpoint) -> Endpoint:
             @functools.wraps(endpoint)
@@ -274,10 +300,34 @@ def build_app(cfg: Config, tokens: ApiTokens) -> Starlette:
     ]
     handlers = {error: _on_error for error in HANDLED_ERRORS}
     handlers[Exception] = _on_error
-    return Starlette(routes=routes, exception_handlers=handlers)
+    if oauth is None:
+        return Starlette(routes=routes, exception_handlers=handlers)
+
+    server = AuthorizationServer(oauth, tokens.write, scopes=(READ, WRITE))
+    auth = AuthSettings(
+        issuer_url=oauth.issuer_url,
+        resource_server_url=AnyHttpUrl(oauth.resource_url),
+        required_scopes=[READ],
+        validate_token_resource=True,
+    )
+    mcp = mcp_server.build_server(cfg, auth=auth, token_verifier=McpTokenVerifier(tokens, server))
+    # Stateless: Cloud Run may stop the instance between requests. No DNS rebinding
+    # protection: it guards servers on localhost, and this one is public behind OAuth.
+    mcp_app = mcp.streamable_http_app(
+        stateless_http=True,
+        json_response=True,
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+    )
+    return Starlette(
+        routes=[*routes, *server.routes(), Mount("/", app=mcp_app)],
+        exception_handlers=handlers,
+        lifespan=lambda app: mcp.session_manager.run(),
+    )
 
 
 def serve(cfg: Config, host: str, port: int) -> None:
-    """Serve the API until interrupted. ConfigError when no token is configured."""
-    app = build_app(cfg, ApiTokens.from_env(os.environ))
+    """Serve the API until interrupted. ConfigError when no token is configured, or when
+    a public URL is configured without a write token."""
+    environ = os.environ
+    app = build_app(cfg, ApiTokens.from_env(environ), OAuthSettings.from_env(environ))
     uvicorn.run(app, host=host, port=port)

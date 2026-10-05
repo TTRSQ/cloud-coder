@@ -1,6 +1,7 @@
 # The HTTP API (`cloud-coder api`) on Cloud Run, reachable from anywhere and protected only
-# by its own bearer tokens. Secret values are added with gcloud, never through Terraform,
-# so they stay out of the state (see README.md).
+# by its own bearer tokens (on /mcp also OAuth grants approved with a write token). Secret
+# values are added with gcloud, never through Terraform, so they stay out of the state
+# (see README.md).
 
 resource "google_service_account" "api" {
   account_id   = "cloud-coder-api"
@@ -36,7 +37,15 @@ resource "google_artifact_registry_repository" "api" {
   depends_on = [google_project_service.this]
 }
 
+data "google_project" "this" {}
+
 locals {
+  # Cloud Run's deterministic URL; the service's own `uri` would make the env var depend on
+  # the service itself.
+  public_url = coalesce(
+    var.public_url,
+    "https://cloud-coder-api-${data.google_project.this.number}.${var.region}.run.app",
+  )
   secrets = {
     read_tokens  = "cloud-coder-api-read-tokens"
     write_tokens = "cloud-coder-api-write-tokens"
@@ -102,6 +111,10 @@ resource "google_cloud_run_v2_service" "api" {
       env {
         name  = "CLOUD_CODER_CONFIG_YAML"
         value = local.config_yaml
+      }
+      env {
+        name  = "CLOUD_CODER_PUBLIC_URL"
+        value = local.public_url
       }
       env {
         name  = "CLOUD_CODER_SSH_KEY_FILE"
