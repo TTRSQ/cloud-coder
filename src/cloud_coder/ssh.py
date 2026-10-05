@@ -1,11 +1,13 @@
 """SSH / SCP to the worker VM through `gcloud compute ssh|scp` (external IP or IAP)."""
 
 import logging
+import shlex
 import subprocess
 import time
 
 from cloud_coder import deadline
 from cloud_coder.config import Config
+from cloud_coder_vm.tmux_panes import tmux_command
 
 log = logging.getLogger(__name__)
 
@@ -88,5 +90,5 @@ def wait_ready(cfg: Config, timeout: float = 300) -> None:
 
 
 def attach_tmux(cfg: Config, tmux_session: str) -> int:
-    command = f"tmux attach-session -t ={tmux_session}"
+    command = shlex.join([*tmux_command(), "attach-session", "-t", f"={tmux_session}"])
     return subprocess.run(ssh_command(cfg, command, tty=True)).returncode

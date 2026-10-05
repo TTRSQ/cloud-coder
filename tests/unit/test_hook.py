@@ -1,5 +1,5 @@
 from cloud_coder_vm import session_registry, session_state
-from cloud_coder_vm.hook import apply_event
+from cloud_coder_vm.hook import apply_event, describe
 from cloud_coder_vm.process_table import Process
 from cloud_coder_vm.session_registry import LogicalSession
 
@@ -75,3 +75,43 @@ def test_session_start_of_a_new_process_replaces_a_crashed_ones_record(tmp_path)
     run(tmp_path, {"hook_event_name": "SessionStart", "session_id": "A", "source": "resume"})
     st = session_state.load(tmp_path / "s", "pane-4")
     assert (st.state, st.claude_pid, st.last_event) == ("BUSY", 321, "SessionStart")
+
+
+def test_describe_logs_event_state_and_task_registry():
+    stop = {
+        "hook_event_name": "Stop",
+        "session_id": "A",
+        "background_tasks": [{"type": "shell"}, {"type": "agent"}, {"type": "shell"}],
+        "session_crons": [],
+    }
+    assert describe(stop, ENV, "BUSY") == (
+        "Stop cc-app-1 (%4) -> BUSY background_tasks=3 (agent,shell) session_crons=0"
+    )
+    note = {
+        "hook_event_name": "Notification",
+        "session_id": "A",
+        "notification_type": "idle_prompt",
+    }
+    assert describe(note, {}, "IDLE") == (
+        "Notification session A (no tmux) -> IDLE notification_type=idle_prompt"
+    )
+    end = {"hook_event_name": "SessionEnd", "session_id": "A", "reason": "other"}
+    assert describe(end, ENV, None) == "SessionEnd cc-app-1 (%4) -> no state reason=other"
+
+
+def test_a_failing_hook_says_where_in_the_journal(monkeypatch, tmp_path):
+    import io
+
+    from cloud_coder_vm import hook, paths
+
+    lines = []
+    monkeypatch.setattr(hook, "_journal", lines.append)
+    monkeypatch.setattr(paths, "RUNTIME_DIR", tmp_path)
+    monkeypatch.setattr(paths, "HOOK_LOG", tmp_path / "hook.log")
+    assert hook.main(io.StringIO("not json")) == 0
+    assert lines[0].startswith("hook failed: JSONDecodeError(")
+    assert (
+        " at hook.py:" in lines[0]
+        and "(traceback in" in lines[0]
+        and (tmp_path / "hook.log").exists()
+    )

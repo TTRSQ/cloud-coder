@@ -27,7 +27,7 @@ from cloud_coder_vm.session_registry import LogicalSession
 from cloud_coder_vm.session_state import IDLE, READY
 from cloud_coder_vm.state_lock import state_lock, write_atomic
 from cloud_coder_vm.system_files import VmConfig
-from cloud_coder_vm.tmux_panes import PANE_FORMAT, parse_list_panes
+from cloud_coder_vm.tmux_panes import DEFAULT_SOCKET, PANE_FORMAT, parse_list_panes, tmux_command
 
 
 class LaunchError(Exception):
@@ -186,10 +186,10 @@ def ensure_repo(session: LogicalSession, layout: Layout, created: bool = False) 
 
 
 def _tmux_server_groups() -> set[int] | None:
-    sessions = _run(["tmux", "list-sessions", "-F", "#{session_name}"]).stdout.split()
+    sessions = _run([*tmux_command(), "list-sessions", "-F", "#{session_name}"]).stdout.split()
     if not sessions:
         return None  # no server yet: the new one inherits this login's groups
-    pid = _run(["tmux", "display-message", "-p", "-t", f"={sessions[0]}", "#{pid}"]).stdout
+    pid = _run([*tmux_command(), "display-message", "-p", "-t", f"={sessions[0]}", "#{pid}"]).stdout
     try:
         status = Path(f"/proc/{pid.strip()}/status").read_text()
     except OSError:
@@ -215,12 +215,20 @@ def regroup_command(
 
 
 def ensure_tmux_session(session: LogicalSession) -> str:
-    if _run(["tmux", "has-session", "-t", f"={session.name}"]).returncode == 0:
+    if _run([*tmux_command(), "has-session", "-t", f"={session.name}"]).returncode == 0:
         return "existing"
+    has_legacy = [*tmux_command(socket=DEFAULT_SOCKET), "has-session", "-t", f"={session.name}"]
+    if _run(has_legacy).returncode == 0:
+        # A second Claude Code would resume the conversation the old one still runs.
+        raise LaunchError(
+            f"{session.name} still runs on the default tmux server (started by an older "
+            f"cloud-coder); end it with `tmux -L default kill-session -t ={session.name}` "
+            "on the VM and connect again"
+        )
     shell = regroup_command("docker", set(os.getgroups()), _tmux_server_groups())
     _check(
         [
-            "tmux",
+            *tmux_command(),
             "new-session",
             "-d",
             "-s",
@@ -243,10 +251,17 @@ def claude_command(
     home: Path, session: LogicalSession, resume: bool, prompt_file: Path | None = None
 ) -> str:
     """Shell command typed into the pane. The first prompt is read from a file so that
-    multi-line text and shell metacharacters reach Claude Code unchanged."""
+    multi-line text and shell metacharacters reach Claude Code unchanged.
+
+    Claude Code runs without $TMUX, so tmux run by its tools (a test that calls
+    `tmux kill-server`, say) cannot reach cloud-coder's server. $TMUX_PANE stays: the
+    hook keys the session state by it."""
     id_flag = "--resume" if resume else "--session-id"
     command = shlex.join(
         [
+            "env",
+            "-u",
+            "TMUX",
             f"CLOUD_CODER_SESSION={session.name}",
             str(paths.claude_bin(home)),
             id_flag,
@@ -285,11 +300,13 @@ def send_prompt_to_running(pane_id: str, claude_pid: int, prompt: str) -> None:
     if state.state not in (READY, IDLE):
         raise LaunchError(f"Claude Code in this session is {state.state}; prompt not sent")
     buffer = f"cloud-coder-{os.getpid()}"
-    subprocess.run(["tmux", "load-buffer", "-b", buffer, "-"], input=prompt, text=True, check=True)
+    subprocess.run(
+        [*tmux_command(), "load-buffer", "-b", buffer, "-"], input=prompt, text=True, check=True
+    )
     # Bracketed paste (-p) keeps newlines inside the prompt instead of submitting each line.
-    _check(["tmux", "paste-buffer", "-p", "-d", "-b", buffer, "-t", pane_id])
+    _check([*tmux_command(), "paste-buffer", "-p", "-d", "-b", buffer, "-t", pane_id])
     time.sleep(0.3)
-    _check(["tmux", "send-keys", "-t", pane_id, "Enter"])
+    _check([*tmux_command(), "send-keys", "-t", pane_id, "Enter"])
 
 
 def _cmdline(pid: int) -> list[str]:
@@ -305,7 +322,7 @@ def ensure_claude(
 ) -> dict:
     """Start Claude Code in the session unless one already runs there; then hand it ``prompt``."""
     panes = parse_list_panes(
-        _check(["tmux", "list-panes", "-s", "-t", f"={session.name}", "-F", PANE_FORMAT])
+        _check([*tmux_command(), "list-panes", "-s", "-t", f"={session.name}", "-F", PANE_FORMAT])
     )
     procs = process_table.snapshot()
     children = process_table.children_map(procs)
@@ -331,7 +348,7 @@ def ensure_claude(
     if free_pane is None:
         free_pane = _check(
             [
-                "tmux",
+                *tmux_command(),
                 "new-window",
                 "-t",
                 f"={session.name}:",
@@ -346,8 +363,8 @@ def ensure_claude(
     resume = transcript_exists(home, session.claude_session_id)
     prompt_file = write_prompt_file(session, prompt) if prompt is not None else None
     command = claude_command(home, session, resume, prompt_file)
-    _check(["tmux", "send-keys", "-t", free_pane, "-l", command])
-    _check(["tmux", "send-keys", "-t", free_pane, "Enter"])
+    _check([*tmux_command(), "send-keys", "-t", free_pane, "-l", command])
+    _check([*tmux_command(), "send-keys", "-t", free_pane, "Enter"])
     result = {
         "claude": "resumed" if resume else "started",
         "remote_control": True,
