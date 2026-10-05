@@ -14,7 +14,7 @@ flowchart LR
 
 | リソース | 内容 |
 | --- | --- |
-| `google_cloud_run_v2_service.api` | `cloud-coder-api`。最小 0 / 最大 1 インスタンス、リクエストタイムアウト 600 秒。**`allUsers` に `roles/run.invoker` を付けて公開**し、アプリの Bearer token だけで守る |
+| `google_cloud_run_v2_service.api` | `cloud-coder-api`。最小 0 / 最大 1 インスタンス、リクエストタイムアウト 600 秒。**`allUsers` に `roles/run.invoker` を付けて公開**し、アプリの Bearer token (と、`/mcp` では write token で承認した OAuth grant) だけで守る。環境変数 `CLOUD_CODER_PUBLIC_URL` に公開 URL (変数 `public_url`、既定は `https://cloud-coder-api-<project number>.<region>.run.app`) を渡し、`/mcp` を有効にする |
 | `google_service_account.api` | `cloud-coder-api`。API の実行 SA |
 | `google_project_iam_custom_role.vm_operator` | `compute.instances.get/start/stop/resume/setMetadata`。**VM 1 台にだけ**付与 |
 | `google_project_iam_custom_role.project_reader` | `compute.projects.get` だけ。`gcloud compute ssh` が project を読むため project に付与 (追加のみの `_iam_member`) |
@@ -107,6 +107,8 @@ WRITE=$(gcloud secrets versions access latest --secret cloud-coder-api-write-tok
 curl -s -H "Authorization: Bearer $READ" "$URL/v1/status"
 ```
 
+MCP の URL は `terraform -chdir=infra output -raw mcp_url` です (`url` とは別の、Cloud Run の決まった形の URL。OAuth の issuer と resource はこちらです)。ChatGPT からの接続は [how-to-use の ChatGPT から使う](../how-to-use.md#chatgpt-から使う) を参照してください。
+
 - Cloud Run は `/healthz` を予約しているため、Cloud Run 上では `GET /healthz` がアプリに届かず 404 になります。生存確認には `GET /v1/status` を使ってください。
 - 1 回の呼び出しごとに IAP 経由の SSH が入るので、VM に触る endpoint は数秒かかります。インスタンスが 0 から起動するときはさらに 2〜3 秒かかります。
 
@@ -119,11 +121,14 @@ token の環境変数はインスタンスの起動時に読まれます。
 3. クライアントを新しい token に切り替える。
 4. 新しい token だけの version を追加し、古い version を `gcloud secrets versions disable` で無効にする。
 
+古い write token を外すと、その token で承認した OAuth の grant と、1 つ目の write token で署名した client 登録が無効になります。ChatGPT などの OAuth クライアントは接続し直してください。
+
 ## セキュリティ
 
 - この endpoint はインターネットに公開されています。守っているのはアプリの Bearer token だけです。
 - **write token は VM のシェルと同等の権限です。** write token を持つ相手は VM を起動・停止し、任意の repository を clone して Claude Code にプロンプトを渡せます。Claude Code は VM 上でコマンドを実行でき、VM には Claude Code と GitHub の認証情報があります。状態を見るだけのクライアントには read token を渡してください。
 - API の実行 SA が操作できるのはこの VM 1 台 (起動・停止・metadata) と IAP トンネルだけで、project 全体への権限は `compute.projects.get` だけです。VM を作成・削除することはできません。
+- `/mcp` の OAuth は、write token を承認ページに貼った相手にだけ grant を出します。OAuth で得た access token は write token と同じ権限 (VM のシェルと同等) を持ちます。access token は 1 時間で切れますが、refresh token (30 日。更新のたびに新しいものが出る) で使われ続ける限り更新できます。止めるには write token を入れ替えます。
 - 最大インスタンス数を 1 にしているので、大量のリクエストを受けても費用は 1 インスタンス分に収まります。
 
 ## 費用
