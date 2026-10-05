@@ -1,5 +1,6 @@
 # The worker VM is created, started and stopped by cloud-coder itself, so Terraform only
-# reads it and grants the API's service account access to this one instance.
+# reads it and grants the API's service account access to this one instance. The VM must
+# exist before apply, and a recreated VM needs another apply (its IAM goes with it).
 data "google_compute_instance" "worker" {
   name = var.instance
   zone = var.zone
@@ -26,11 +27,6 @@ resource "google_compute_firewall" "iap_ssh" {
   }
 
   depends_on = [google_project_service.this]
-}
-
-import {
-  to = google_compute_firewall.iap_ssh
-  id = "projects/${var.project_id}/global/firewalls/cloud-coder-allow-iap-ssh"
 }
 
 # What `cloud-coder api` does to the VM: describe, start/resume, stop, and add its SSH key

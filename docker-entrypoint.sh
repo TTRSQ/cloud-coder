@@ -8,7 +8,7 @@ set -eu
 key="$HOME/.ssh/google_compute_engine"
 mkdir -p "$HOME/.ssh"
 chmod 700 "$HOME/.ssh"
-# cat, not cp: Cloud Run's secret volume files are replaced in place and cp can fail.
+# cat, not cp: cp of the secret volume file failed on Cloud Run ("replaced while being copied").
 cat "$CLOUD_CODER_SSH_KEY_FILE" > "$key"
 chmod 600 "$key"
 ssh-keygen -y -f "$key" > "$key.pub"

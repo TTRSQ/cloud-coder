@@ -20,7 +20,7 @@ flowchart LR
 | `google_project_iam_custom_role.project_reader` | `compute.projects.get` だけ。`gcloud compute ssh` が project を読むため project に付与 (追加のみの `_iam_member`) |
 | `google_iap_tunnel_instance_iam_member.api_ssh` | VM 1 台への IAP トンネル (`roles/iap.tunnelResourceAccessor`) |
 | `google_compute_firewall.iap_ssh` | `cloud-coder-allow-iap-ssh`。IAP の範囲 (35.235.240.0/20) から network tag `cloud-coder` の VM への tcp:22 だけを許可 |
-| `google_artifact_registry_repository.api` | `cloud-coder` (Docker)。最新 3 バージョンを残して古いイメージを消す |
+| `google_artifact_registry_repository.api` | `cloud-coder` (Docker)。最新 3 バージョンは残し、それ以外で 30 日を過ぎたイメージを消す |
 | `google_secret_manager_secret.api` | `cloud-coder-api-read-tokens` / `-write-tokens` / `-ssh-key` の入れ物。値は gcloud で入れる |
 | `google_project_service.this` | 使う API を有効化する。destroy しても無効化しない |
 
@@ -30,7 +30,7 @@ flowchart LR
 
 ## 初回の構築
 
-`terraform` 1.11 以上と、対象 project の Owner 相当の権限で認証した `gcloud` が必要です。
+`terraform` 1.11 以上と、対象 project の Owner 相当の権限で認証した `gcloud` が必要です。VM は先に `cloud-coder up` で作っておきます (API は VM を作れません)。VM を作り直したら、VM に付けた IAM も消えるので `terraform apply` をもう一度実行してください。
 
 ### 1. state 用の bucket を作る
 
@@ -54,7 +54,11 @@ project_id = "<project>"
 # EOT
 ```
 
-API が使う config.yaml は、`gcp` (`project_id` / `zone` / `instance`) と `ssh` (`ssh_user`、`iap: true`) を変数から作り、残りを `config_yaml` から取ります。VM agent は設定が前回のインストール時と違うと入れ直されるので、`config_yaml` を手元の config.yaml と揃えておかないと、手元と Cloud Run で交互に agent が入れ直されます。
+API が使う config.yaml の `gcp` セクションと `ssh` セクションは、変数 `project_id` / `zone` / `instance` / `ssh_user` から作ります (`ssh.iap` は常に `true`)。残りのセクションは変数 `config_yaml` から取ります。VM agent は、agent のコードか設定が前回のインストール時と違うと入れ直されます。手元と Cloud Run で交互に入れ直されないように、次の 3 つを揃えてください。
+
+- `config_yaml` と、手元の config.yaml の vm / git / claude セクション
+- `ssh_user` と、手元の `ssh.user`
+- イメージをビルドする commit と、手元の cloud-coder のバージョン
 
 ```bash
 cd infra
@@ -62,7 +66,7 @@ terraform init -backend-config="bucket=$PROJECT-tfstate"
 terraform apply   # image_tag が未設定の間は Cloud Run service を作らない
 ```
 
-既存の firewall ルール `cloud-coder-allow-iap-ssh` と有効化済みの API は、`import` ブロックで取り込まれます。
+firewall ルール `cloud-coder-allow-iap-ssh` を手で作ってある場合は、apply の前に state へ取り込みます: `terraform import google_compute_firewall.iap_ssh projects/$PROJECT/global/firewalls/cloud-coder-allow-iap-ssh`。有効化済みの API はそのまま取り込まれます。
 
 ### 3. secret の値を入れる
 
@@ -124,7 +128,7 @@ token の環境変数はインスタンスの起動時に読まれます。
 
 ## 費用
 
-アクセスが無いとき Cloud Run は 0 インスタンスになり、課金されません。常に掛かるのは、Artifact Registry のイメージ (1 個 約 300MB、最大 3 個)、Secret Manager の secret 3 個、state bucket だけで、月に数十円程度です。VM の費用は API とは別で、cloud-coder の自動停止に従います。
+アクセスが無いとき Cloud Run は 0 インスタンスになり、課金されません。常に掛かるのは、Artifact Registry のイメージ (1 個 約 300MB)、Secret Manager の secret 3 個、state bucket だけで、月に数十円程度です。VM の費用は API とは別で、cloud-coder の自動停止に従います。
 
 ## 片付ける
 
