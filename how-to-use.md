@@ -295,6 +295,28 @@ curl -s -X POST -H "$AUTH" "$URL/v1/vm/start"
 - Cloud Run 上では `/healthz` に届きません (Cloud Run の予約パス)。生存確認には `GET /v1/status` を使います。
 - 1 回の呼び出しに数秒かかります (IAP 経由の SSH)。
 
+### ChatGPT から使う
+
+Cloud Run に置いた API は `/mcp` で MCP server も提供しているので、ChatGPT の developer mode のアプリとして登録できます。仕組みと注意は [README の MCP over HTTP](README.md#mcp-over-http-chatgpt-など) にあります。
+
+1. MCP の URL と write token を手元に用意する。
+   ```bash
+   terraform -chdir=infra output -raw mcp_url   # https://cloud-coder-api-<project number>.<region>.run.app/mcp
+   gcloud secrets versions access latest --secret cloud-coder-api-write-tokens --project <project>
+   ```
+   URL は `terraform output url` (`…a.run.app`) ではなく `mcp_url` の方を使います。OAuth の issuer と resource がこの URL だからです。
+2. ChatGPT (web) の **Settings → Security and login** で **Developer mode** を有効にする。
+3. ChatGPT の Apps (Plugins) の画面で **+** (Create) を押し、次のように入力して作成する。
+   - Name: 任意 (例: cloud-coder)
+   - MCP Server URL: 手順 1 の `mcp_url`
+   - Authentication: **OAuth** (client ID と secret は空のまま。ChatGPT が Dynamic Client Registration で登録します)
+4. ChatGPT が cloud-coder の承認ページ (受け取り先の URL、注意書き、write token の入力欄があるページ) を開く。受け取り先が `https://chatgpt.com/…` であることを確かめ、手順 1 の **write token** を貼り付けて **Allow** を押す。ChatGPT に戻れば接続完了です。
+5. 会話でアプリを選び、「cloud-coder の status を見て」のように頼む。`up` / `start_session` / `send_prompt` / `stop` は書き込みの tool なので、ChatGPT が実行前に確認を求めます。
+
+- 承認ページに貼るのは write token だけです (read token では承認できません)。自分で ChatGPT から接続を始めた直後に開いたページにだけ貼ってください。人から送られたリンクの承認ページに貼ると、その人の ChatGPT に権限が渡ります。
+- write token をローテーションして古い token を外すと、ChatGPT の接続は無効になります。アプリの接続をやり直してください。
+- ChatGPT が書き込みの tool を呼べるかはプランによります。OpenAI の developer mode のドキュメントは Plus / Pro でも書き込みを許可 (実行前に確認) としていますが、他のページでは制限がある書き方もあるので、呼べない場合はプランの制限を確認してください。
+
 ## Claude Code のスキルで操作する
 
 このリポジトリの [`.claude/skills/cloud-coder/SKILL.md`](.claude/skills/cloud-coder/SKILL.md) は Claude Code の [project skill](https://code.claude.com/docs/en/skills#where-skills-live) です。インストールは不要で、このリポジトリ (と、その git worktree) で起動した Claude Code でだけ使えます。

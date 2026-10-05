@@ -50,3 +50,13 @@ variable "image_tag" {
   type        = string
   default     = null
 }
+
+variable "public_url" {
+  description = <<-EOT
+    URL clients reach the API at, without a trailing slash: the OAuth issuer, and with /mcp
+    appended the MCP resource. Unset: the Cloud Run URL
+    https://cloud-coder-api-<project number>.<region>.run.app.
+  EOT
+  type        = string
+  default     = null
+}

@@ -3,7 +3,8 @@
 The server is built for one target VM, fixed by the configuration it is created with;
 no tool takes a project, zone or instance, and none runs arbitrary commands. Tools
 return quickly: starting or stopping the VM is only requested, and the caller polls.
-The server does not depend on a transport: `cloud-coder mcp` serves it over stdio.
+The server does not depend on a transport: `cloud-coder mcp` serves it over stdio, and
+the HTTP API serves it at /mcp (Streamable HTTP) behind bearer tokens and OAuth.
 """
 
 from collections.abc import Iterator
@@ -11,6 +12,9 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from typing import Annotated
 
+from mcp.server.auth.middleware.auth_context import get_access_token
+from mcp.server.auth.provider import TokenVerifier
+from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
@@ -62,8 +66,22 @@ def tool_errors() -> Iterator[None]:
         raise ToolError(str(e)) from e
 
 
-def build_server(cfg: Config) -> MCPServer:
-    server = MCPServer("cloud-coder", instructions=INSTRUCTIONS)
+def build_server(
+    cfg: Config, *, auth: AuthSettings | None = None, token_verifier: TokenVerifier | None = None
+) -> MCPServer:
+    """``auth`` and ``token_verifier`` protect the HTTP transports: then tools that are not
+    read-only need a token with the write scope. stdio has no tokens and allows every tool.
+    """
+    server = MCPServer(
+        "cloud-coder", instructions=INSTRUCTIONS, auth=auth, token_verifier=token_verifier
+    )
+
+    def require_write() -> None:
+        if auth is None:
+            return
+        token = get_access_token()
+        if token is None or guards.WRITE not in token.scopes:
+            raise ToolError("this token may call only the read-only tools (status, read_session)")
 
     @server.tool(annotations=READ_ONLY)
     def status() -> dict:
@@ -76,6 +94,7 @@ def build_server(cfg: Config) -> MCPServer:
         """Start the VM if it is not running and return without waiting. When it runs,
         also install or update the cloud-coder agent on it (the first install can take
         several minutes). Call again until `ready` is true."""
+        require_write()
         with tool_errors():
             return asdict(guards.up_now(cfg))
 
@@ -105,6 +124,7 @@ def build_server(cfg: Config) -> MCPServer:
     ) -> dict:
         """Make sure a session (git checkout, tmux session and Claude Code) exists and
         runs, and return its name. Requires a ready VM (see `up`)."""
+        require_write()
         with tool_errors():
             if prompt is not None:
                 guards.checked_prompt(prompt)
@@ -121,6 +141,7 @@ def build_server(cfg: Config) -> MCPServer:
         """Type an instruction into the session's Claude Code and submit it. Refused
         unless Claude Code is READY or IDLE; if Claude Code is not running it is
         started (or resumed) with this instruction."""
+        require_write()
         with tool_errors():
             guards.checked_prompt(text)
             guards.require_ready(cfg)
@@ -143,6 +164,7 @@ def build_server(cfg: Config) -> MCPServer:
     def stop() -> dict:
         """Stop the VM now (its disk is kept) and return without waiting. Interrupts
         any running work; the VM also stops by itself once every session is idle."""
+        require_write()
         with tool_errors():
             return {"vm": gce.stop(cfg, wait=False)}
 
