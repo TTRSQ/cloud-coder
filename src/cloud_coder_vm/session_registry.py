@@ -7,6 +7,7 @@ The cloud-coder session name doubles as the tmux session name.
 
 import json
 import re
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -58,9 +59,15 @@ def session_name(repo: str, index: int) -> str:
     return f"{NAME_PREFIX}{safe}-{index}"
 
 
-def next_index(sessions: dict[str, LogicalSession], repo: str) -> int:
+def next_index(
+    sessions: dict[str, LogicalSession],
+    repo: str,
+    left_behind: Callable[[int], bool] = lambda index: False,
+) -> int:
+    """The lowest index whose name is neither registered nor ``left_behind`` by an
+    earlier session (see `launch.left_behind`)."""
     index = 1
-    while session_name(repo, index) in sessions:
+    while session_name(repo, index) in sessions or left_behind(index):
         index += 1
     return index
 

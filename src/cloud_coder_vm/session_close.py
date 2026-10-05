@@ -61,9 +61,10 @@ def kill_tmux_session(session_name: str) -> str:
 
 
 def close(config: VmConfig, home: Path, session_name: str) -> dict:
-    """The session is taken out of the registry first, so a concurrent `connect` cannot
-    restart it while it is being closed; it is put back if closing fails before
-    anything is deleted."""
+    """The session is taken out of the registry first, so a `connect` that starts after
+    that cannot restart it while it is being closed; it is put back if closing fails
+    before anything is deleted. Its name is not given to a new session while its
+    branch is left anywhere (see `launch.left_behind`)."""
     registry_file = paths.registry_path(home)
     sessions = session_registry.load(registry_file)
     if session_name not in sessions:
@@ -86,11 +87,17 @@ def close(config: VmConfig, home: Path, session_name: str) -> dict:
     try:
         result: dict = {"session": session_name, "tmux": kill_tmux_session(session_name)}
         if is_worktree:
-            # git itself refuses to remove a worktree that changed since the check above
+            # again: Claude Code may have written until it was ended
+            reason = unsaved_work(workdir)
+            if reason is not None:
+                raise CloseError(
+                    f"{workdir} has {reason}; its tmux session was ended, the worktree "
+                    "is kept: save or remove them, then close again"
+                )
             removed = _git(["worktree", "remove", str(workdir)], main)
             if removed.returncode != 0:
                 raise CloseError(f"git worktree remove failed: {removed.stderr.strip()}")
-    except CloseError:
+    except BaseException:
         with state_lock():
             sessions = session_registry.load(registry_file)
             sessions.setdefault(session_name, session)
@@ -103,8 +110,12 @@ def close(config: VmConfig, home: Path, session_name: str) -> dict:
             if unpushed(branch, main):
                 result["branch"] = f"kept: {branch} has commits that are not pushed"
             else:
-                _git(["branch", "-D", branch], main)
-                result["branch"] = "deleted"
+                deleted = _git(["branch", "-D", branch], main)
+                result["branch"] = (
+                    "deleted"
+                    if deleted.returncode == 0
+                    else f"kept: git branch -D failed: {deleted.stderr.strip()}"
+                )
     else:
         result["worktree"] = "kept (main checkout)" if workdir == main else "absent"
     return result

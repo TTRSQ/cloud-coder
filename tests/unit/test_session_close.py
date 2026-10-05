@@ -3,7 +3,7 @@ import subprocess
 
 import pytest
 
-from cloud_coder_vm import paths, session_close, session_registry
+from cloud_coder_vm import launch, paths, session_close, session_registry
 from cloud_coder_vm.session_close import CloseError, close
 from cloud_coder_vm.session_registry import LogicalSession
 from cloud_coder_vm.system_files import VmConfig
@@ -108,3 +108,24 @@ def test_a_tmux_failure_keeps_everything(home, monkeypatch):
         close(CONFIG, home, "cc-app-2")
     assert (home / "git" / "wt" / "app-2").exists()
     assert registered(home) == {"cc-app-1", "cc-app-2"}
+
+
+def test_a_new_task_does_not_reuse_the_name_of_a_closed_pushed_session(home):
+    """cc-app-2's branch stays on the remote (often with a pull request): a new session
+    named cc-app-2 would start on, and push to, that branch."""
+    worktree = home / "git" / "wt" / "app-2"
+    git("commit", "-q", "--allow-empty", "-m", "work", cwd=worktree)
+    git("push", "-q", "origin", "cloud-coder/cc-app-2", cwd=worktree)
+    close(CONFIG, home, "cc-app-2")
+    sessions = session_registry.load(paths.registry_path(home))
+    target = launch.resolve_target(
+        sessions,
+        launch.Layout.of(CONFIG, home),
+        repo_url=None,
+        repo="app",
+        session_name=None,
+        new=False,
+        has_prompt=True,
+        now=0,
+    )
+    assert target.session.name == "cc-app-3"

@@ -117,7 +117,9 @@ def resolve_target(
         last = session_registry.latest(sessions, repo)
         if last is not None:
             return Target(last, created=False)
-    index = session_registry.next_index(sessions, repo)
+    index = session_registry.next_index(
+        sessions, repo, lambda index: left_behind(layout, repo, index)
+    )
     workdir = main_checkout(layout, repo) if index == 1 else worktree_dir(layout, repo, index)
     known_url = repo_url or next((s.repo_url for s in sessions.values() if s.repo == repo), None)
     session = LogicalSession(
@@ -130,6 +132,25 @@ def resolve_target(
         last_connected_at=now,
     )
     return Target(session, created=True)
+
+
+def left_behind(layout: Layout, repo: str, index: int) -> bool:
+    """Whether a closed session left the worktree or branch of session ``index`` behind
+    (its branch is usually pushed, often with a pull request): a new session must not
+    reuse that name and start a new task on the old work."""
+    if index == 1:
+        return False  # the main checkout outlives its sessions by design
+    if worktree_dir(layout, repo, index).exists():
+        return True
+    main = main_checkout(layout, repo)
+    if not main.exists():
+        return False
+    branch = f"cloud-coder/{session_registry.session_name(repo, index)}"
+    refs = _run(
+        ["git", "for-each-ref", "--count=1", f"refs/heads/{branch}", f"refs/remotes/*/{branch}"],
+        cwd=main,
+    )
+    return bool(refs.stdout.strip())  # a broken clone fails in ensure_repo instead
 
 
 def _run(args: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess:

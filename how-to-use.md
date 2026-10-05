@@ -210,6 +210,7 @@ cloud-coder close cc-REPO-2                       # 終わったセッション�
   - Claude Code が作業中 (`BUSY`) でも確認せずに終了します。`cloud-coder status` で確かめてから閉じてください。
   - main checkout (`cc-REPO-1` の `~/git/REPO`) は削除しません。Claude Code の会話の履歴 (`~/.claude`) も残りますが、セッションの登録を外すので `connect --session` での再開はできなくなります。
   - VM が止まっていれば起動します。
+  - 閉じたセッションの branch が remote などに残っている間は、その名前 (`cc-REPO-N`) を新しいセッションに使いません (古い branch や pull request の上で新しいタスクを始めないため)。
 
 ## スマホなどから Remote Control で操作する
 
