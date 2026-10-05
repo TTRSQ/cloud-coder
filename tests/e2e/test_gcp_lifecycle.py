@@ -121,7 +121,7 @@ def test_close_removes_a_clean_worktree_session(cc):
 
 def test_tmux_run_by_claudes_tools_cannot_reach_the_sessions(cc):
     session = last_json(cc("connect", REPO, "--no-attach").stdout)["session"]
-    pid = vm_shell(f"pgrep -n -f 'remote-control {session}$'").strip()
+    pid = vm_shell(f"pgrep -n -f 'remote-control {session}( |$)'").strip()
     env = vm_shell(f"tr '\\0' '\\n' < /proc/{pid}/environ").splitlines()
     assert not any(line.startswith("TMUX=") for line in env)
     assert any(line.startswith("TMUX_PANE=") for line in env)

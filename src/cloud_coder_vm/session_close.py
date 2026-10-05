@@ -49,9 +49,15 @@ def unsaved_work(workdir: Path) -> str | None:
 
 def runs_on_default_server(session_name: str) -> bool:
     """Whether an older cloud-coder left the session on the default tmux server, where
-    `kill_tmux_session` does not reach it."""
+    `kill_tmux_session` does not reach it. As there, only a session tmux does not know
+    counts as absent."""
     has_session = [*tmux_command(None, DEFAULT_SOCKET), "has-session", "-t", f"={session_name}"]
-    return subprocess.run(has_session, capture_output=True).returncode == 0
+    found = subprocess.run(has_session, capture_output=True, text=True)
+    if found.returncode == 0:
+        return True
+    if "can't find session" in found.stderr or no_server(found.stderr):
+        return False
+    raise CloseError(f"tmux has-session (default server) failed: {found.stderr.strip()}")
 
 
 def kill_tmux_session(session_name: str) -> str:

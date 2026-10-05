@@ -207,6 +207,7 @@ cloud-coder close cc-REPO-2                       # 終わったセッション�
 - 置き場所は `vm.workspace` / `vm.worktrees` で変えられます ([README のセッション](README.md#セッション))。
 - `cloud-coder close cc-REPO-N` でセッションを閉じます。tmux session を Claude Code ごと終了し、worktree と branch `cloud-coder/cc-REPO-N` を削除して、登録から外します。
   - worktree に未コミットの変更 (untracked のファイルを含む)、gitignore されたファイル (`.env` や生成物など。`git worktree remove` は消してしまうため)、どの remote にも無いコミットのどれかがあるときは、何もせずにエラーにします。commit と push を済ませるか不要なファイルを消してから閉じ直してください。
+  - 以前の版が既定の tmux server で起動したセッションがまだ動いているときもエラーにします ([README の tmux server の分離](README.md#tmux-server-の分離))。
   - Claude Code が作業中 (`BUSY`) でも確認せずに終了します。`cloud-coder status` で確かめてから閉じてください。
   - main checkout (`cc-REPO-1` の `~/git/REPO`) は削除しません。Claude Code の会話の履歴 (`~/.claude`) も残りますが、セッションの登録を外すので `connect --session` での再開はできなくなります。
   - VM が止まっていれば起動します。
