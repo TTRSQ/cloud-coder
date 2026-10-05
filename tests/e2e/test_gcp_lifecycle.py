@@ -105,7 +105,7 @@ def test_a_prompt_starts_a_new_session_unless_one_is_named(cc):
     again = cc("connect", "--session", task["session"], "-p", "more", "--no-attach").stdout
     again = last_json(again)
     assert again["session"] == task["session"] and not again["created"]
-    assert again["conversation"] == "continued"
+    assert (again["claude"], again["conversation"]) == ("resumed", "continued")
     refused = cc("connect", "-p", "where?", "--no-attach", check=False)
     assert refused.returncode != 0 and "needs a repository" in refused.stderr
 
