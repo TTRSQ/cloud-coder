@@ -68,8 +68,10 @@ cloud-coder connect                                 # 直近のセッション�
 cloud-coder connect REPO                            # REPO の直近のセッションへ戻る
 cloud-coder connect REPO --new                      # REPO で別の Claude Code を git worktree 上に起動する
 cloud-coder connect --session cc-REPO-2             # セッション名を指定して戻る
-cloud-coder connect REPO --new -p "テストを直して" --detach   # タスクを渡して放置 (終われば自動停止)
+cloud-coder connect REPO -p "テストを直して" --detach         # タスクを新しいセッションで始めて放置 (終われば自動停止)
+cloud-coder connect --session cc-REPO-2 -p "続けて" --detach  # そのセッションの会話の続きとして指示する
 cloud-coder connect REPO --prompt-file task.md       # プロンプトをファイルから (- で標準入力)
+cloud-coder close cc-REPO-2                         # セッションを閉じて worktree を片付ける
 cloud-coder status                                  # VM / セッション / 自動停止の可否
 cloud-coder stop                                    # VM を停止する (disk は残る)
 cloud-coder up                                      # VM の作成・起動と agent のインストールだけ行う
@@ -78,10 +80,14 @@ cloud-coder api                                     # HTTP API を 127.0.0.1:878
 ```
 
 - tmux から抜けるときは detach (`Ctrl-b d`) します。SSH が切れても tmux 内の Claude Code や他のプロセスは動き続けます。
-- `connect` のオプション: `--no-attach` / `--detach` (attach しない)、`--no-claude` (Claude Code を起動しない)、`-p` / `--prompt` / `--prompt-file` (最初のプロンプト)。
+- `connect` のオプション: `--no-attach` / `--detach` (attach しない)、`--no-claude` (Claude Code を起動しない)、`-p` / `--prompt` / `--prompt-file` (Claude Code に渡すタスク)。
 
 ### プロンプトを渡す
 
+- プロンプトを渡すと、既定では新しいセッション (2 つ目以降は git worktree、[セッション](#セッション)) と新しい Claude Code の会話で始めます (`--new` と同じ)。既存の会話の続きにするのは `--session <名前>` を指定したときだけです。どちらにするかは送る側が決めます。
+- プロンプトがあって `--session` もリポジトリも無いときはエラーにします (どのリポジトリで始めるか決まらないため。直近のセッションには送りません)。
+- プロンプトが無い `connect` (attach して見るとき) は、従来どおり直近のセッションに戻ります。
+- 応答 (`connect` の JSON 出力、MCP `start_session` と `POST /v1/sessions` の結果) の `created` はセッションを新しく作ったか (`true` / `false`)、`conversation` は Claude Code の会話が新しいか続きか (`new` / `continued`) を示します。`conversation` は Claude Code を起動しないとき (`--no-claude`) にはありません。`--session` で指定したセッションでも、まだ会話の履歴が無ければ `new` になります。
 - Claude Code を新しく起動 / resume するときは、`claude ... --remote-control <名前> -- "<prompt>"` の位置引数として最初のプロンプトを渡します。プロンプトは base64 で VM に送り、一時ファイル経由で展開するので、複数行・引用符・`$` などもそのまま届きます。
 - 既に Claude Code が動いているセッションには、その Claude Code が `READY` か `IDLE` のときだけ tmux の bracketed paste で入力して Enter を送ります。`BUSY` やまだ状態を報告していない場合は何も入力せずにエラー終了します (作業中の入力を壊さないため)。
 - `--detach` と組み合わせると、タスクを投げて放置し、終わって idle になったら VM が自動停止する、という使い方が CLI だけでできます。
@@ -105,7 +111,7 @@ cloud-coder api                                     # HTTP API を 127.0.0.1:878
 
 - Claude Code は `claude --session-id <uuid> --remote-control <セッション名>` で起動されます。Remote Control で claude.ai / Claude アプリからも操作できます。
 - 対応表は VM の `~/.local/share/cloud-coder/sessions.json` (Persistent Disk) に保存されます。`/clear` などで Claude Code の session ID が変わると hook が対応表を更新します。
-- VM の停止後に `connect` すると tmux session を作り直し、`claude --resume <session-id> --remote-control <セッション名>` で同じ会話を再開します。
+- VM の停止後にプロンプト無しで `connect` するか、`--session` を指定して `connect` すると tmux session を作り直し、`claude --resume <session-id> --remote-control <セッション名>` で同じ会話を再開します。
 - 既に Claude Code が動いているセッションへの `connect` は attach だけ行い、二重に起動しません。Claude Code が終了していた場合は、入力途中の行を壊さないよう既存の pane ではなく新しい window で起動します (pane を使うのは tmux session をその場で作ったときだけです)。
 
 ### tmux server の分離
@@ -115,7 +121,7 @@ cloud-coder のセッションは、VM ユーザーの既定の tmux server で�
 - VM 上でセッションを手で操作するときは `-L cloud-coder` を付けます (`tmux -L cloud-coder ls`、`tmux -L cloud-coder attach -t cc-REPO-1`)。`connect` の attach は自動で付けます。
 - 自分で開いた window や pane のシェルには tmux が `TMUX` を設定するので、そこで打つ `tmux` は cloud-coder の server に届きます (人が操作する前提)。
 - 自動停止の判定は、cloud-coder の server と既定の server の両方の pane を見ます。Claude Code が素の `tmux` で起動したコマンドが動いている間も VM は止まりません。
-- 移行: 以前の版は既定の server でセッションを動かしていました。agent を更新した時点で動いていたセッションはそのまま既定の server で動き続け、自動停止の判定にも入ります。そのセッションへの `connect` は、同じ会話を 2 つの Claude Code で開かないようエラーにします。`cloud-coder status` ではそのセッションの tmux は `absent` と表示されます。VM 上で `tmux -L default kill-session -t =cc-REPO-N` で終了するか、VM を停止してから `connect` し直すと専用の server で起動します。
+- 移行: 以前の版は既定の server でセッションを動かしていました。agent を更新した時点で動いていたセッションはそのまま既定の server で動き続け、自動停止の判定にも入ります。そのセッションへの `connect` は、同じ会話を 2 つの Claude Code で開かないようエラーにします。`close` も、動いている Claude Code の下で worktree を消さないようエラーにします。`cloud-coder status` ではそのセッションの tmux は `absent` と表示されます。VM 上で `tmux -L default kill-session -t =cc-REPO-N` で終了するか、VM を停止してから `connect` し直すと専用の server で起動します。
 
 ### 開発ツール
 
@@ -190,7 +196,7 @@ claude mcp add cloud-coder -- cloud-coder mcp
 | --- | --- | --- |
 | `status` | なし | VM の状態、セッション一覧、各 Claude Code の状態 (`BUSY` / `READY` / `IDLE`)、自動停止の状態 (`status --json` と同じ内容) |
 | `up` | なし | VM が止まっていれば起動を要求して**待たずに**返す。動いていれば agent を確認し、必要なら VM 上でインストール・更新を始める (`agent_installing: true`。インストールは VM 上の切り離したプロセスで進み、ログは VM の `~/cloud-coder-install.log`)。`ready: true` になるまで間をおいて呼び直す |
-| `start_session` | `repo?`, `new?`, `session?`, `prompt?` | `connect --detach` と同じ。repository の clone、tmux、Claude Code の起動 (または resume) を行い、セッション名と `accepted: true`、次の行動の指示 `next` を返す |
+| `start_session` | `repo?`, `new?`, `session?`, `prompt?` | `connect --detach` と同じ。repository の clone、tmux、Claude Code の起動 (または resume) を行い、セッション名と `accepted: true`、次の行動の指示 `next` を返す。`prompt` があって `session` が無ければ `repo` に新しいセッションと会話を作り、続きにするのは `session` を指定したときだけ ([プロンプトを渡す](#プロンプトを渡す))。応答の `created` / `conversation` で新規か継続かが分かる |
 | `send_prompt` | `session`, `text` | `connect --session <session> -p <text> --detach` と同じ。Claude Code が `READY` / `IDLE` のときだけ送る。応答は `start_session` と同じく `accepted` と `next` を含む |
 | `read_session` | `session`, `lines?` (1〜2000、既定 200) | セッションの Claude Code の画面 (tmux pane、scrollback 含む) の最後の `lines` 行と状態。VM は起動しない |
 | `stop` | なし | VM の停止を要求して待たずに返す (`status` で `stopped` を確認) |
@@ -223,7 +229,7 @@ curl -H "Authorization: Bearer $CLOUD_CODER_API_WRITE_TOKENS" -X POST localhost:
 | `POST /v1/vm/start` | write | `up`。起動を要求して待たずに `202 {vm_action, ready, agent_installed, agent_installing}` を返す。`ready: true` になるまで呼び直す |
 | `POST /v1/vm/stop` | write | `stop`。停止を要求して待たずに `202 {vm}` を返す |
 | `GET /v1/sessions` | read | `status` のセッション一覧 `{sessions: [...]}`。VM が動いていなければ 409 |
-| `POST /v1/sessions` | write | `start_session`。body は `{repo?, new?, session?, prompt?}` |
+| `POST /v1/sessions` | write | `start_session`。body は `{repo?, new?, session?, prompt?}`。`prompt` があって `session` が無ければ新しいセッションと会話で始める (`repo` も無ければ 422)。応答の `created` / `conversation` で新規か継続かが分かる |
 | `POST /v1/sessions/{name}/prompts` | write | `send_prompt`。body は `{text}`。Claude Code が `READY` / `IDLE` のときだけ送る |
 | `GET /v1/sessions/{name}?lines=200` | read | `read_session`。`lines` は 1〜2000。VM は起動しない |
 

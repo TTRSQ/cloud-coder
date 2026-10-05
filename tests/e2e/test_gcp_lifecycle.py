@@ -88,9 +88,40 @@ def test_new_session_uses_a_worktree(cc):
     assert "/git/wt/" in second["workdir"]
 
 
+def test_a_prompt_starts_a_new_session_unless_one_is_named(cc):
+    latest = last_json(cc("connect", REPO, "--no-attach").stdout)
+    task = last_json(cc("connect", REPO, "-p", "a new task", "--no-attach").stdout)
+    assert task["created"] and task["session"] != latest["session"]
+    assert task["conversation"] == "new" and "/git/wt/" in task["workdir"]
+    # without a prompt, connect returns to the latest session: the one just created
+    assert last_json(cc("connect", REPO, "--no-attach").stdout)["session"] == task["session"]
+    # Claude Code is not logged in and never becomes READY, so a prompt for a running
+    # one is refused: continue the session after its Claude Code is gone.
+    claude = f"'remote-control {task['session']}( |$)'"  # the prompt follows the name
+    vm_shell(f"pkill -f {claude}; for _ in $(seq 10); do pgrep -f {claude} || break; sleep 1; done")
+    # Not logged in, it wrote no transcript either: stand one in for the conversation.
+    transcript = f"~/.claude/projects/e2e/{task['claude_session_id']}.jsonl"
+    vm_shell(f"mkdir -p ~/.claude/projects/e2e && touch {transcript}")
+    again = cc("connect", "--session", task["session"], "-p", "more", "--no-attach").stdout
+    again = last_json(again)
+    assert again["session"] == task["session"] and not again["created"]
+    assert (again["claude"], again["conversation"]) == ("resumed", "continued")
+    refused = cc("connect", "-p", "where?", "--no-attach", check=False)
+    assert refused.returncode != 0 and "needs a repository" in refused.stderr
+
+
+def test_close_removes_a_clean_worktree_session(cc):
+    task = last_json(cc("connect", REPO, "-p", "to be closed", "--no-attach").stdout)
+    closed = last_json(cc("close", task["session"]).stdout)
+    assert closed["worktree"] == "removed" and closed["tmux"] == "killed"
+    assert vm_shell(f"test -e {task['workdir']} && echo exists || echo gone").strip() == "gone"
+    st = json.loads(cc("status", "--json").stdout)
+    assert task["session"] not in {s["name"] for s in st["sessions"]}
+
+
 def test_tmux_run_by_claudes_tools_cannot_reach_the_sessions(cc):
     session = last_json(cc("connect", REPO, "--no-attach").stdout)["session"]
-    pid = vm_shell(f"pgrep -n -f 'remote-control {session}$'").strip()
+    pid = vm_shell(f"pgrep -n -f 'remote-control {session}( |$)'").strip()
     env = vm_shell(f"tr '\\0' '\\n' < /proc/{pid}/environ").splitlines()
     assert not any(line.startswith("TMUX=") for line in env)
     assert any(line.startswith("TMUX_PANE=") for line in env)

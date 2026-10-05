@@ -46,8 +46,12 @@ refused because Claude Code is BUSY, do not resend it; tell the user.
 - `up` starts the VM and returns at once. While `ready` is false the VM is starting
   (about a minute) or the agent is being installed (the first time, several minutes):
   call it again after a while, and if it is still not ready tell the user and stop.
-- `start_session` opens (or returns to) a session for a repository and can pass a first
-  prompt. `send_prompt` gives an existing session a new instruction; it is refused while
+- `start_session` with a `prompt` starts a new task: a new session (git worktree, tmux
+  session) and a new Claude Code conversation for `repo`. To continue earlier work
+  instead, pass its `session` (name from `status`); ask the user when it is unclear
+  which they want. Without a prompt it opens the repository's latest session.
+  The result's `conversation` says whether it is `new` or `continued`.
+  `send_prompt` gives an existing session a new instruction; it is refused while
   Claude Code is BUSY. `read_session` returns the session's recent screen text: Claude
   Code's answer, its progress, or a question it is waiting on.
 - `stop` stops the VM at once, interrupting any work; normally let it stop itself.
@@ -221,28 +225,38 @@ def build_server(
             str | None,
             Field(
                 description="git URL to clone, or the name of a repository already on the "
-                "VM. Omit to return to the most recently used session."
+                "VM. Needed with a prompt unless `session` is given; without either, the "
+                "most recently used session is opened."
             ),
         ] = None,
         new: Annotated[
             bool,
-            Field(description="start another session for the repo in a new git worktree"),
+            Field(
+                description="start another session for the repo in a new git worktree even "
+                "without a prompt (with a prompt and no `session` that is the default)"
+            ),
         ] = False,
         session: Annotated[
-            str | None, Field(description="return to this session (name from `status`)")
+            str | None,
+            Field(
+                description="continue this session and its Claude Code conversation (name "
+                "from `status`); omit it to start a new task in a new session"
+            ),
         ] = None,
         prompt: Annotated[
             str | None,
             Field(
-                description="first instruction for Claude Code; for a running Claude Code "
-                "it is sent only when it is READY or IDLE"
+                description="instruction for Claude Code. Without `session` it starts a "
+                "new session and conversation; with `session` it continues that one, and is "
+                "sent only when Claude Code is READY or IDLE"
             ),
         ] = None,
     ) -> dict:
         """Make sure a session (git checkout, tmux session and Claude Code) exists and
-        runs, and return its name. Requires a ready VM (see `up`). With a prompt, Claude
-        Code works on it for minutes to hours: tell the user it has started and end your
-        turn instead of waiting."""
+        runs, and return its name. A prompt without `session` gets a new session and
+        conversation; `conversation` in the result is `new` or `continued`. Requires a
+        ready VM (see `up`). With a prompt, Claude Code works on it for minutes to hours:
+        tell the user it has started and end your turn instead of waiting."""
         with write_call("start_session"):
             if prompt is not None:
                 guards.checked_prompt(prompt)

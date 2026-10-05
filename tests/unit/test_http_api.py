@@ -295,9 +295,30 @@ def test_status_mapping_matches_the_vm_agent_messages(monkeypatch):
 
     with pytest.raises(launch.LaunchError) as unknown:
         launch.resolve_target(
-            {}, None, repo_url=None, repo=None, session_name="cc-x-9", new=False, now=0
+            {},
+            None,
+            repo_url=None,
+            repo=None,
+            session_name="cc-x-9",
+            new=False,
+            has_prompt=False,
+            now=0,
         )
     assert http_api._agent_error_status(str(unknown.value)) == 404
+
+    for new, has_prompt in [(False, True), (True, False)]:  # nothing to start a session in
+        with pytest.raises(launch.LaunchError) as no_repo:
+            launch.resolve_target(
+                {},
+                None,
+                repo_url=None,
+                repo=None,
+                session_name=None,
+                new=new,
+                has_prompt=has_prompt,
+                now=0,
+            )
+        assert http_api._agent_error_status(str(no_repo.value)) == 422
 
     monkeypatch.setattr(session_state, "load_all", lambda directory: [])
     with pytest.raises(launch.LaunchError) as no_state:

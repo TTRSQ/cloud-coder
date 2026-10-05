@@ -1,4 +1,5 @@
-"""Operations on the worker: `up`, `launch` / `connect`, `read_session` and `status`.
+"""Operations on the worker: `up`, `launch` / `connect`, `read_session`, `close_session`
+and `status`.
 
 They return results and raise on failure; progress goes to the ``cloud_coder`` logger.
 The command line and the MCP server are thin adapters over them.
@@ -157,6 +158,13 @@ def read_session(cfg: Config, session: str, lines: int = 200) -> dict:
             str(lines),
         ]
     )
+    return agent_result(ssh.run(cfg, command))
+
+
+def close_session(cfg: Config, session: str) -> dict:
+    """End the session's tmux session (and Claude Code in it), remove its worktree and
+    forget it; refused while the worktree has uncommitted, ignored or unpushed files."""
+    command = shlex.join(["python3", str(paths.AGENT_PYZ), "close-session", "--session", session])
     return agent_result(ssh.run(cfg, command))
 
 

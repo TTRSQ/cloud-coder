@@ -170,6 +170,8 @@ def _agent_error_status(message: str) -> int:
         return 404
     if message.endswith("prompt not sent"):  # Claude Code is BUSY or its state unknown
         return 409
+    if "needs a repository" in message:  # a prompt (or --new) with neither repo nor session
+        return 422
     return 502
 
 
