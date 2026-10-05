@@ -76,8 +76,13 @@ def resolve_target(
     repo: str | None,
     session_name: str | None,
     new: bool,
+    has_prompt: bool,
     now: float,
 ) -> Target:
+    """The session to connect to. A named session is continued. Otherwise a prompt is a
+    new task: it gets a new session and conversation, never an earlier one; without a
+    prompt (someone attaching to look) the repository's latest session is returned to,
+    unless ``new`` asks for another one."""
     if session_name:
         if session_name not in sessions:
             raise LaunchError(f"unknown session {session_name!r}")
@@ -97,13 +102,18 @@ def resolve_target(
                 f"{repo!r} in the workspace was cloned from {sorted(known)[0]}, not {repo_url}"
             )
     if repo is None:
+        if has_prompt:
+            raise LaunchError(
+                "a prompt without a session starts a new session, which needs a repository; "
+                "name the session to continue it"
+            )
         if new:
             raise LaunchError("--new needs a repository")
         last = session_registry.latest(sessions)
         if last is None:
             raise LaunchError("no previous session; pass a repository URL")
         return Target(last, created=False)
-    if not new:
+    if not (new or has_prompt):
         last = session_registry.latest(sessions, repo)
         if last is not None:
             return Target(last, created=False)
@@ -315,7 +325,12 @@ def ensure_claude(
         claudes, others = process_table.pane_subtree(pane.pane_pid, procs, children)
         for proc in claudes:
             remote = "--remote-control" in _cmdline(proc.pid) or "--rc" in _cmdline(proc.pid)
-            result = {"claude": "running", "remote_control": remote, "pane": pane.pane_id}
+            result = {
+                "claude": "running",
+                "conversation": "continued",
+                "remote_control": remote,
+                "pane": pane.pane_id,
+            }
             if prompt is not None:
                 send_prompt_to_running(pane.pane_id, proc.pid, prompt)
                 result["prompt"] = "sent"
@@ -350,6 +365,7 @@ def ensure_claude(
     _check(["tmux", "send-keys", "-t", free_pane, "Enter"])
     result = {
         "claude": "resumed" if resume else "started",
+        "conversation": "continued" if resume else "new",
         "remote_control": True,
         "pane": free_pane,
     }
@@ -407,6 +423,7 @@ def launch(
                 repo=repo,
                 session_name=session_name,
                 new=new,
+                has_prompt=prompt is not None,
                 now=time.time(),
             )
             session = target.session

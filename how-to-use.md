@@ -165,13 +165,20 @@ cloud-coder connect REPO --prompt-file task.md --detach
 cat task.md | cloud-coder connect REPO --prompt-file - --detach
 ```
 
+- プロンプトを渡すと、毎回新しいセッション (2 つ目以降は git worktree) と新しい Claude Code の会話で始まります。以前の会話の続きにはなりません。続きとして渡すときは次の節のように `--session` を指定します。
+- 出力の JSON の `created` (セッションを新しく作ったか) と `conversation` (`new` / `continued`) で、新規か継続かを確認できます。
 - `-p` / `--prompt` と `--prompt-file` はどちらか一方だけ指定できます。`--prompt-file -` で標準入力から読みます。複数行や引用符、`$` もそのまま届きます。
 - `--detach` (`--no-attach` と同じ) は attach せずに戻ります。Claude Code が作業を終えて idle になれば、grace period の後に VM が止まります。
-- 結果は後で `connect REPO` するか、[Remote Control](#スマホなどから-remote-control-で操作する) で確認します。
+- 結果は後で `connect --session cc-REPO-N` (セッション名は出力の `session` か `cloud-coder status`) で見るか、[Remote Control](#スマホなどから-remote-control-で操作する) で確認します。
 
-### 動作中のセッションに追加で指示する
+### 既存のセッションに続きの指示を渡す
 
-Claude Code が既に動いているセッションに `-p` を渡すと、その Claude Code の入力欄に貼り付けて Enter を送ります。
+```bash
+cloud-coder status                                          # セッション名を確認
+cloud-coder connect --session cc-REPO-2 -p "..." --detach   # その会話の続きとして渡す
+```
+
+`--session` で指定したセッションの会話に渡します。Claude Code が既に動いていれば、その入力欄に貼り付けて Enter を送ります。
 
 - 送れるのは Claude Code が `READY` か `IDLE` (応答を終えて入力待ち) のときだけです。
 - `BUSY` (作業中) や、まだ状態を報告していないときは何も入力せず、`Claude Code in this session is BUSY; prompt not sent` などのエラーで終了します。`cloud-coder status` で状態を確認してから送り直してください。
@@ -179,25 +186,30 @@ Claude Code が既に動いているセッションに `-p` を渡すと、そ�
 
 ## 複数のセッションを並行して使う
 
-同じリポジトリで別の作業を並行させるときは `--new` を使います。
+プロンプトを渡すたびに新しいセッションができるので、タスクを続けて投げればそのまま並行して動きます。プロンプト無しで別のセッションを開くときは `--new` を使います。
 
 ```bash
-cloud-coder connect REPO --new                    # 2 つ目の Claude Code を git worktree 上に起動
-cloud-coder connect REPO --new -p "..." --detach  # 投げて放置を並列に
+cloud-coder connect REPO -p "..." --detach        # タスクごとに新しいセッション (2 つ目以降は git worktree)
+cloud-coder connect REPO --new                    # プロンプト無しで別の Claude Code を git worktree 上に起動
 cloud-coder status                                # セッション名を確認
 cloud-coder connect --session cc-REPO-2           # 名前を指定して戻る
+cloud-coder close cc-REPO-2                       # 終わったセッションを片付ける
 ```
 
 | セッション | 作業ディレクトリ (VM 上) | branch |
 | --- | --- | --- |
 | `cc-REPO-1` | `~/git/REPO` (clone) | clone したときのまま |
-| `cc-REPO-N` (`--new`) | `~/git/wt/REPO-N` (git worktree) | `cloud-coder/cc-REPO-N` |
+| `cc-REPO-N` (2 つ目以降) | `~/git/wt/REPO-N` (git worktree) | `cloud-coder/cc-REPO-N` |
 
 - セッション名は tmux の session 名と、Remote Control の名前を兼ねます。
-- `connect REPO` (`--session` 無し) は、そのリポジトリで直近に connect したセッションに戻ります。
-- `--new` にはリポジトリ (名前か URL) が必要です。
+- プロンプト無しの `connect REPO` (`--session` 無し) は、そのリポジトリで直近に connect したセッションに戻ります。プロンプト付きなら新しいセッションです。
+- `--new` と、`--session` 無しでプロンプトを渡すときは、リポジトリ (名前か URL) が必要です。
 - 置き場所は `vm.workspace` / `vm.worktrees` で変えられます ([README のセッション](README.md#セッション))。
-- セッションや worktree を削除するコマンドはありません。不要になったら VM 上で `tmux kill-session -t cc-REPO-N` で Claude Code ごと終了し、`git worktree remove` などで worktree を片付けてください。セッションの登録は残るので、そのセッションに `connect` すると (直近のセッションなら `connect REPO` でも) worktree と Claude Code が作り直されます。
+- `cloud-coder close cc-REPO-N` でセッションを閉じます。tmux session を Claude Code ごと終了し、worktree と branch `cloud-coder/cc-REPO-N` を削除して、登録から外します。
+  - worktree に未コミットの変更 (untracked のファイルを含む)、gitignore されたファイル (`.env` や生成物など。`git worktree remove` は消してしまうため)、どの remote にも無いコミットのどれかがあるときは、何もせずにエラーにします。commit と push を済ませるか不要なファイルを消してから閉じ直してください。
+  - Claude Code が作業中 (`BUSY`) でも確認せずに終了します。`cloud-coder status` で確かめてから閉じてください。
+  - main checkout (`cc-REPO-1` の `~/git/REPO`) は削除しません。Claude Code の会話の履歴 (`~/.claude`) も残りますが、セッションの登録を外すので `connect --session` での再開はできなくなります。
+  - VM が止まっていれば起動します。
 
 ## スマホなどから Remote Control で操作する
 
@@ -393,6 +405,7 @@ cloud-coder connect REPO     # または connect / connect --session cc-REPO-N
 - `/clear` などで会話が切り替わっていた場合も、最後の会話に戻ります。
 - 再開されるのは `connect` したセッションだけです。他のセッションはそれぞれ `connect` したときに再開されます。
 - tmux の中で動かしていた他のプロセス (dev server など) は再開されません。
+- 続きの指示を渡すときは `connect --session cc-REPO-N -p "..."` とします。`connect REPO -p "..."` は新しいセッションで始めます。
 - 自動停止は idle のときにしか起きませんが、`cloud-coder stop` した時点で動いていた作業は中断されています。必要なら再開した会話で続きを指示してください。
 - resume しただけで何もしなければ、10 分 + grace period で再び停止します。
 

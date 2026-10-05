@@ -75,15 +75,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "repo",
         nargs="?",
-        help="git URL to clone, or a repo name already in the workspace "
-        "(default: the most recently used session)",
+        help="git URL to clone, or a repo name already in the workspace; without a prompt "
+        "the default is the most recently used session",
     )
     p.add_argument(
         "--new",
         action="store_true",
-        help="start another session for the repo in a new git worktree",
+        help="start another session for the repo in a new git worktree (the default with a prompt)",
     )
-    p.add_argument("--session", help="connect to this session name (see `status`)")
+    p.add_argument(
+        "--session",
+        help="connect to this session (name from `status`); with a prompt, the way to "
+        "continue its conversation",
+    )
     p.add_argument(
         "--no-attach",
         "--detach",
@@ -95,8 +99,8 @@ def build_parser() -> argparse.ArgumentParser:
     prompt.add_argument(
         "-p",
         "--prompt",
-        help="first prompt for Claude Code; for a running session it is sent only when "
-        "Claude Code is READY or IDLE",
+        help="a task for Claude Code: starts a new session and conversation for REPO, or "
+        "continues the one named by --session (sent only when Claude Code is READY or IDLE)",
     )
     prompt.add_argument("--prompt-file", help="read the prompt from a file ('-' for stdin)")
     p.add_argument("--no-claude", action="store_true", help="do not start Claude Code")
@@ -104,6 +108,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "status", parents=[common], help="VM, sessions and auto-stop state"
     ).add_argument("--json", action="store_true")
+    sub.add_parser(
+        "close",
+        parents=[common],
+        help="end a session (and its Claude Code), remove its worktree and forget it; "
+        "refused while the worktree has uncommitted, ignored or unpushed files",
+    ).add_argument("session", help="session name (see `status`)")
     sub.add_parser("stop", parents=[common], help="stop the VM (disk is kept)")
     sub.add_parser(
         "mcp", parents=[common], help="serve the VM and its sessions as MCP tools over stdio"
@@ -155,6 +165,10 @@ def main(argv: list[str] | None = None) -> int:
             if args.no_attach:
                 return 0
             return ssh.attach_tmux(cfg, launched["session"])
+        if args.command == "close":
+            connect.up(cfg, requested)
+            print(json.dumps(connect.close_session(cfg, args.session)))
+            return 0
         if args.command == "status":
             st = connect.status(cfg)
             print(json.dumps(st, indent=2) if args.json else connect.format_status(st))

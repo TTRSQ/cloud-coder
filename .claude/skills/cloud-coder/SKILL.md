@@ -71,7 +71,7 @@ uv run cloud-coder up
 
 指示は heredoc で標準入力から渡す (引用符・`$`・複数行をそのまま届けるため)。区切りの `'CLOUD_CODER_PROMPT'` は必ず引用符付きで書く。
 
-新しく、またはリポジトリの直近のセッションで:
+新しいタスクを渡す (新しいセッションと新しい会話で始まる):
 
 ```bash
 uv run cloud-coder connect <REPO> --detach --prompt-file - <<'CLOUD_CODER_PROMPT'
@@ -79,7 +79,7 @@ uv run cloud-coder connect <REPO> --detach --prompt-file - <<'CLOUD_CODER_PROMPT
 CLOUD_CODER_PROMPT
 ```
 
-名前を指定したセッションに追加の指示を送る:
+以前の作業の続きとして、そのセッションの会話に渡す:
 
 ```bash
 uv run cloud-coder connect --session <SESSION> --detach --prompt-file - <<'CLOUD_CODER_PROMPT'
@@ -88,9 +88,12 @@ CLOUD_CODER_PROMPT
 ```
 
 - `<REPO>` は git URL (`https://github.com/OWNER/REPO.git`) か、VM に clone 済みのリポジトリ名 (`REPO`)。初めてのリポジトリは URL で渡す。
-- ユーザーが「別セッションで」「並行して」と言ったときだけ `--new` を付ける (同じリポジトリの 2 つ目のセッションを git worktree に作る)。
+- 新しいタスクか、以前の作業の続きかは送る側 (このスキル) が決める。`--session` を付けない限り、cloud-coder は既存の会話には渡さない。
+  - 新しいタスク: `<REPO>` を指定する (既定)。2 つ目以降のセッションは git worktree に作られる。`--new` は付けない。
+  - ユーザーの以前の作業の続き: `uv run cloud-coder status` でセッション名を確認し、`--session <SESSION>` で渡す。
+  - どちらか分からなければ、送る前にユーザーに聞く。
 - 指示はユーザーの言葉をそのまま渡す。勝手に要約したり書き足したりしない。
-- 成功すると、標準出力の最後に JSON が 1 行出る。`session` (セッション名、例 `cc-REPO-1`) をユーザーに伝え、結果は後で `/cloud-coder read <session>` で読めると案内する。
+- 成功すると、標準出力の最後に JSON が 1 行出る。`session` (セッション名、例 `cc-REPO-1`) と、新しい会話か続きか (`conversation` が `new` / `continued`) をユーザーに伝え、結果は後で `/cloud-coder read <session>` で読めると案内する。
 - `prompt not sent` で失敗したら、送り直さずにユーザーに伝える。`is BUSY` なら前の作業がまだ終わっていない。`has not reported its state yet` なら Claude Code がログイン画面か trust 画面で止まっている可能性があるので、下の attach を案内する。
 - 標準エラーに `workspace trust skipped` が出たら、Claude Code が trust 画面で止まっている。ユーザー自身のターミナルで、このリポジトリから `uv run cloud-coder connect --session <SESSION>` で attach して答えるよう伝える (attach は対話操作なので、このスキルからは実行しない)。
 - 結果を待たない。渡したら報告して終わる。

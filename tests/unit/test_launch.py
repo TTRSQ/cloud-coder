@@ -14,7 +14,8 @@ def entry(name, repo, t, url=None):
 
 
 def resolve(sessions, **kw):
-    args = {"repo_url": None, "repo": None, "session_name": None, "new": False, "now": 100.0}
+    args = {"repo_url": None, "repo": None, "session_name": None, "new": False}
+    args |= {"has_prompt": False, "now": 100.0}
     args.update(kw)
     return resolve_target(sessions, LAYOUT, **args)
 
@@ -242,3 +243,115 @@ def test_existing_session_does_not_add_a_worktree_from_a_foreign_clone(tmp_path)
     s2 = LogicalSession("cc-app-2", "app", "git@github.com:me/app.git", str(wt), "id", 0.0, 0.0)
     with pytest.raises(LaunchError, match="not a clone of"):
         ensure_repo(s2, layout, created=False)
+
+
+# A prompt is a new task unless a session is named (issue #18).
+
+
+def test_prompt_without_session_starts_a_new_session_never_the_latest():
+    s = {"cc-app-1": entry("cc-app-1", "app", 5, url="u")}
+    t = resolve(s, repo="app", has_prompt=True)
+    assert t.created and t.session.name == "cc-app-2"
+    assert t.session.workdir == "/home/coder/git/wt/app-2"
+    assert t.session.claude_session_id != s["cc-app-1"].claude_session_id
+
+
+def test_prompt_for_a_repo_without_sessions_uses_the_main_checkout():
+    t = resolve({}, repo_url="git@github.com:o/app.git", has_prompt=True)
+    assert t.created and t.session.name == "cc-app-1"
+    assert t.session.workdir == str(WS / "app")
+
+
+def test_prompt_with_session_continues_that_session():
+    s = {"cc-app-1": entry("cc-app-1", "app", 1), "cc-app-2": entry("cc-app-2", "app", 5)}
+    t = resolve(s, session_name="cc-app-1", has_prompt=True)
+    assert not t.created and t.session is s["cc-app-1"]
+
+
+def test_prompt_without_repo_or_session_is_refused_not_sent_to_the_latest():
+    s = {"cc-app-1": entry("cc-app-1", "app", 5)}
+    with pytest.raises(LaunchError, match="needs a repository"):
+        resolve(s, has_prompt=True)
+
+
+def test_launch_hands_a_prompt_to_a_new_session(tmp_path, monkeypatch):
+    """The whole VM-side path: a prompt without a session reaches a new session."""
+    import contextlib
+
+    from cloud_coder_vm import launch as launch_mod
+    from cloud_coder_vm import session_registry
+    from cloud_coder_vm.system_files import VmConfig
+
+    monkeypatch.setattr(launch_mod.busy_markers, "busy_marker", contextlib.nullcontext)
+    monkeypatch.setattr(launch_mod, "state_lock", contextlib.nullcontext)
+    monkeypatch.setattr(launch_mod.idle_check, "cancel_grace", lambda: None)
+    monkeypatch.setattr(launch_mod, "ensure_repo", lambda *a: "existing")
+    monkeypatch.setattr(launch_mod, "ensure_tmux_session", lambda s: "existing")
+    handed = {}
+
+    def fake_ensure_claude(session, home, prompt, reuse_pane):
+        handed[session.name] = prompt
+        return {"claude": "started", "conversation": "new"}
+
+    monkeypatch.setattr(launch_mod, "ensure_claude", fake_ensure_claude)
+    registry = launch_mod.paths.registry_path(tmp_path)
+    registry.parent.mkdir(parents=True)
+    session_registry.save(registry, {"cc-app-1": entry("cc-app-1", "app", 5, url="u")})
+    config = VmConfig(
+        "coder", 0, "git", "git/wt", False, 0, [], False, False, 0, False, None, None, ""
+    )
+
+    def run(**kw):
+        return launch_mod.launch(config, tmp_path, repo="app", **kw)
+
+    assert run(prompt="task")["session"] == "cc-app-2"
+    assert run(prompt="more", session_name="cc-app-1")["session"] == "cc-app-1"
+    assert run()["session"] == "cc-app-1"  # no prompt: the latest session (just connected)
+    assert handed == {"cc-app-2": "task", "cc-app-1": None}
+
+
+def fake_tmux(monkeypatch, *, claude_running: bool, transcript: bool):
+    from cloud_coder_vm import launch as launch_mod
+    from cloud_coder_vm.process_table import Process
+
+    claude = Process(20, 10, "claude")
+    shell = Process(10, 1, "bash")
+    sent = []
+
+    def check(args, cwd=None):
+        if "list-panes" in args:
+            return "cc-app-1\t%1\t10\tbash\n"
+        sent.append(args)
+        return "%2\n"
+
+    monkeypatch.setattr(launch_mod, "_check", check)
+    monkeypatch.setattr(launch_mod.process_table, "snapshot", lambda: {})
+    monkeypatch.setattr(launch_mod.process_table, "children_map", lambda procs: {})
+    monkeypatch.setattr(
+        launch_mod.process_table,
+        "pane_subtree",
+        lambda pid, procs, children: ([claude], []) if claude_running else ([], [shell]),
+    )
+    monkeypatch.setattr(launch_mod, "_cmdline", lambda pid: ["claude", "--remote-control"])
+    monkeypatch.setattr(launch_mod, "send_prompt_to_running", lambda *a: sent.append(a))
+    monkeypatch.setattr(launch_mod, "transcript_exists", lambda home, sid: transcript)
+    monkeypatch.setattr(launch_mod, "write_prompt_file", lambda s, p: Path("/run/p.txt"))
+    return sent
+
+
+@pytest.mark.parametrize(
+    ("claude_running", "transcript", "claude", "conversation"),
+    [
+        (False, False, "started", "new"),
+        (False, True, "resumed", "continued"),
+        (True, True, "running", "continued"),
+    ],
+)
+def test_result_says_whether_the_conversation_is_new_or_continued(
+    monkeypatch, claude_running, transcript, claude, conversation
+):
+    from cloud_coder_vm.launch import ensure_claude
+
+    fake_tmux(monkeypatch, claude_running=claude_running, transcript=transcript)
+    result = ensure_claude(entry("cc-app-1", "app", 1), Path("/home/coder"), "go", True)
+    assert (result["claude"], result["conversation"]) == (claude, conversation)

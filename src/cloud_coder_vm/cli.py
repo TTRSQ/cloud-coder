@@ -17,6 +17,7 @@ from cloud_coder_vm import (
     install,
     launch,
     paths,
+    session_close,
     session_registry,
     session_screen,
     system_files,
@@ -82,6 +83,16 @@ def cmd_launch(args) -> int:
     return 0
 
 
+def cmd_close_session(args) -> int:
+    try:
+        result = session_close.close(_load_config(), Path.home(), args.session)
+    except session_close.CloseError as e:
+        print(json.dumps({"error": str(e)}))
+        return 1
+    print(json.dumps(result))
+    return 0
+
+
 def cmd_read_session(args) -> int:
     try:
         result = session_screen.read(Path.home(), args.session, args.lines)
@@ -139,6 +150,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--session", required=True)
     p.add_argument("--lines", type=int, default=200, help="lines to return, scrollback included")
     p.set_defaults(func=cmd_read_session)
+
+    p = sub.add_parser(
+        "close-session", help="end a session and remove its worktree when nothing is unsaved"
+    )
+    p.add_argument("--session", required=True)
+    p.set_defaults(func=cmd_close_session)
 
     p = sub.add_parser("install-system", help="(root) install units and files")
     p.add_argument("--config", required=True, help="VM config as JSON")

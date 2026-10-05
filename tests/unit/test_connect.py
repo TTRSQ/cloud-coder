@@ -106,6 +106,21 @@ def test_cli_connect_detach_prints_the_session_and_does_not_attach(monkeypatch, 
     assert json.loads(capsys.readouterr().out) == {"session": "cc-a-1"}
 
 
+def test_cli_close_starts_the_vm_and_closes_the_session(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "resolve_config", lambda args: Config(project="p"))
+    monkeypatch.setattr(connect, "up", lambda cfg, requested: None)
+    commands = []
+
+    def fake_run(cfg, command, **kw):
+        commands.append(shlex.split(command))
+        return completed('{"session": "cc-a-2", "worktree": "removed"}')
+
+    monkeypatch.setattr(ssh, "run", fake_run)
+    assert cli.main(["close", "cc-a-2"]) == 0
+    assert json.loads(capsys.readouterr().out)["worktree"] == "removed"
+    assert commands[0][2:] == ["close-session", "--session", "cc-a-2"]
+
+
 def test_cli_reports_agent_errors_on_stderr(monkeypatch, capsys):
     monkeypatch.setattr(cli, "resolve_config", lambda args: Config(project="p"))
 

@@ -94,6 +94,36 @@ def test_send_prompt_launches_the_session_without_agent_forwarding(monkeypatch):
     assert seen == {"repo": None, "session": "cc-a-1", "prompt": "go", "forward_agent": False}
 
 
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"repo": "r", "prompt": "a new task"},
+        {"session": "cc-r-1", "prompt": "continue"},
+        {"prompt": "no target"},
+    ],
+)
+def test_start_session_leaves_new_or_continued_to_the_vm_agent(monkeypatch, arguments):
+    """Like the CLI and the HTTP API, the tool passes repo / session / prompt through:
+    the VM agent alone decides between a new session and a continued one."""
+    monkeypatch.setattr(connect, "up", lambda cfg, wait: connect.UpResult("running", True, False))
+    seen = {}
+
+    def fake_launch(cfg, repo, **kw):
+        seen.update(kw, repo=repo)
+        return {"session": "cc-r-2", "prompt": "passed-at-start", "conversation": "new"}
+
+    monkeypatch.setattr(connect, "launch", fake_launch)
+    result = result_json(call("start_session", arguments))
+    assert result["conversation"] == "new"
+    assert seen == {
+        "repo": arguments.get("repo"),
+        "new": False,
+        "session": arguments.get("session"),
+        "prompt": arguments["prompt"],
+        "forward_agent": False,
+    }
+
+
 def test_start_session_tells_the_client_to_end_its_turn(monkeypatch):
     monkeypatch.setattr(connect, "up", lambda cfg, wait: connect.UpResult("running", True, False))
     monkeypatch.setattr(
