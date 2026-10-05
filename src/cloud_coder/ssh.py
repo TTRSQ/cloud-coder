@@ -4,6 +4,7 @@ import logging
 import subprocess
 import time
 
+from cloud_coder import deadline
 from cloud_coder.config import Config
 
 log = logging.getLogger(__name__)
@@ -49,8 +50,9 @@ def run(
     cfg: Config, command: str, *, forward_agent: bool = False, capture: bool = True
 ) -> subprocess.CompletedProcess:
     """Run ``command`` on the VM. Without ``capture`` its output goes to our stderr, never
-    to our stdout, which carries machine-readable output (JSON, the MCP stdio stream)."""
-    return subprocess.run(
+    to our stdout, which carries machine-readable output (JSON, the MCP stdio stream).
+    Bounded by the current deadline (see deadline.py)."""
+    return deadline.run(
         ssh_command(cfg, command, forward_agent=forward_agent),
         capture_output=capture,
         stdout=None if capture else 2,
@@ -60,7 +62,7 @@ def run(
 
 
 def scp(cfg: Config, local_path: str, remote_path: str) -> None:
-    subprocess.run(
+    deadline.run(
         ["gcloud", "compute", "scp", local_path, f"{_target(cfg)}:{remote_path}", *_common(cfg)],
         check=True,
         capture_output=True,
@@ -74,12 +76,12 @@ def reachable(cfg: Config) -> bool:
 
 
 def wait_ready(cfg: Config, timeout: float = 300) -> None:
-    deadline = time.monotonic() + timeout
+    give_up_at = time.monotonic() + timeout
     while True:
         result = run(cfg, "true")
         if result.returncode == 0:
             return
-        if time.monotonic() > deadline:
+        if time.monotonic() > give_up_at:
             raise TimeoutError(f"SSH to {cfg.instance} not ready: {result.stderr.strip()[-500:]}")
         log.info("waiting for SSH...")
         time.sleep(5)

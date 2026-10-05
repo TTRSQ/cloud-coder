@@ -103,7 +103,12 @@ def test_start_vm_requests_the_start_without_waiting(client, monkeypatch):
     monkeypatch.setattr(connect, "up", fake_up)
     response = client.post("/v1/vm/start", headers=WRITE)
     assert response.status_code == 202
-    assert response.json() == {"vm_action": "started", "ready": False, "agent_installed": False}
+    assert response.json() == {
+        "vm_action": "started",
+        "ready": False,
+        "agent_installed": False,
+        "agent_installing": False,
+    }
     assert seen == {"wait": False}
 
 

@@ -9,6 +9,7 @@ import io
 import logging
 import shlex
 import tempfile
+import time
 import zipfile
 from importlib import resources
 from pathlib import Path
@@ -65,12 +66,27 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+# The detached install of `start_install` on the VM, relative to the VM user's HOME: it
+# holds INSTALL_LOCK while it runs, then writes its exit status to INSTALL_STATUS.
+INSTALL_LOCK = ".cloud-coder-install.lock"
+INSTALL_STATUS = ".cloud-coder-install.status"
+INSTALL_LOG = "cloud-coder-install.log"
+
+INSTALLED = "installed"
+INSTALLING = "installing"
+FAILED = "failed"
+MISSING = "missing"
+
+
 def check_command(cfg: Config) -> str:
-    """Prints the installed hashes plus a marker for each thing that must be present."""
+    """Prints the installed hashes plus a marker for each thing that must be present,
+    and the state of a detached install."""
     parts = [
         f"sha256sum {paths.AGENT_PYZ} {paths.CONFIG_PATH} 2>/dev/null",
         "test -x ~/.local/bin/claude && echo claude-installed",
         f"test -f {paths.MANAGED_SETTINGS_FILE} && echo hooks-installed",
+        f"flock -n ~/{INSTALL_LOCK} true || echo install-running",
+        f"sed 's/^/install-exit-/' ~/{INSTALL_STATUS} 2>/dev/null",
     ]
     if cfg.dotfiles_repo:
         parts.append(f"test -f ~/{paths.DOTFILES_STAMP} && echo dotfiles-installed")
@@ -93,32 +109,84 @@ def is_current(check_output: str, pyz_sha: str, config_sha: str, dotfiles: bool 
 
 
 def ensure_installed(cfg: Config) -> bool:
-    """Returns True when the agent was (re)installed."""
-    pyz = build_pyz()
-    config_text = render_config(vm_config(cfg))
-    pyz_sha, config_sha = sha256(pyz), sha256(config_text.encode())
-
-    check = ssh.run(cfg, check_command(cfg))
-    current = is_current(check.stdout, pyz_sha, config_sha, dotfiles=bool(cfg.dotfiles_repo))
-    if check.returncode == 0 and current:
+    """Install the agent unless it is current, waiting for the install (several minutes
+    the first time), and for one already running on the VM. Returns True when this call
+    (re)installed the agent."""
+    state = install_state(cfg)
+    while state == INSTALLING:
+        log.info("waiting for the VM agent install already running on the VM")
+        time.sleep(5)
+        state = install_state(cfg)
+    if state == INSTALLED:
         return False
-
     log.info("installing the VM agent")
-    # relative to the VM user's HOME: not a world-writable, predictable /tmp path
-    remote = f"cloud-coder-vm-{pyz_sha[:12]}.pyz"
+    command = f"cd && rm -f {INSTALL_STATUS} && {shlex.join(locked_install(cfg, upload(cfg)))}"
+    result = ssh.run(cfg, command, capture=False)
+    if result.returncode != 0:
+        raise RuntimeError("installing the VM agent failed (see output above)")
+    return True
+
+
+def install_state(cfg: Config) -> str:
+    """INSTALLING while an install runs on the VM; FAILED when the last one failed;
+    INSTALLED when the VM has this agent and its config; otherwise MISSING. An install
+    replaces the agent and config early on, so their hashes alone do not tell that it is
+    done. One quick SSH command."""
+    check = ssh.run(cfg, check_command(cfg))
+    out = check.stdout
+    if "install-running" in out:
+        return INSTALLING
+    if "install-exit-" in out and "install-exit-0" not in out:
+        return FAILED
+    pyz_sha = sha256(build_pyz())
+    config_sha = sha256(render_config(vm_config(cfg)).encode())
+    current = is_current(out, pyz_sha, config_sha, dotfiles=bool(cfg.dotfiles_repo))
+    return INSTALLED if check.returncode == 0 and current else MISSING
+
+
+def start_install(cfg: Config) -> None:
+    """Copy the agent to the VM and start installing it there, detached from this SSH
+    connection: it runs on even when this process ends. Follow it with `install_state`.
+    The log of the previous detached install is kept as INSTALL_LOG.prev."""
+    detached = shlex.join(["nohup", *locked_install(cfg, upload(cfg))])
+    # only the install goes to the background, with no fd left on the SSH channel
+    command = (
+        f"cd && rm -f {INSTALL_STATUS} && mv -f {INSTALL_LOG} {INSTALL_LOG}.prev 2>/dev/null; "
+        f"{{ {detached} > {INSTALL_LOG} 2>&1 < /dev/null & }}"
+    )
+    result = ssh.run(cfg, command)
+    if result.returncode != 0:
+        raise RuntimeError(f"starting the VM agent install failed: {result.stderr.strip()[-500:]}")
+
+
+def locked_install(cfg: Config, remote: str) -> list[str]:
+    """The command (run in the VM user's HOME) that installs the uploaded agent while it
+    holds INSTALL_LOCK, and leaves its exit status in INSTALL_STATUS."""
+    script = f"{install_command(cfg, remote)}; echo $status > {INSTALL_STATUS}; exit $status"
+    return ["flock", "-n", INSTALL_LOCK, "sh", "-c", script]
+
+
+def upload(cfg: Config) -> str:
+    """Copy the agent to the VM; returns its path there, relative to the user's HOME
+    (not a world-writable, predictable /tmp path)."""
+    pyz = build_pyz()
+    remote = f"cloud-coder-vm-{sha256(pyz)[:12]}.pyz"
     with tempfile.TemporaryDirectory() as tmp:
         local = Path(tmp) / "cloud-coder-vm.pyz"
         local.write_bytes(pyz)
         ssh.scp(cfg, str(local), remote)
-    install = " && ".join(
+    return remote
+
+
+def install_command(cfg: Config, remote: str) -> str:
+    """Shell commands that install the uploaded agent (the first time takes several
+    minutes), remove the uploaded copy whether or not that succeeded, and leave the
+    install's exit status in ``$status``."""
+    config_text = render_config(vm_config(cfg))
+    steps = " && ".join(
         [
             shlex.join(["sudo", "python3", remote, "install-system", "--config", config_text]),
             shlex.join(["python3", str(paths.AGENT_PYZ), "install-user"]),
         ]
     )
-    # remove the uploaded copy whether or not the install succeeded
-    command = f"{install}; status=$?; rm -f {shlex.quote(remote)}; exit $status"
-    result = ssh.run(cfg, command, capture=False)
-    if result.returncode != 0:
-        raise RuntimeError("installing the VM agent failed (see output above)")
-    return True
+    return f"{steps}; status=$?; rm -f {shlex.quote(remote)}"

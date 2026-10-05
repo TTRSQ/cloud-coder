@@ -60,8 +60,42 @@ def test_up_without_waiting_is_not_ready_until_the_vm_runs(monkeypatch):
     assert not connect.up(Config(), wait=False).ready
 
     monkeypatch.setattr(ssh, "reachable", lambda cfg: True)
-    monkeypatch.setattr(vm_agent_deploy, "ensure_installed", lambda cfg: False)
+    monkeypatch.setattr(vm_agent_deploy, "install_state", lambda cfg: vm_agent_deploy.INSTALLED)
+    monkeypatch.setattr(vm_agent_deploy, "start_install", lambda cfg: pytest.fail("installed"))
     assert connect.up(Config(), wait=False) == connect.UpResult("running", True, False)
+
+
+@pytest.fixture
+def running_vm(monkeypatch):
+    monkeypatch.setattr(gce, "ensure_running", lambda cfg, mt, wait: "running")
+    monkeypatch.setattr(ssh, "reachable", lambda cfg: True)
+    started = []
+    monkeypatch.setattr(vm_agent_deploy, "start_install", lambda cfg: started.append(1))
+    return started
+
+
+def test_up_without_waiting_leaves_the_agent_install_running_on_the_vm(monkeypatch, running_vm):
+    installing = connect.UpResult("running", False, False, agent_installing=True)
+    for state, started in [(vm_agent_deploy.MISSING, 1), (vm_agent_deploy.INSTALLING, 1)]:
+        monkeypatch.setattr(vm_agent_deploy, "install_state", lambda cfg, s=state: s)
+        assert connect.up(Config(), wait=False) == installing
+        assert len(running_vm) == started
+    monkeypatch.setattr(vm_agent_deploy, "install_state", lambda cfg: vm_agent_deploy.INSTALLED)
+    assert connect.up(Config(), wait=False) == connect.UpResult("running", True, False)
+
+
+def test_a_failed_agent_install_is_reported_and_started_again(monkeypatch, running_vm):
+    monkeypatch.setattr(vm_agent_deploy, "install_state", lambda cfg: vm_agent_deploy.FAILED)
+    with pytest.raises(RuntimeError, match=r"installing the VM agent failed .*started it again"):
+        connect.up(Config(), wait=False)
+    assert running_vm == [1]
+
+
+def test_up_with_waiting_installs_the_agent_before_returning(monkeypatch):
+    monkeypatch.setattr(gce, "ensure_running", lambda cfg, mt, wait: "started")
+    monkeypatch.setattr(ssh, "wait_ready", lambda cfg: None)
+    monkeypatch.setattr(vm_agent_deploy, "ensure_installed", lambda cfg: True)
+    assert connect.up(Config()) == connect.UpResult("started", True, True)
 
 
 def test_cli_connect_detach_prints_the_session_and_does_not_attach(monkeypatch, capsys):

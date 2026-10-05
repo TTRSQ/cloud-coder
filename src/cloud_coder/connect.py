@@ -26,20 +26,40 @@ class AgentError(RuntimeError):
 class UpResult:
     vm_action: str  # created / started / resumed / running / stopping
     ready: bool  # VM running, SSH reachable and the agent installed
-    agent_installed: bool  # this call (re)installed the agent
+    agent_installed: bool  # this call installed the agent (only when it waits)
+    agent_installing: bool = False  # an install runs on the VM; call `up` again later
 
 
 def up(cfg: Config, machine_type_requested: bool = False, *, wait: bool = True) -> UpResult:
     """Make the VM ready for sessions. With ``wait=False`` a VM that is not running yet is
-    only asked to start, and the result is not ready: call again until it is."""
+    only asked to start, a missing or outdated agent is installed by a process left
+    running on the VM, and the result is not ready until a later call finds both done."""
     action = gce.ensure_running(cfg, machine_type_requested, wait=wait)
     log.info(f"VM {cfg.instance}: {action}")
-    if not wait and (action != gce.RUNNING or not ssh.reachable(cfg)):
-        return UpResult(action, ready=False, agent_installed=False)
     if wait:
         ssh.wait_ready(cfg)
-    installed = vm_agent_deploy.ensure_installed(cfg)
-    return UpResult(action, ready=True, agent_installed=installed)
+        installed = vm_agent_deploy.ensure_installed(cfg)
+        return UpResult(action, ready=True, agent_installed=installed)
+    if action != gce.RUNNING or not ssh.reachable(cfg):
+        return UpResult(action, ready=False, agent_installed=False)
+    return _agent_ready_without_waiting(cfg, action)
+
+
+def _agent_ready_without_waiting(cfg: Config, action: str) -> UpResult:
+    """Start a missing, outdated or failed agent install on the VM, and report whether
+    one is done; the install runs there on its own."""
+    state = vm_agent_deploy.install_state(cfg)
+    if state == vm_agent_deploy.INSTALLED:
+        return UpResult(action, ready=True, agent_installed=False)
+    if state == vm_agent_deploy.INSTALLING:
+        return UpResult(action, ready=False, agent_installed=False, agent_installing=True)
+    vm_agent_deploy.start_install(cfg)
+    if state == vm_agent_deploy.FAILED:
+        raise RuntimeError(
+            f"installing the VM agent failed (log: ~/{vm_agent_deploy.INSTALL_LOG}.prev on "
+            "the VM); started it again, call `up` later"
+        )
+    return UpResult(action, ready=False, agent_installed=False, agent_installing=True)
 
 
 def is_repo_url(value: str) -> bool:
