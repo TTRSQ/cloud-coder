@@ -6,6 +6,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 
+from cloud_coder import deadline
 from cloud_coder.config import Config
 
 ABSENT = "absent"
@@ -58,8 +59,9 @@ def vm_from_describe(data: dict | None) -> Vm:
 
 
 def gcloud(cfg: Config, *args: str, capture: bool = True) -> subprocess.CompletedProcess:
+    """Bounded by the current deadline (see deadline.py)."""
     cmd = ["gcloud", *args, f"--project={cfg.project}"]
-    return subprocess.run(cmd, capture_output=capture, text=True, stdin=subprocess.DEVNULL)
+    return deadline.run(cmd, capture_output=capture, text=True, stdin=subprocess.DEVNULL)
 
 
 def _checked(cfg: Config, *args: str) -> str:

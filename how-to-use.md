@@ -213,7 +213,9 @@ cloud-coder が起動する Claude Code は、すべて Remote Control 付き (`
 `cloud-coder mcp` は、VM の起動、タスクの投入、進み具合や結果の確認を tool として公開する stdio の MCP server です。tool の一覧は [README の MCP server](README.md#mcp-server) にあります。
 
 - 対象の VM は `config.yaml` (と `cloud-coder mcp` に付けたオプション) で決まります。`gcp.project` が無いと server は起動せず、エラーになります。
-- 典型的な流れは `up` (ready になるまで繰り返す) → `start_session` (`repo` と `prompt`) → `status` で `BUSY` が終わるのを待つ → `read_session` で結果を読む → 必要なら `send_prompt` で追加の指示、です。作業が終われば VM は自動停止するので、`stop` を呼ぶ必要は普段ありません。
+- 典型的な流れは `up` (ready になるまで間をおいて呼び直す) → `start_session` (`repo` と `prompt`) → 開始したことをユーザーに報告してターンを終える → 後でユーザーが進み具合や結果を尋ねたら `read_session` / `status` で確認する → 必要なら `send_prompt` で追加の指示、です。作業が終われば VM は自動停止するので、`stop` を呼ぶ必要は普段ありません。
+- Claude Code の作業は数分〜数時間かかります。server は LLM に、作業を始めたらターンを終え、`BUSY` が終わるのをポーリングで待たないよう指示します (`start_session` / `send_prompt` の応答の `next`、`BUSY` のときの応答の `note`)。`BUSY` と分かってから 60 秒以内に同じ `status` / `read_session` を呼ぶと、VM に問い合わせずに `rechecked: false` だけが返ります ([README の MCP server](README.md#mcp-server))。
+- `up` は agent のインストール・更新をバックグラウンドで行い、終わるまでは `ready: false` (`agent_installing: true`) を返します。初回は数分かかります。
 - `read_session` は tmux の画面の文字列をそのまま返します。Claude Code の応答のほか、権限の確認や trust 画面など入力を待っている表示もそのまま読めます。
 - `send_prompt` は Claude Code が `BUSY` の間はエラーになります (CLI の `-p` と同じ)。
 - VM 上で行う初回の Claude Code のログイン (`/login`) と `gh auth login` は MCP からはできません。[初回セットアップ](#初回セットアップ)を CLI で済ませてから使ってください。
@@ -312,6 +314,7 @@ Cloud Run に置いた API は `/mcp` で MCP server も提供しているので
    - Authentication: **OAuth** (client ID と secret は空のまま。ChatGPT が Dynamic Client Registration で登録します)
 4. ChatGPT が cloud-coder の承認ページ (受け取り先の URL、注意書き、write token の入力欄があるページ) を開く。受け取り先が `https://chatgpt.com/…` であることを確かめ、手順 1 の **write token** を貼り付けて **Allow** を押す。ChatGPT に戻れば接続完了です。
 5. 会話でアプリを選び、「cloud-coder の status を見て」のように頼む。`up` / `start_session` / `send_prompt` / `stop` は書き込みの tool なので、ChatGPT が実行前に確認を求めます。
+6. 作業を頼むと (例: 「cloud-coder で PR を作って」)、ChatGPT は `start_session` の後に開始したことを伝えてターンを終えます。結果は後で「進み具合を見て」「結果を教えて」のように尋ねてください。
 
 - 承認ページに貼るのは write token だけです (read token では承認できません)。自分で ChatGPT から接続を始めた直後に開いたページにだけ貼ってください。人から送られたリンクの承認ページに貼ると、その人の ChatGPT に権限が渡ります。
 - write token をローテーションして古い token を外すと、ChatGPT の接続は無効になります。アプリの接続をやり直してください。

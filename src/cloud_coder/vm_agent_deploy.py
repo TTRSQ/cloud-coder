@@ -94,15 +94,26 @@ def is_current(check_output: str, pyz_sha: str, config_sha: str, dotfiles: bool 
 
 def ensure_installed(cfg: Config) -> bool:
     """Returns True when the agent was (re)installed."""
-    pyz = build_pyz()
-    config_text = render_config(vm_config(cfg))
-    pyz_sha, config_sha = sha256(pyz), sha256(config_text.encode())
+    if is_installed(cfg):
+        return False
+    install(cfg)
+    return True
 
+
+def is_installed(cfg: Config) -> bool:
+    """Whether the VM has this agent and its config installed (one quick SSH command)."""
+    pyz_sha = sha256(build_pyz())
+    config_sha = sha256(render_config(vm_config(cfg)).encode())
     check = ssh.run(cfg, check_command(cfg))
     current = is_current(check.stdout, pyz_sha, config_sha, dotfiles=bool(cfg.dotfiles_repo))
-    if check.returncode == 0 and current:
-        return False
+    return check.returncode == 0 and current
 
+
+def install(cfg: Config) -> None:
+    """Copy the agent to the VM and install it; the first install takes several minutes."""
+    pyz = build_pyz()
+    config_text = render_config(vm_config(cfg))
+    pyz_sha = sha256(pyz)
     log.info("installing the VM agent")
     # relative to the VM user's HOME: not a world-writable, predictable /tmp path
     remote = f"cloud-coder-vm-{pyz_sha[:12]}.pyz"
@@ -110,15 +121,14 @@ def ensure_installed(cfg: Config) -> bool:
         local = Path(tmp) / "cloud-coder-vm.pyz"
         local.write_bytes(pyz)
         ssh.scp(cfg, str(local), remote)
-    install = " && ".join(
+    steps = " && ".join(
         [
             shlex.join(["sudo", "python3", remote, "install-system", "--config", config_text]),
             shlex.join(["python3", str(paths.AGENT_PYZ), "install-user"]),
         ]
     )
     # remove the uploaded copy whether or not the install succeeded
-    command = f"{install}; status=$?; rm -f {shlex.quote(remote)}; exit $status"
+    command = f"{steps}; status=$?; rm -f {shlex.quote(remote)}; exit $status"
     result = ssh.run(cfg, command, capture=False)
     if result.returncode != 0:
         raise RuntimeError("installing the VM agent failed (see output above)")
-    return True

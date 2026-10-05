@@ -5,10 +5,12 @@ The command line and the MCP server are thin adapters over them.
 """
 
 import base64
+import contextvars
 import json
 import logging
 import shlex
 import subprocess
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 
 from cloud_coder import gce, ssh, vm_agent_deploy
@@ -26,20 +28,43 @@ class AgentError(RuntimeError):
 class UpResult:
     vm_action: str  # created / started / resumed / running / stopping
     ready: bool  # VM running, SSH reachable and the agent installed
-    agent_installed: bool  # this call (re)installed the agent
+    agent_installed: bool  # this call (re)installed the agent, or found that done
+    agent_installing: bool = False  # the agent is being installed in the background
+
+
+# The background agent install of `up(wait=False)`; callers serialize `up` (guards.up_now).
+_installer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cloud-coder-install")
+_install: Future | None = None
 
 
 def up(cfg: Config, machine_type_requested: bool = False, *, wait: bool = True) -> UpResult:
     """Make the VM ready for sessions. With ``wait=False`` a VM that is not running yet is
-    only asked to start, and the result is not ready: call again until it is."""
+    only asked to start, an agent install runs in the background, and the result is not
+    ready until a later call finds both done: call again until it is ready."""
     action = gce.ensure_running(cfg, machine_type_requested, wait=wait)
     log.info(f"VM {cfg.instance}: {action}")
-    if not wait and (action != gce.RUNNING or not ssh.reachable(cfg)):
-        return UpResult(action, ready=False, agent_installed=False)
     if wait:
         ssh.wait_ready(cfg)
-    installed = vm_agent_deploy.ensure_installed(cfg)
-    return UpResult(action, ready=True, agent_installed=installed)
+        installed = vm_agent_deploy.ensure_installed(cfg)
+        return UpResult(action, ready=True, agent_installed=installed)
+    if action != gce.RUNNING or not ssh.reachable(cfg):
+        return UpResult(action, ready=False, agent_installed=False)
+    return _install_in_background(cfg, action)
+
+
+def _install_in_background(cfg: Config, action: str) -> UpResult:
+    global _install
+    if _install is not None:
+        if not _install.done():
+            return UpResult(action, ready=False, agent_installed=False, agent_installing=True)
+        finished, _install = _install, None
+        finished.result()  # raises when the install failed; the next call retries
+        return UpResult(action, ready=True, agent_installed=True)
+    if vm_agent_deploy.is_installed(cfg):
+        return UpResult(action, ready=True, agent_installed=False)
+    # an empty context: the install is not bounded by the caller's deadline
+    _install = _installer.submit(contextvars.Context().run, vm_agent_deploy.install, cfg)
+    return UpResult(action, ready=False, agent_installed=False, agent_installing=True)
 
 
 def is_repo_url(value: str) -> bool:
