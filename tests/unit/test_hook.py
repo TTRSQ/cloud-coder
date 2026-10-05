@@ -110,4 +110,8 @@ def test_a_failing_hook_says_where_in_the_journal(monkeypatch, tmp_path):
     monkeypatch.setattr(paths, "HOOK_LOG", tmp_path / "hook.log")
     assert hook.main(io.StringIO("not json")) == 0
     assert lines[0].startswith("hook failed: JSONDecodeError(")
-    assert "(traceback in" in lines[0] and (tmp_path / "hook.log").exists()
+    assert (
+        " at hook.py:" in lines[0]
+        and "(traceback in" in lines[0]
+        and (tmp_path / "hook.log").exists()
+    )

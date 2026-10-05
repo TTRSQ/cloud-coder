@@ -137,7 +137,8 @@ def main(stdin=sys.stdin) -> int:
                 idle_check.cancel_grace()
         _journal(describe(payload, os.environ, new))
     except Exception as e:
-        where = traceback.extract_tb(e.__traceback__)[-1]
+        frames = traceback.extract_tb(e.__traceback__)
+        where = next((f for f in reversed(frames) if "cloud_coder_vm" in f.filename), frames[-1])
         _journal(
             f"hook failed: {e!r} at {Path(where.filename).name}:{where.lineno} "
             f"(traceback in {paths.HOOK_LOG})"
