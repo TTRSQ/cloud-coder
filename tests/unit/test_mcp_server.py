@@ -124,3 +124,18 @@ def test_shell_mode_prompts_are_refused(monkeypatch, tool, arguments):
     monkeypatch.setattr(connect, "up", lambda *a, **kw: pytest.fail("reached the VM"))
     result = call(tool, arguments)
     assert result.is_error and "a prompt must not" in result.content[0].text
+
+
+def test_read_session_never_forwards_the_ssh_agent(monkeypatch):
+    import subprocess
+
+    commands = []
+
+    def fake_run(cmd, **kw):
+        commands.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout='{"output": ""}', stderr="")
+
+    monkeypatch.setattr(gce, "describe", lambda cfg: gce.Vm(gce.RUNNING))
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert not call("read_session", {"session": "cc-a-1"}).is_error
+    assert len(commands) == 1 and "-A" not in commands[0]

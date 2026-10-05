@@ -8,6 +8,7 @@
 - [複数のセッションを並行して使う](#複数のセッションを並行して使う)
 - [スマホなどから Remote Control で操作する](#スマホなどから-remote-control-で操作する)
 - [MCP server として使う](#mcp-server-として使う)
+- [HTTP API として使う](#http-api-として使う)
 - [Claude Code のスキルで操作する](#claude-code-のスキルで操作する)
 - [自動停止を使いこなす](#自動停止を使いこなす)
 - [停止した VM で作業を再開する](#停止した-vm-で作業を再開する)
@@ -255,6 +256,30 @@ claude mcp list   # cloud-coder が Connected になっていること
 
 - `--scope user` を付けると、そのマシンのすべてのプロジェクトで読み込まれます。scope の違いは [Claude Code のドキュメント](https://code.claude.com/docs/en/mcp#mcp-installation-scopes) を参照してください。
 - 登録をやめるときは `claude mcp remove cloud-coder` を、同じディレクトリで実行します。
+
+## HTTP API として使う
+
+`cloud-coder api` は、MCP server と同じ操作を HTTP で公開します。endpoint、status code、セキュリティの注意は [README の HTTP API](README.md#http-api) にあります。
+
+```bash
+export CLOUD_CODER_API_READ_TOKENS="$(openssl rand -hex 32)"
+export CLOUD_CODER_API_WRITE_TOKENS="$(openssl rand -hex 32)"
+cloud-coder api   # 127.0.0.1:8787。別の端末で以下を実行する
+
+AUTH="Authorization: Bearer $CLOUD_CODER_API_WRITE_TOKENS"
+curl -s -X POST -H "$AUTH" localhost:8787/v1/vm/start          # ready: true になるまで繰り返す
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"repo": "https://github.com/OWNER/REPO.git", "prompt": "テストを直して"}' \
+  localhost:8787/v1/sessions                                    # 返った session 名を使う
+curl -s -H "$AUTH" localhost:8787/v1/sessions                   # claude_state が BUSY でなくなるまで待つ
+curl -s -H "$AUTH" 'localhost:8787/v1/sessions/cc-REPO-1?lines=100'
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"text": "変更点をまとめて"}' localhost:8787/v1/sessions/cc-REPO-1/prompts
+```
+
+- 流れは MCP server と同じです: VM を ready にする → セッションを作る → 状態を見て待つ → 画面を読む → 追加の指示。作業が終われば VM は自動停止します。
+- 状態を見るだけのクライアントには read token を渡してください。read token では `GET` しかできません。
+- VM が ready でないときの `POST /v1/sessions` などは 503 と `Retry-After` を返します。起動は要求済みなので、その秒数待って同じリクエストを再実行すれば進みます。
 
 ## Claude Code のスキルで操作する
 

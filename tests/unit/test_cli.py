@@ -59,3 +59,14 @@ def test_main_without_project_fails(tmp_path, capsys, no_subprocess):
     config = write_config(tmp_path, "")
     assert cli.main(["stop", "--config", config]) == 1
     assert "no GCP project" in capsys.readouterr().err
+
+
+def test_api_refuses_to_start_without_tokens(tmp_path, no_subprocess, monkeypatch, capsys):
+    from cloud_coder import http_api
+
+    monkeypatch.delenv(http_api.READ_TOKENS_ENV, raising=False)
+    monkeypatch.delenv(http_api.WRITE_TOKENS_ENV, raising=False)
+    monkeypatch.setattr(http_api.uvicorn, "run", lambda *a, **kw: pytest.fail("served"))
+    config = write_config(tmp_path, "gcp:\n  project: p\n")
+    assert cli.main(["api", "--config", config]) == 1
+    assert "no API token" in capsys.readouterr().err

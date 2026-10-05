@@ -17,6 +17,7 @@ flowchart LR
   subgraph local[ローカル端末]
     CLI[cloud-coder CLI]
     LLM[MCP クライアント<br/>Claude Code など] -->|stdio| MCP[cloud-coder mcp]
+    HTTP[HTTP クライアント] -->|HTTP + bearer token| API[cloud-coder api]
   end
   subgraph vm[GCE VM]
     agent[cloud-coder-vm.pyz<br/>/opt/cloud-coder]
@@ -34,10 +35,12 @@ flowchart LR
   CLI -->|gcloud compute ssh / scp| agent
   MCP -->|gcloud compute instances| vm
   MCP -->|gcloud compute ssh / scp| agent
+  API -->|gcloud compute instances| vm
+  API -->|gcloud compute ssh / scp| agent
 ```
 
-- ローカル側 (`src/cloud_coder`) は GCE の作成・起動・停止と SSH を `gcloud` で行います。依存は PyYAML と MCP Python SDK (`mcp`、MCP server 用) です。
-- 操作 (`connect.py` / `gce.py` / `ssh.py`) は結果を返し、失敗は例外で知らせます。CLI と MCP server はその上の薄い adapter です。
+- ローカル側 (`src/cloud_coder`) は GCE の作成・起動・停止と SSH を `gcloud` で行います。依存は PyYAML、MCP Python SDK (`mcp`、MCP server 用)、Starlette と uvicorn (HTTP API 用) です。
+- 操作 (`connect.py` / `gce.py` / `ssh.py`) は結果を返し、失敗は例外で知らせます。CLI、MCP server、HTTP API はその上の薄い adapter です。MCP server と HTTP API が共有する安全側の判定 (プロンプトの検査、VM が ready かの確認) は `guards.py` にあります。
 - VM 側 (`src/cloud_coder_vm`) は標準ライブラリだけで書かれ、zipapp (`cloud-coder-vm.pyz`) として配布されます。`up` / `connect` のたびにハッシュを比較し、変わっていれば scp してインストールし直します。
 - `connect` は各ステップで状態を確認し、足りないものだけを用意します (VM → SSH → agent → repo → tmux → Claude Code → attach)。既存の repository を pull / reset することはありません。
 
@@ -71,6 +74,7 @@ cloud-coder status                                  # VM / セッション / 自
 cloud-coder stop                                    # VM を停止する (disk は残る)
 cloud-coder up                                      # VM の作成・起動と agent のインストールだけ行う
 cloud-coder mcp                                     # MCP server として stdio で待ち受ける (下の「MCP server」)
+cloud-coder api                                     # HTTP API を 127.0.0.1:8787 で待ち受ける (下の「HTTP API」)
 ```
 
 - tmux から抜けるときは detach (`Ctrl-b d`) します。SSH が切れても tmux 内の Claude Code や他のプロセスは動き続けます。
@@ -188,6 +192,51 @@ claude mcp add cloud-coder -- cloud-coder mcp
 - `start_session` / `send_prompt` は VM が ready でなければ起動を要求したうえでエラーを返します (`up` で ready を待ってから再実行)。
 - MCP server は ssh-agent を VM に転送しません (`connect` は転送します)。private repository は HTTPS + `gh auth setup-git` で clone してください ([GitHub の認証](#github-の認証))。
 - server は transport に依存しない作りです (`cloud_coder.mcp_server.build_server`)。現在提供しているのは stdio だけです。
+
+### HTTP API
+
+`cloud-coder api` は、MCP server と同じ操作を HTTP の REST API として公開します。MCP に対応していないプログラムやスクリプトから、VM の起動・タスクの投入・結果の確認を行えます。
+
+```bash
+export CLOUD_CODER_API_READ_TOKENS="$(openssl rand -hex 32)"
+export CLOUD_CODER_API_WRITE_TOKENS="$(openssl rand -hex 32)"
+cloud-coder api                       # 127.0.0.1:8787 で待ち受ける (--host / --port で変更)
+curl -H "Authorization: Bearer $CLOUD_CODER_API_WRITE_TOKENS" -X POST localhost:8787/v1/vm/start
+```
+
+| method / path | token | 動作 (対応する MCP tool) |
+| --- | --- | --- |
+| `GET /healthz` | 不要 | server が動いていれば `200 {"ok": true}`。VM には触れない |
+| `GET /v1/status` | read | `status`。VM は起動しない |
+| `POST /v1/vm/start` | write | `up`。起動を要求して待たずに `202 {vm_action, ready, agent_installed}` を返す。`ready: true` になるまで呼び直す |
+| `POST /v1/vm/stop` | write | `stop`。停止を要求して待たずに `202 {vm}` を返す |
+| `GET /v1/sessions` | read | `status` のセッション一覧 `{sessions: [...]}`。VM が動いていなければ 409 |
+| `POST /v1/sessions` | write | `start_session`。body は `{repo?, new?, session?, prompt?}` |
+| `POST /v1/sessions/{name}/prompts` | write | `send_prompt`。body は `{text}`。Claude Code が `READY` / `IDLE` のときだけ送る |
+| `GET /v1/sessions/{name}?lines=200` | read | `read_session`。`lines` は 1〜2000。VM は起動しない |
+
+- token は環境変数 `CLOUD_CODER_API_READ_TOKENS` (読み取り) と `CLOUD_CODER_API_WRITE_TOKENS` (読み取りと操作) にカンマ区切りで指定します。複数指定できるので、新しい token を足してクライアントを切り替えてから古い token を消す、という順でローテーションできます。どちらも空なら server は起動しません。
+- token は起動時に一度だけ読みます。変えたら `cloud-coder api` を再起動してください。
+- `POST /v1/vm/start` と、VM を ready にする `POST /v1/sessions` / `POST /v1/sessions/{name}/prompts` は、VM が動いていれば agent の確認・更新をその場で行います。初回のインストールは数分かかり、その間は応答が返りません (MCP の `up` と同じ)。クライアントのタイムアウトは長めにしてください。
+- token は `Authorization: Bearer <token>` ヘッダでだけ受け付けます (query string では受け付けません)。
+- エラーは `{"error": "..."}` の JSON で返します。
+
+| status | 意味 |
+| --- | --- |
+| 401 | token が無い、または一致しない (`WWW-Authenticate: Bearer`) |
+| 403 | read token で write の操作をした |
+| 404 | 存在しないセッション |
+| 409 | Claude Code が `BUSY` などでプロンプトを送れない、または VM が動いていない (`GET /v1/sessions`、`GET /v1/sessions/{name}`) |
+| 422 | body や `lines` が不正、または空の / `!` で始まる / 制御文字を含むプロンプト |
+| 503 | VM が ready でない。起動は要求済みなので、`Retry-After` 秒後に再実行するか、`POST /v1/vm/start` で `ready: true` を待つ |
+| 502 | `gcloud` や VM 上の agent のエラー |
+
+セキュリティ:
+
+- 既定では `127.0.0.1` にだけ bind します。token は平文で送られるので、他の端末から使う場合も `--host 0.0.0.0` で直接公開せず、TLS を終端する reverse proxy やトンネルの内側に置いてください。
+- write token を持つ相手は VM を起動・停止し、任意の repository を clone して Claude Code にプロンプトを渡せます。Claude Code はプロンプト次第で VM 上のコマンドを実行するため、write token は VM のシェルと同等の権限として扱ってください。
+- 操作対象の VM、プロンプトの検査、ssh-agent を転送しないことは MCP server と同じです (上の「MCP server」の注意を参照)。
+- server は token をログに出しません。uvicorn のアクセスログには method、path、query string、status が出ます。
 
 ### Claude Code のスキル
 
