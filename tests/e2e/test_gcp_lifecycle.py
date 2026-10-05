@@ -99,8 +99,13 @@ def test_a_prompt_starts_a_new_session_unless_one_is_named(cc):
     # one is refused: continue the session after its Claude Code is gone.
     claude = f"'remote-control {task['session']}( |$)'"  # the prompt follows the name
     vm_shell(f"pkill -f {claude}; for _ in $(seq 10); do pgrep -f {claude} || break; sleep 1; done")
+    # Not logged in, it wrote no transcript either: stand one in for the conversation.
+    transcript = f"~/.claude/projects/e2e/{task['claude_session_id']}.jsonl"
+    vm_shell(f"mkdir -p ~/.claude/projects/e2e && touch {transcript}")
     again = cc("connect", "--session", task["session"], "-p", "more", "--no-attach").stdout
-    assert last_json(again)["session"] == task["session"] and not last_json(again)["created"]
+    again = last_json(again)
+    assert again["session"] == task["session"] and not again["created"]
+    assert again["conversation"] == "continued"
     refused = cc("connect", "-p", "where?", "--no-attach", check=False)
     assert refused.returncode != 0 and "needs a repository" in refused.stderr
 

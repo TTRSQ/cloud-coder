@@ -12,7 +12,7 @@ from cloud_coder_vm import paths, session_registry
 from cloud_coder_vm.launch import Layout, main_checkout
 from cloud_coder_vm.state_lock import state_lock
 from cloud_coder_vm.system_files import VmConfig
-from cloud_coder_vm.tmux_panes import no_server, tmux_command
+from cloud_coder_vm.tmux_panes import DEFAULT_SOCKET, no_server, tmux_command
 
 
 class CloseError(Exception):
@@ -47,6 +47,13 @@ def unsaved_work(workdir: Path) -> str | None:
     return None
 
 
+def runs_on_default_server(session_name: str) -> bool:
+    """Whether an older cloud-coder left the session on the default tmux server, where
+    `kill_tmux_session` does not reach it."""
+    has_session = [*tmux_command(None, DEFAULT_SOCKET), "has-session", "-t", f"={session_name}"]
+    return subprocess.run(has_session, capture_output=True).returncode == 0
+
+
 def kill_tmux_session(session_name: str) -> str:
     killed = subprocess.run(
         [*tmux_command(None), "kill-session", "-t", f"={session_name}"],
@@ -70,6 +77,13 @@ def close(config: VmConfig, home: Path, session_name: str) -> dict:
     if session_name not in sessions:
         raise CloseError(f"unknown session {session_name!r}")
     session = sessions[session_name]
+    if runs_on_default_server(session_name):
+        # its Claude Code would keep running in a worktree removed under it
+        raise CloseError(
+            f"{session_name} still runs on the default tmux server (started by an older "
+            f"cloud-coder); end it with `tmux -L default kill-session -t ={session_name}` "
+            "on the VM and close again (nothing was closed)"
+        )
     main = main_checkout(Layout.of(config, home), session.repo)
     workdir = Path(session.workdir)
     is_worktree = workdir != main and workdir.exists()

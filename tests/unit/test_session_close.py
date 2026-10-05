@@ -103,9 +103,27 @@ def test_a_tmux_failure_keeps_everything(home, monkeypatch):
     """Only a session tmux does not know is "absent"; any other failure may leave Claude
     Code running, so its worktree must stay."""
     fail = ["sh", "-c", "echo 'permission denied' >&2; exit 1", "tmux"]
-    monkeypatch.setattr(session_close, "tmux_command", lambda user: fail)
+    monkeypatch.setattr(session_close, "tmux_command", lambda user, socket="cloud-coder": fail)
     with pytest.raises(CloseError, match="permission denied"):
         close(CONFIG, home, "cc-app-2")
+    assert (home / "git" / "wt" / "app-2").exists()
+    assert registered(home) == {"cc-app-1", "cc-app-2"}
+
+
+def test_a_session_left_on_the_default_tmux_server_is_not_closed(home, monkeypatch):
+    """`kill_tmux_session` only reaches cloud-coder's server: closing a session an older
+    cloud-coder started on the default one would remove the worktree under a running
+    Claude Code."""
+    calls = []
+
+    def tmux_command(user, socket="cloud-coder"):
+        calls.append(socket)
+        return ["true"] if socket == "default" else ["false"]
+
+    monkeypatch.setattr(session_close, "tmux_command", tmux_command)
+    with pytest.raises(CloseError, match="default tmux server.*nothing was closed"):
+        close(CONFIG, home, "cc-app-2")
+    assert calls == ["default"]
     assert (home / "git" / "wt" / "app-2").exists()
     assert registered(home) == {"cc-app-1", "cc-app-2"}
 
