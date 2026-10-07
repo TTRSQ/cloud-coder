@@ -103,15 +103,22 @@ terraform output -raw url
 
 ```bash
 URL=$(terraform -chdir=infra output -raw url)
+MCP_URL=$(terraform -chdir=infra output -raw mcp_url)
 READ=$(gcloud secrets versions access latest --secret cloud-coder-api-read-tokens --project $PROJECT)
 WRITE=$(gcloud secrets versions access latest --secret cloud-coder-api-write-tokens --project $PROJECT)
-MCP_URL=$(terraform -chdir=infra output -raw mcp_url)
-curl -s "$URL/.well-known/oauth-authorization-server"   # 生存確認 (token 不要)
+
+# アプリが動いているか (token 不要)
+curl -s "$URL/.well-known/oauth-authorization-server"
+# Cloud Run → IAP → VM まで通るか: read token で MCP の status tool を呼ぶ (VM は起動しない)
+curl -s -H "Authorization: Bearer $READ" -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"status","arguments":{}}}' \
+  "$MCP_URL"
 ```
 
 MCP クライアントには `mcp_url` を使います (`url` とは別の、Cloud Run の決まった形の URL。OAuth の issuer と resource はこちらです)。ChatGPT からの接続は [how-to-use の ChatGPT から使う](../how-to-use.md#chatgpt-から使う) を参照してください。
 
-- Cloud Run は `/healthz` を予約しているため、Cloud Run 上では `GET /healthz` がアプリに届かず 404 になります。生存確認には上の OAuth の metadata を使ってください。
+- Cloud Run は `/healthz` を予約しているため、Cloud Run 上では `GET /healthz` がアプリに届かず 404 になります。生存確認には上の OAuth の metadata か `status` tool を使ってください。
 - 1 回の呼び出しごとに IAP 経由の SSH が入るので、VM に触る tool は数秒かかります。インスタンスが 0 から起動するときはさらに 2〜3 秒かかります。
 
 ## token をローテーションする

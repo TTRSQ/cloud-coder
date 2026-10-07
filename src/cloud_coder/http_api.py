@@ -47,9 +47,10 @@ class ApiTokens:
             read=_split_tokens(environ.get(READ_TOKENS_ENV)),
             write=_split_tokens(environ.get(WRITE_TOKENS_ENV)),
         )
-        if not tokens.read and not tokens.write:
+        if not tokens.write:  # OAuth grants are approved with a write token
             raise ConfigError(
-                f"no API token: set {READ_TOKENS_ENV} and/or {WRITE_TOKENS_ENV} (comma-separated)"
+                f"no write token: set {WRITE_TOKENS_ENV} (comma-separated); "
+                f"{READ_TOKENS_ENV} is optional"
             )
         return tokens
 
@@ -113,7 +114,7 @@ def build_app(cfg: Config, tokens: ApiTokens, oauth: OAuthSettings) -> Starlette
 
 
 def serve(cfg: Config, host: str, port: int) -> None:
-    """Serve the API until interrupted. ConfigError without a public URL or a write token."""
+    """Serve the API until interrupted. ConfigError without a write token or a public URL."""
     environ = os.environ
     app = build_app(cfg, ApiTokens.from_env(environ), OAuthSettings.from_env(environ))
     uvicorn.run(app, host=host, port=port)

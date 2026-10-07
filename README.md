@@ -48,7 +48,7 @@ flowchart LR
 
 - Python 3.12 以上と [uv](https://docs.astral.sh/uv/)
 - [Google Cloud CLI](https://cloud.google.com/sdk/docs/install) (`gcloud auth login` 済み) と、対象 project で Compute Engine を操作できる権限
-- VM へ [IAP の TCP 転送](https://cloud.google.com/iap/docs/using-tcp-forwarding)で SSH できること。既定 (`ssh.iap: true`) では `gcloud compute ssh --tunnel-through-iap` で接続するので、IAP の範囲 `35.235.240.0/20` から network tag `cloud-coder` の VM への tcp:22 を許可する firewall ルールと、`roles/iap.tunnelResourceAccessor` (project の Owner / Editor なら不要) が要ります。[infra/](infra/README.md) の Terraform はこのルールを作り、それ以外からの tcp:22 を同じ tag の VM について閉じます。VM の外部 IP に直接 SSH する場合は `ssh.iap: false` にして、tcp:22 を開けてください (`default` network の `default-allow-ssh` など)。
+- VM へ [IAP の TCP 転送](https://cloud.google.com/iap/docs/using-tcp-forwarding)で SSH できること。既定 (`ssh.iap: true`) では `gcloud compute ssh --tunnel-through-iap` で接続するので、IAP の範囲 `35.235.240.0/20` から network tag `cloud-coder` の VM への tcp:22 を許可する firewall ルールと、`roles/iap.tunnelResourceAccessor` (project の Owner なら不要) が要ります。[infra/](infra/README.md) の Terraform はこのルールを作り、それ以外からの tcp:22 を同じ tag の VM について閉じます。VM の外部 IP に直接 SSH する場合は `ssh.iap: false` にして、tcp:22 を開けてください (`default` network の `default-allow-ssh` など)。
 - Claude Code の Pro / Max / Team / Enterprise のいずれかのプラン (Remote Control に必要)
 
 ## インストール

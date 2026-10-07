@@ -122,9 +122,11 @@ def grant(client) -> tuple[str, dict]:
 # --- settings ----------------------------------------------------------------------
 
 
-def test_refuses_to_start_without_tokens():
-    with pytest.raises(ConfigError, match="no API token"):
-        http_api.ApiTokens.from_env({http_api.READ_TOKENS_ENV: " , "})
+def test_refuses_to_start_without_a_write_token():
+    with pytest.raises(ConfigError, match="no write token"):
+        http_api.ApiTokens.from_env(
+            {http_api.READ_TOKENS_ENV: "read-1", http_api.WRITE_TOKENS_ENV: " , "}
+        )
 
 
 def test_public_url_is_required():
@@ -148,11 +150,6 @@ def test_settings_from_env():
     assert oauth.OAuthSettings.from_env({oauth.PUBLIC_URL_ENV: BASE}).redirect_uris == (
         oauth.CHATGPT_REDIRECT_URIS
     )
-
-
-def test_oauth_needs_a_write_token():
-    with pytest.raises(ConfigError, match="write token"):
-        build(env={http_api.READ_TOKENS_ENV: "read-1"})
 
 
 def test_healthz_needs_no_token_and_never_touches_the_vm(client, vm_calls):
@@ -219,6 +216,19 @@ def test_write_token_calls_write_tools(client, vm_calls):
 
 def test_unknown_token_is_401(client):
     assert rpc(client, "nope", "tools/list").status_code == 401
+
+
+def test_every_configured_token_is_accepted(vm_calls):
+    env = {http_api.READ_TOKENS_ENV: "read-old, read-new", http_api.WRITE_TOKENS_ENV: "write-1"}
+    with TestClient(build(env=env), base_url=BASE) as c:
+        for token in ("read-old", "read-new", "write-1"):
+            assert rpc(c, token, "tools/list").status_code == 200
+
+
+def test_token_in_the_query_string_is_not_accepted(client):
+    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+    response = client.post("/mcp?access_token=read-1", json=body, headers=MCP_HEADERS)
+    assert response.status_code == 401
 
 
 # --- client registration -----------------------------------------------------------
