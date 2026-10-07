@@ -1,7 +1,6 @@
-"""Preconditions shared by the adapters that let other programs drive the worker
-(the MCP server and the HTTP API): which prompts may be sent, and when the VM is
-ready for an operation. They raise the exceptions below; each adapter turns them
-into its own error format.
+"""Preconditions of the MCP server (over stdio and over HTTP), which lets other programs
+drive the worker: which prompts may be sent, and when the VM is ready for an operation.
+They raise the exceptions below, which the server turns into tool errors.
 """
 
 import threading
@@ -10,8 +9,7 @@ import unicodedata
 from cloud_coder import connect, gce
 from cloud_coder.config import Config
 
-# Scopes of the callers of the network adapters (HTTP API and MCP over HTTP); write
-# implies read.
+# Scopes of the callers of MCP over HTTP; write implies read.
 READ = "read"
 WRITE = "write"
 
@@ -25,7 +23,6 @@ class VmNotReady(Exception):
 
     def __init__(self, vm_action: str):
         super().__init__(f"the VM is not ready yet (VM {vm_action})")
-        self.vm_action = vm_action
 
 
 class VmNotRunning(Exception):
@@ -33,10 +30,9 @@ class VmNotRunning(Exception):
 
     def __init__(self, vm_status: str):
         super().__init__(f"the VM is {vm_status}")
-        self.vm_status = vm_status
 
 
-# An adapter serves requests concurrently; installing the agent twice at once would race.
+# The HTTP server serves requests concurrently; installing the agent twice at once would race.
 # This serializes calls within one process only, not across `cloud-coder` processes.
 _up_lock = threading.Lock()
 

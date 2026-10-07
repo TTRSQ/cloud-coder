@@ -29,6 +29,27 @@ resource "google_compute_firewall" "iap_ssh" {
   depends_on = [google_project_service.this]
 }
 
+# Closes tcp:22 from everywhere else (such as the default network's default-allow-ssh at
+# priority 65534) for these VMs only. It must rank below iap_ssh: at equal priority a deny
+# rule wins over an allow rule.
+resource "google_compute_firewall" "deny_other_ssh" {
+  name        = "cloud-coder-deny-other-ssh"
+  description = "cloud-coder: no SSH except from IAP (cloud-coder-allow-iap-ssh)"
+  network     = "default"
+  direction   = "INGRESS"
+  priority    = google_compute_firewall.iap_ssh.priority + 1
+
+  source_ranges = ["0.0.0.0/0"]
+  target_tags   = [local.vm_network_tag]
+
+  deny {
+    protocol = "tcp"
+    ports    = ["22"]
+  }
+
+  depends_on = [google_project_service.this]
+}
+
 # What `cloud-coder api` does to the VM: describe, start/resume, stop, and add its SSH key
 # to the instance metadata (gcloud compute ssh does that when the key is missing).
 resource "google_project_iam_custom_role" "vm_operator" {

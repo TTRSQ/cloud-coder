@@ -17,7 +17,7 @@ flowchart LR
   subgraph local[ローカル端末]
     CLI[cloud-coder CLI]
     LLM[MCP クライアント<br/>Claude Code など] -->|stdio| MCP[cloud-coder mcp]
-    HTTP[HTTP クライアント] -->|HTTP + bearer token| API[cloud-coder api]
+    HTTP[MCP クライアント<br/>ChatGPT など] -->|MCP over HTTP<br/>bearer token / OAuth| API[cloud-coder api]
   end
   subgraph vm[GCE VM]
     agent[cloud-coder-vm.pyz<br/>/opt/cloud-coder]
@@ -40,7 +40,7 @@ flowchart LR
 ```
 
 - ローカル側 (`src/cloud_coder`) は GCE の作成・起動・停止と SSH を `gcloud` で行います。依存は PyYAML、MCP Python SDK (`mcp`、MCP server 用)、Starlette と uvicorn (HTTP API 用) です。
-- 操作 (`connect.py` / `gce.py` / `ssh.py`) は結果を返し、失敗は例外で知らせます。CLI、MCP server、HTTP API はその上の薄い adapter です。MCP server と HTTP API が共有する安全側の判定 (プロンプトの検査、VM が ready かの確認) は `guards.py` にあります。
+- 操作 (`connect.py` / `gce.py` / `ssh.py`) は結果を返し、失敗は例外で知らせます。CLI と MCP server はその上の薄い adapter で、HTTP API は同じ MCP server を HTTP で提供します。MCP server の安全側の判定 (プロンプトの検査、VM が ready かの確認) は `guards.py` にあります。
 - VM 側 (`src/cloud_coder_vm`) は標準ライブラリだけで書かれ、zipapp (`cloud-coder-vm.pyz`) として配布されます。`up` / `connect` のたびにハッシュを比較し、変わっていれば scp してインストールし直します。
 - `connect` は各ステップで状態を確認し、足りないものだけを用意します (VM → SSH → agent → repo → tmux → Claude Code → attach)。既存の repository を pull / reset することはありません。
 
@@ -48,7 +48,7 @@ flowchart LR
 
 - Python 3.12 以上と [uv](https://docs.astral.sh/uv/)
 - [Google Cloud CLI](https://cloud.google.com/sdk/docs/install) (`gcloud auth login` 済み) と、対象 project で Compute Engine を操作できる権限
-- VM へ SSH (tcp:22) できる firewall ルール。`default` network の `default-allow-ssh` があればそのまま使えます。IAP を使う場合は `35.235.240.0/20` からの tcp:22 を許可してください。
+- VM へ [IAP の TCP 転送](https://cloud.google.com/iap/docs/using-tcp-forwarding)で SSH できること。既定 (`ssh.iap: true`) では `gcloud compute ssh --tunnel-through-iap` で接続するので、IAP の範囲 `35.235.240.0/20` から network tag `cloud-coder` の VM への tcp:22 を許可する firewall ルールと、`roles/iap.tunnelResourceAccessor` (project の Owner なら不要) が要ります。[infra/](infra/README.md) の Terraform はこのルールを作り、それ以外からの tcp:22 を同じ tag の VM について閉じます。VM の外部 IP に直接 SSH する場合は `ssh.iap: false` にして、tcp:22 を開けてください (`default` network の `default-allow-ssh` など)。
 - Claude Code の Pro / Max / Team / Enterprise のいずれかのプラン (Remote Control に必要)
 
 ## インストール
@@ -87,7 +87,7 @@ cloud-coder api                                     # HTTP API を 127.0.0.1:878
 - プロンプトを渡すと、既定では新しいセッション (2 つ目以降は git worktree、[セッション](#セッション)) と新しい Claude Code の会話で始めます (`--new` と同じ)。既存の会話の続きにするのは `--session <名前>` を指定したときだけです。どちらにするかは送る側が決めます。
 - プロンプトがあって `--session` もリポジトリも無いときはエラーにします (どのリポジトリで始めるか決まらないため。直近のセッションには送りません)。
 - プロンプトが無い `connect` (attach して見るとき) は、従来どおり直近のセッションに戻ります。
-- 応答 (`connect` の JSON 出力、MCP `start_session` と `POST /v1/sessions` の結果) の `created` はセッションを新しく作ったか (`true` / `false`)、`conversation` は Claude Code の会話が新しいか続きか (`new` / `continued`) を示します。`conversation` は Claude Code を起動しないとき (`--no-claude`) にはありません。`--session` で指定したセッションでも、まだ会話の履歴が無ければ `new` になります。
+- 応答 (`connect` の JSON 出力、MCP `start_session` の結果) の `created` はセッションを新しく作ったか (`true` / `false`)、`conversation` は Claude Code の会話が新しいか続きか (`new` / `continued`) を示します。`conversation` は Claude Code を起動しないとき (`--no-claude`) にはありません。`--session` で指定したセッションでも、まだ会話の履歴が無ければ `new` になります。
 - Claude Code を新しく起動 / resume するときは、`claude ... --remote-control <名前> -- "<prompt>"` の位置引数として最初のプロンプトを渡します。プロンプトは base64 で VM に送り、一時ファイル経由で展開するので、複数行・引用符・`$` などもそのまま届きます。
 - 既に Claude Code が動いているセッションには、その Claude Code が `READY` か `IDLE` のときだけ tmux の bracketed paste で入力して Enter を送ります。`BUSY` やまだ状態を報告していない場合は何も入力せずにエラー終了します (作業中の入力を壊さないため)。
 - `--detach` と組み合わせると、タスクを投げて放置し、終わって idle になったら VM が自動停止する、という使い方が CLI だけでできます。
@@ -145,7 +145,7 @@ VM には次のツールを入れます (`vm.tools` で選択、既定はすべ�
 gh の認証は対話操作なので cloud-coder は行いません。初回だけ VM に入って設定してください。
 
 ```bash
-gcloud compute ssh coder@cloud-coder --project <project> --zone <zone>
+gcloud compute ssh coder@cloud-coder --project <project> --zone <zone> --tunnel-through-iap
 gh auth login        # GitHub.com → HTTPS → ブラウザか token で認証
 gh auth setup-git    # git の HTTPS credential helper に gh を使う
 ```
@@ -209,59 +209,25 @@ claude mcp add cloud-coder -- cloud-coder mcp
 - server は tool の呼び出しごとに、tool 名・成否・所要時間を stderr のログに出します (例: `cloud-coder: MCP tool read_session: ok in 6.4s`)。
 - `start_session` / `send_prompt` は VM が ready でなければ起動を要求したうえでエラーを返します (`up` で ready を待ってから再実行)。
 - MCP server は ssh-agent を VM に転送しません (`connect` は転送します)。private repository は HTTPS + `gh auth setup-git` で clone してください ([GitHub の認証](#github-の認証))。
-- server は transport に依存しない作りです (`cloud_coder.mcp_server.build_server`)。`cloud-coder mcp` は stdio で、`cloud-coder api` は公開 URL を設定すると `/mcp` (Streamable HTTP) で同じ tool を提供します ([MCP over HTTP](#mcp-over-http-chatgpt-など))。
+- server は transport に依存しない作りです (`cloud_coder.mcp_server.build_server`)。`cloud-coder mcp` は stdio で、`cloud-coder api` は `/mcp` (Streamable HTTP) で同じ tool を提供します ([HTTP API](#http-api))。
 
 ### HTTP API
 
-`cloud-coder api` は、MCP server と同じ操作を HTTP の REST API として公開します。MCP に対応していないプログラムやスクリプトから、VM の起動・タスクの投入・結果の確認を行えます。
+`cloud-coder api` は、MCP server を `<公開 URL>/mcp` (Streamable HTTP、stateless) で提供します。tool と制約は stdio の MCP server と同じです。stdio で起動できないクライアント (ChatGPT、別の端末の Claude Code) から、VM の起動・タスクの投入・結果の確認を行えます。
 
 ```bash
 export CLOUD_CODER_API_READ_TOKENS="$(openssl rand -hex 32)"
 export CLOUD_CODER_API_WRITE_TOKENS="$(openssl rand -hex 32)"
+export CLOUD_CODER_PUBLIC_URL=http://localhost:8787
 cloud-coder api                       # 127.0.0.1:8787 で待ち受ける (--host / --port で変更)
-curl -H "Authorization: Bearer $CLOUD_CODER_API_WRITE_TOKENS" -X POST localhost:8787/v1/vm/start
 ```
 
-| method / path | token | 動作 (対応する MCP tool) |
-| --- | --- | --- |
-| `GET /healthz` | 不要 | server が動いていれば `200 {"ok": true}`。VM には触れない |
-| `GET /v1/status` | read | `status`。VM は起動しない |
-| `POST /v1/vm/start` | write | `up`。起動を要求して待たずに `202 {vm_action, ready, agent_installed, agent_installing}` を返す。`ready: true` になるまで呼び直す |
-| `POST /v1/vm/stop` | write | `stop`。停止を要求して待たずに `202 {vm}` を返す |
-| `GET /v1/sessions` | read | `status` のセッション一覧 `{sessions: [...]}`。VM が動いていなければ 409 |
-| `POST /v1/sessions` | write | `start_session`。body は `{repo?, new?, session?, prompt?}`。`prompt` があって `session` が無ければ新しいセッションと会話で始める (`repo` も無ければ 422)。応答の `created` / `conversation` で新規か継続かが分かる |
-| `POST /v1/sessions/{name}/prompts` | write | `send_prompt`。body は `{text}`。Claude Code が `READY` / `IDLE` のときだけ送る |
-| `GET /v1/sessions/{name}?lines=200` | read | `read_session`。`lines` は 1〜2000。VM は起動しない |
-
-- token は環境変数 `CLOUD_CODER_API_READ_TOKENS` (読み取り) と `CLOUD_CODER_API_WRITE_TOKENS` (読み取りと操作) にカンマ区切りで指定します。複数指定できるので、新しい token を足してクライアントを切り替えてから古い token を消す、という順でローテーションできます。どちらも空なら server は起動しません。
+- 環境変数 `CLOUD_CODER_PUBLIC_URL` に、クライアントが API に届く URL (https、path なし。手元だけで使うなら `http://localhost:<port>` も可) を設定します。OAuth の issuer と resource (`<公開 URL>/mcp`) はこの URL で決まります。未設定なら server は起動しません。Cloud Run では Terraform がこの値を設定します ([infra/README.md](infra/README.md))。
+- token は環境変数 `CLOUD_CODER_API_READ_TOKENS` (読み取り) と `CLOUD_CODER_API_WRITE_TOKENS` (読み取りと操作) にカンマ区切りで指定します。複数指定できるので、新しい token を足してクライアントを切り替えてから古い token を消す、という順でローテーションできます。OAuth の承認に write token を使うので、write token が無いと server は起動しません。
 - token は起動時に一度だけ読みます。変えたら `cloud-coder api` を再起動してください。
-- `POST /v1/vm/start` と、VM を ready にする `POST /v1/sessions` / `POST /v1/sessions/{name}/prompts` は、VM が動いていれば agent を確認し、インストール・更新が必要なら VM 上で始めて ready でない応答 (`agent_installing: true`、または 503) を返します (MCP の `up` と同じ)。初回のインストールは数分かかるので、`ready: true` になるまで間をおいて呼び直してください。
-- token は `Authorization: Bearer <token>` ヘッダでだけ受け付けます (query string では受け付けません)。
-- エラーは `{"error": "..."}` の JSON で返します。
+- `GET /healthz` は token なしで `200 {"ok": true}` を返し、VM には触れません (Cloud Run 上では予約パスのため届きません)。
 
-| status | 意味 |
-| --- | --- |
-| 401 | token が無い、または一致しない (`WWW-Authenticate: Bearer`) |
-| 403 | read token で write の操作をした |
-| 404 | 存在しないセッション |
-| 409 | Claude Code が `BUSY` などでプロンプトを送れない、または VM が動いていない (`GET /v1/sessions`、`GET /v1/sessions/{name}`) |
-| 422 | body や `lines` が不正、または空の / `!` で始まる / 制御文字を含むプロンプト |
-| 503 | VM が ready でない。起動は要求済みなので、`Retry-After` 秒後に再実行するか、`POST /v1/vm/start` で `ready: true` を待つ |
-| 502 | `gcloud` や VM 上の agent のエラー |
-
-セキュリティ:
-
-- 既定では `127.0.0.1` にだけ bind します。token は平文で送られるので、他の端末から使う場合も `--host 0.0.0.0` で直接公開せず、TLS を終端する reverse proxy やトンネルの内側に置いてください。
-- Cloud Run に置いてインターネットから使う構成は [infra/README.md](infra/README.md) にあります (Terraform と `Dockerfile`)。その endpoint は公開され、token だけで守られます。
-- write token を持つ相手は VM を起動・停止し、任意の repository を clone して Claude Code にプロンプトを渡せます。Claude Code はプロンプト次第で VM 上のコマンドを実行するため、write token は VM のシェルと同等の権限として扱ってください。
-- 操作対象の VM、プロンプトの検査、ssh-agent を転送しないことは MCP server と同じです (上の「MCP server」の注意を参照)。
-- server は token をログに出しません。uvicorn のアクセスログには method、path、query string、status が出ます。
-
-#### MCP over HTTP (ChatGPT など)
-
-環境変数 `CLOUD_CODER_PUBLIC_URL` (例: `https://cloud-coder-api-123.asia-northeast1.run.app`。https、path なし) を設定すると、`cloud-coder api` は MCP server を `<公開 URL>/mcp` (Streamable HTTP、stateless) でも提供します。tool と制約は stdio の MCP server と同じです。Cloud Run では Terraform がこの値を設定します ([infra/README.md](infra/README.md))。
-
-`/mcp` は次の 2 種類の Bearer token を受け付けます。
+`/mcp` は次の 2 種類の Bearer token を受け付けます。token は `Authorization: Bearer <token>` ヘッダでだけ受け付けます (query string では受け付けません)。
 
 - **API の token** (`CLOUD_CODER_API_READ_TOKENS` / `CLOUD_CODER_API_WRITE_TOKENS`): ヘッダを送れるクライアント (Claude Code、スクリプト) 向け。read token で呼べるのは read-only の tool (`status` と `read_session`) だけで、それ以外は tool のエラーになります。write token はすべての tool を呼べます。
 - **OAuth の access token**: ヘッダを設定できないクライアント (ChatGPT の developer mode のアプリ) 向け。`cloud-coder api` 自身が最小限の OAuth 2.1 authorization server を兼ねます。
@@ -279,8 +245,14 @@ OAuth の流れ: クライアントは `/.well-known/oauth-protected-resource/mc
 - 承認後の redirect 先は、環境変数 `CLOUD_CODER_OAUTH_REDIRECT_URIS` (カンマ区切り、`*` はパスの 1 区間) に一致するものだけ登録できます。既定は ChatGPT の `https://chatgpt.com/connector_platform_oauth_redirect` と `https://chatgpt.com/connector/oauth/*` です。設定すると既定を**置き換える**ので、MCP Inspector など他のクライアントも使うときは ChatGPT の 2 つと一緒に書いてください (Terraform はこの変数を設定せず、Cloud Run では既定のままです)。一覧から外した redirect URI で登録済みの client は、承認と token の交換・更新ができなくなります (発行済みの access token は期限の 1 時間まで有効)。
 - 承認ページは、誰かが送ってきたリンクからも開けます。ChatGPT の redirect URI はすべての ChatGPT 利用者に共通なので、他人の ChatGPT が始めた接続を承認すると grant はその人に渡ります。自分で接続を始めた直後にだけ write token を貼ってください。
 - 承認ページで誤った token が 10 分間に 10 回入力されると、しばらく 429 を返します (インスタンス全体で 1 つのカウンタ)。誰でも誤入力を送れるので、429 が続くときは時間を置くか、新しい revision でインスタンスを入れ替えてください。token は推測できない長さなので、これは総当たり対策としては補助です。承認コードは 5 分で失効し、1 回しか使えません (インスタンスの再起動を挟んだ場合を除く)。
-- OAuth の access token は `/mcp` 専用で、`/v1` は API の token だけを受け付けます。
 - token、承認コード、承認ページで入力された token はログに出しません。アクセスログには `/authorize` と承認ページの query string (client ID と承認要求。どちらも秘密ではない) が出ます。
+
+セキュリティ:
+
+- 既定では `127.0.0.1` にだけ bind します。token は平文で送られるので、他の端末から使う場合も `--host 0.0.0.0` で直接公開せず、TLS を終端する reverse proxy やトンネルの内側に置いてください。
+- Cloud Run に置いてインターネットから使う構成は [infra/README.md](infra/README.md) にあります (Terraform と `Dockerfile`)。その endpoint は公開され、token (と write token で承認した OAuth grant) だけで守られます。
+- write token を持つ相手は VM を起動・停止し、任意の repository を clone して Claude Code にプロンプトを渡せます。Claude Code はプロンプト次第で VM 上のコマンドを実行するため、write token は VM のシェルと同等の権限として扱ってください。
+- 操作対象の VM、プロンプトの検査、ssh-agent を転送しないことは stdio の MCP server と同じです (上の「MCP server」の注意を参照)。
 
 ### Claude Code のスキル
 
@@ -357,7 +329,7 @@ gcp:
   image_project: ubuntu-os-cloud
 ssh:
   user: coder                # VM 上のユーザー。HOME を固定するため端末によらず同じ名前を使う
-  iap: false                 # true で --tunnel-through-iap
+  iap: true                  # IAP 経由 (--tunnel-through-iap)。false で VM の外部 IP に直接 SSH する
 vm:
   workspace: git             # clone 先 (HOME からの相対パス)
   worktrees: git/wt          # --new の worktree 先 (HOME からの相対パス)

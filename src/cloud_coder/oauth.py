@@ -80,11 +80,13 @@ class OAuthSettings:
     redirect_uris: tuple[str, ...] = CHATGPT_REDIRECT_URIS
 
     @classmethod
-    def from_env(cls, environ: Mapping[str, str]) -> "OAuthSettings | None":
-        """None (no /mcp) unless CLOUD_CODER_PUBLIC_URL is set."""
+    def from_env(cls, environ: Mapping[str, str]) -> "OAuthSettings":
         public_url = environ.get(PUBLIC_URL_ENV, "").strip().rstrip("/")
         if not public_url:
-            return None
+            raise ConfigError(
+                f"no public URL: set {PUBLIC_URL_ENV} to the URL clients reach the API at "
+                "(e.g. http://localhost:8787 locally)"
+            )
         url = urlparse(public_url)
         local = url.hostname in ("localhost", "127.0.0.1")
         if not (url.scheme == "https" or (url.scheme == "http" and local)) or not url.netloc:

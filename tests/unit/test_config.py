@@ -24,12 +24,12 @@ def test_yaml_overrides(tmp_path):
     path = tmp_path / "config.yaml"
     path.write_text(
         "gcp:\n  machine_type: n2-standard-16\n  disk_size_gb: 200\n  disk_type: pd-balanced\n"
-        "ssh:\n  iap: true\nvm:\n  swap_gb: 4\nclaude:\n  auto_trust_workspace: false\n"
+        "ssh:\n  iap: false\nvm:\n  swap_gb: 4\nclaude:\n  auto_trust_workspace: false\n"
     )
     cfg = load(path)
     assert cfg.machine_type == "n2-standard-16"
     assert cfg.disk_size_gb == 200 and cfg.disk_type == "pd-balanced"
-    assert cfg.iap is True and cfg.swap_gb == 4 and cfg.auto_trust_workspace is False
+    assert cfg.iap is False and cfg.swap_gb == 4 and cfg.auto_trust_workspace is False
 
 
 def test_missing_file_gives_defaults(tmp_path):
