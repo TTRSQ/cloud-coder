@@ -1,10 +1,10 @@
 # infra: HTTP API を Cloud Run で動かす
 
-`cloud-coder api` ([HTTP API](../README.md#http-api)) を Cloud Run に置き、スマホや CI、チャットボットから VM を操作できるようにする Terraform です。リポジトリ直下の `Dockerfile` が API のイメージです。
+`cloud-coder api` ([HTTP API](../README.md#http-api)。MCP over HTTP) を Cloud Run に置き、ChatGPT などの MCP クライアントから VM を操作できるようにする Terraform です。リポジトリ直下の `Dockerfile` が API のイメージです。
 
 ```mermaid
 flowchart LR
-  client[クライアント] -- "HTTPS + Bearer token" --> run[Cloud Run<br>cloud-coder-api]
+  client[MCP クライアント] -- "HTTPS /mcp<br>Bearer token / OAuth" --> run[Cloud Run<br>cloud-coder-api]
   run -- "gcloud compute ssh<br>--tunnel-through-iap" --> iap[IAP TCP forwarding]
   iap -- "tcp:22 (35.235.240.0/20)" --> vm[VM cloud-coder]
   sm[Secret Manager<br>tokens, SSH key] --> run
@@ -14,12 +14,13 @@ flowchart LR
 
 | リソース | 内容 |
 | --- | --- |
-| `google_cloud_run_v2_service.api` | `cloud-coder-api`。最小 0 / 最大 1 インスタンス、リクエストタイムアウト 600 秒。**`allUsers` に `roles/run.invoker` を付けて公開**し、アプリの Bearer token (と、`/mcp` では write token で承認した OAuth grant) だけで守る。環境変数 `CLOUD_CODER_PUBLIC_URL` に公開 URL (変数 `public_url`、既定は `https://cloud-coder-api-<project number>.<region>.run.app`) を渡し、`/mcp` を有効にする |
+| `google_cloud_run_v2_service.api` | `cloud-coder-api`。最小 0 / 最大 1 インスタンス、リクエストタイムアウト 600 秒。**`allUsers` に `roles/run.invoker` を付けて公開**し、アプリの Bearer token と、write token で承認した OAuth grant だけで守る。環境変数 `CLOUD_CODER_PUBLIC_URL` に公開 URL (変数 `public_url`、既定は `https://cloud-coder-api-<project number>.<region>.run.app`。OAuth の issuer) を渡す |
 | `google_service_account.api` | `cloud-coder-api`。API の実行 SA |
 | `google_project_iam_custom_role.vm_operator` | `compute.instances.get/start/stop/resume/setMetadata`。**VM 1 台にだけ**付与 |
 | `google_project_iam_custom_role.project_reader` | `compute.projects.get` だけ。`gcloud compute ssh` が project を読むため project に付与 (追加のみの `_iam_member`) |
 | `google_iap_tunnel_instance_iam_member.api_ssh` | VM 1 台への IAP トンネル (`roles/iap.tunnelResourceAccessor`) |
-| `google_compute_firewall.iap_ssh` | `cloud-coder-allow-iap-ssh`。IAP の範囲 (35.235.240.0/20) から network tag `cloud-coder` の VM への tcp:22 だけを許可 |
+| `google_compute_firewall.iap_ssh` | `cloud-coder-allow-iap-ssh`。IAP の範囲 (35.235.240.0/20) から network tag `cloud-coder` の VM への tcp:22 を許可 (優先度 1000) |
+| `google_compute_firewall.deny_other_ssh` | `cloud-coder-deny-other-ssh`。それ以外 (0.0.0.0/0) から network tag `cloud-coder` の VM への tcp:22 を拒否 (優先度 1001)。`default-allow-ssh` (優先度 65534) などの許可より先に効き、IAP の許可より後に評価されるので、VM には IAP 経由でしか SSH できない。他の VM には影響しない |
 | `google_artifact_registry_repository.api` | `cloud-coder` (Docker)。最新 3 バージョンは残し、それ以外で 30 日を過ぎたイメージを消す |
 | `google_secret_manager_secret.api` | `cloud-coder-api-read-tokens` / `-write-tokens` / `-ssh-key` の入れ物。値は gcloud で入れる |
 | `google_project_service.this` | 使う API を有効化する。destroy しても無効化しない |
@@ -104,13 +105,14 @@ terraform output -raw url
 URL=$(terraform -chdir=infra output -raw url)
 READ=$(gcloud secrets versions access latest --secret cloud-coder-api-read-tokens --project $PROJECT)
 WRITE=$(gcloud secrets versions access latest --secret cloud-coder-api-write-tokens --project $PROJECT)
-curl -s -H "Authorization: Bearer $READ" "$URL/v1/status"
+MCP_URL=$(terraform -chdir=infra output -raw mcp_url)
+curl -s "$URL/.well-known/oauth-authorization-server"   # 生存確認 (token 不要)
 ```
 
-MCP の URL は `terraform -chdir=infra output -raw mcp_url` です (`url` とは別の、Cloud Run の決まった形の URL。OAuth の issuer と resource はこちらです)。ChatGPT からの接続は [how-to-use の ChatGPT から使う](../how-to-use.md#chatgpt-から使う) を参照してください。
+MCP クライアントには `mcp_url` を使います (`url` とは別の、Cloud Run の決まった形の URL。OAuth の issuer と resource はこちらです)。ChatGPT からの接続は [how-to-use の ChatGPT から使う](../how-to-use.md#chatgpt-から使う) を参照してください。
 
-- Cloud Run は `/healthz` を予約しているため、Cloud Run 上では `GET /healthz` がアプリに届かず 404 になります。生存確認には `GET /v1/status` を使ってください。
-- 1 回の呼び出しごとに IAP 経由の SSH が入るので、VM に触る endpoint は数秒かかります。インスタンスが 0 から起動するときはさらに 2〜3 秒かかります。
+- Cloud Run は `/healthz` を予約しているため、Cloud Run 上では `GET /healthz` がアプリに届かず 404 になります。生存確認には上の OAuth の metadata を使ってください。
+- 1 回の呼び出しごとに IAP 経由の SSH が入るので、VM に触る tool は数秒かかります。インスタンスが 0 から起動するときはさらに 2〜3 秒かかります。
 
 ## token をローテーションする
 
@@ -129,6 +131,7 @@ token の環境変数はインスタンスの起動時に読まれます。
 - **write token は VM のシェルと同等の権限です。** write token を持つ相手は VM を起動・停止し、任意の repository を clone して Claude Code にプロンプトを渡せます。Claude Code は VM 上でコマンドを実行でき、VM には Claude Code と GitHub の認証情報があります。状態を見るだけのクライアントには read token を渡してください。
 - API の実行 SA が操作できるのはこの VM 1 台 (起動・停止・metadata) と IAP トンネルだけで、project 全体への権限は `compute.projects.get` だけです。VM を作成・削除することはできません。
 - `/mcp` の OAuth は、write token を承認ページに貼った相手にだけ grant を出します。OAuth で得た access token は write token と同じ権限 (VM のシェルと同等) を持ちます。access token は 1 時間で切れますが、refresh token (30 日) で更新でき、更新のたびに新しい refresh token が出るので使われ続ける限り続きます。古い refresh token も期限まで有効です。止めるには write token を入れ替えます。
+- network tag `cloud-coder` の VM の tcp:22 は IAP の範囲からだけ開いています。手元の CLI も IAP 経由 (`ssh.iap: true`、既定) で接続します。`ssh.iap: false` ではこの VM に SSH できません。VM の外部 IP は外向きの通信 (GitHub、Claude) のために残しています。
 - 最大インスタンス数を 1 にしているので、大量のリクエストを受けても費用は 1 インスタンス分に収まります。
 
 ## 費用
@@ -141,4 +144,4 @@ token の環境変数はインスタンスの起動時に読まれます。
 terraform destroy
 ```
 
-API、SA、IAM、イメージ、secret と、firewall ルール `cloud-coder-allow-iap-ssh` が消えます (手元から IAP で SSH している場合はそれもできなくなります)。VM、`default` network、有効化した API は残ります。カスタムロールは削除から 7 日間は同じ ID で作り直せないので、すぐに作り直す場合は `role_id` を変えてください。
+API、SA、IAM、イメージ、secret と、firewall ルール `cloud-coder-allow-iap-ssh` / `cloud-coder-deny-other-ssh` が消えます (手元から IAP で SSH している場合はそれもできなくなります。`default-allow-ssh` があれば外部 IP への SSH が再び通ります)。VM、`default` network、有効化した API は残ります。カスタムロールは削除から 7 日間は同じ ID で作り直せないので、すぐに作り直す場合は `role_id` を変えてください。

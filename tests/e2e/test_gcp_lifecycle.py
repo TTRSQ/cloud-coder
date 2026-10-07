@@ -57,6 +57,7 @@ def vm_shell(command: str) -> str:
             f"coder@{INSTANCE}",
             f"--zone={ZONE}",
             f"--project={PROJECT}",
+            "--tunnel-through-iap",
             "--quiet",
             f"--command={command}",
         ],

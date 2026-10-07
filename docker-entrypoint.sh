@@ -3,6 +3,7 @@
 #   CLOUD_CODER_SSH_KEY_FILE   the private key (mounted from Secret Manager)
 #   CLOUD_CODER_CONFIG_YAML    the contents of config.yaml
 #   CLOUD_CODER_API_*_TOKENS   bearer tokens (the server refuses to start without one)
+#   CLOUD_CODER_PUBLIC_URL     the URL clients reach the API at (the OAuth issuer)
 set -eu
 
 key="$HOME/.ssh/google_compute_engine"

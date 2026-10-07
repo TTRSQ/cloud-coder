@@ -122,10 +122,14 @@ def grant(client) -> tuple[str, dict]:
 # --- settings ----------------------------------------------------------------------
 
 
-def test_no_public_url_means_no_mcp(vm_calls):
-    assert oauth.OAuthSettings.from_env({}) is None
-    with TestClient(build(settings=None), base_url=BASE) as c:
-        assert rpc(c, "write-1", "tools/list").status_code == 404
+def test_refuses_to_start_without_tokens():
+    with pytest.raises(ConfigError, match="no API token"):
+        http_api.ApiTokens.from_env({http_api.READ_TOKENS_ENV: " , "})
+
+
+def test_public_url_is_required():
+    with pytest.raises(ConfigError, match="no public URL"):
+        oauth.OAuthSettings.from_env({})
 
 
 @pytest.mark.parametrize(
@@ -149,6 +153,12 @@ def test_settings_from_env():
 def test_oauth_needs_a_write_token():
     with pytest.raises(ConfigError, match="write token"):
         build(env={http_api.READ_TOKENS_ENV: "read-1"})
+
+
+def test_healthz_needs_no_token_and_never_touches_the_vm(client, vm_calls):
+    response = client.get("/healthz")
+    assert response.status_code == 200 and response.json() == {"ok": True}
+    assert vm_calls == []
 
 
 # --- metadata ----------------------------------------------------------------------
@@ -211,13 +221,6 @@ def test_unknown_token_is_401(client):
     assert rpc(client, "nope", "tools/list").status_code == 401
 
 
-def test_rest_api_is_unchanged(client, vm_calls):
-    assert client.get("/v1/status", headers={"Authorization": "Bearer read-1"}).json() == {
-        "vm": "x"
-    }
-    assert client.post("/v1/vm/stop", headers={"Authorization": "Bearer read-1"}).status_code == 403
-
-
 # --- client registration -----------------------------------------------------------
 
 
@@ -261,7 +264,7 @@ def test_forged_client_id_is_unknown(client):
 # --- authorization -----------------------------------------------------------------
 
 
-def test_full_flow_gives_tokens_that_work_on_mcp_only(client, vm_calls):
+def test_full_flow_gives_tokens_that_work_on_mcp(client, vm_calls):
     client_id = register(client).json()["client_id"]
     sealed = approval_request(client, client_id)
 
@@ -284,9 +287,6 @@ def test_full_flow_gives_tokens_that_work_on_mcp_only(client, vm_calls):
     assert rpc(client, tokens["access_token"], "tools/list").status_code == 200
     assert not call_tool(client, tokens["access_token"], "stop")["isError"]
     assert vm_calls == ["stop"]
-    # OAuth tokens are for /mcp; the REST API takes only its own tokens.
-    auth = {"Authorization": f"Bearer {tokens['access_token']}"}
-    assert client.get("/v1/status", headers=auth).status_code == 401
 
 
 def test_wrong_write_token_is_refused_and_rate_limited(client):

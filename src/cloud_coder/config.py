@@ -26,7 +26,7 @@ class Config:
     image_project: str = "ubuntu-os-cloud"
     # ssh
     ssh_user: str = "coder"
-    iap: bool = False
+    iap: bool = True
     # vm
     workspace: str = "git"  # clones: ~/<workspace>/<repo>
     worktrees: str = "git/wt"  # --new worktrees: ~/<worktrees>/<repo>-<n>

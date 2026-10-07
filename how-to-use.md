@@ -69,10 +69,10 @@ cloud-coder up    # VM を作成し、agent と開発ツール、Claude Code を
 
 `claude.dotfiles_repo` が private repository の場合、この時点では clone に失敗して警告が出ますが、先へ進みます (次の `up` / `connect` で再試行されます)。
 
-続いて VM に SSH で入り、gh を認証します (`ssh.iap: true` の場合は、以下の `gcloud compute ssh` / `scp` に `--tunnel-through-iap` を付けます)。
+続いて VM に SSH で入り、gh を認証します。cloud-coder と同じく IAP 経由 (`--tunnel-through-iap`) で入ります (`ssh.iap: false` にしている場合は外します)。
 
 ```bash
-gcloud compute ssh coder@cloud-coder --project <project> --zone asia-northeast1-b
+gcloud compute ssh coder@cloud-coder --project <project> --zone asia-northeast1-b --tunnel-through-iap
 gh auth login        # GitHub.com → HTTPS → ブラウザ (表示されるコードをローカルのブラウザで入力) か token
 gh auth setup-git    # git の HTTPS 認証に gh を使う
 ```
@@ -90,7 +90,7 @@ dotfiles に含めていない `~/.claude/.env` (API キーなど) は cloud-cod
 mkdir -p ~/.claude && vi ~/.claude/.env && chmod 600 ~/.claude/.env
 
 # ローカルから: 既存のファイルを送る (VM に ~/.claude がある状態で)
-gcloud compute scp ~/.claude/.env coder@cloud-coder:~/.claude/.env --project <project> --zone asia-northeast1-b
+gcloud compute scp ~/.claude/.env coder@cloud-coder:~/.claude/.env --project <project> --zone asia-northeast1-b --tunnel-through-iap
 ```
 
 SSH でログインしている間は VM は自動停止しません ([自動停止](#自動停止を使いこなす))。終わったら `exit` してください。
@@ -275,45 +275,39 @@ claude mcp list   # cloud-coder が Connected になっていること
 
 ## HTTP API として使う
 
-`cloud-coder api` は、MCP server と同じ操作を HTTP で公開します。endpoint、status code、セキュリティの注意は [README の HTTP API](README.md#http-api) にあります。
+`cloud-coder api` は、MCP server を HTTP (`/mcp`、Streamable HTTP) で提供します。stdio で `cloud-coder mcp` を起動できないクライアント (ChatGPT、別の端末の Claude Code) から同じ tool を使えます。token、OAuth、セキュリティの注意は [README の HTTP API](README.md#http-api) にあります。
 
 ```bash
 export CLOUD_CODER_API_READ_TOKENS="$(openssl rand -hex 32)"
 export CLOUD_CODER_API_WRITE_TOKENS="$(openssl rand -hex 32)"
+export CLOUD_CODER_PUBLIC_URL=http://localhost:8787
 cloud-coder api   # 127.0.0.1:8787。別の端末で以下を実行する
 
-AUTH="Authorization: Bearer $CLOUD_CODER_API_WRITE_TOKENS"
-curl -s -X POST -H "$AUTH" localhost:8787/v1/vm/start          # ready: true になるまで繰り返す
-curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"repo": "https://github.com/OWNER/REPO.git", "prompt": "テストを直して"}' \
-  localhost:8787/v1/sessions                                    # 返った session 名を使う
-curl -s -H "$AUTH" localhost:8787/v1/sessions                   # claude_state が BUSY でなくなるまで待つ
-curl -s -H "$AUTH" 'localhost:8787/v1/sessions/cc-REPO-1?lines=100'
-curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"text": "変更点をまとめて"}' localhost:8787/v1/sessions/cc-REPO-1/prompts
+# Claude Code に登録する (read token なら status と read_session だけ)
+claude mcp add --transport http cloud-coder http://localhost:8787/mcp \
+  --header "Authorization: Bearer $CLOUD_CODER_API_WRITE_TOKENS"
 ```
 
-- 流れは MCP server と同じです: VM を ready にする → セッションを作る → 状態を見て待つ → 画面を読む → 追加の指示。作業が終われば VM は自動停止します。
-- 状態を見るだけのクライアントには read token を渡してください。read token では `GET` しかできません。
-- VM が ready でないときの `POST /v1/sessions` などは 503 と `Retry-After` を返します。起動は要求済みなので、その秒数待って同じリクエストを再実行すれば進みます。
+- 使い方は stdio の MCP server と同じです: `up` で VM を ready にする → `start_session` → 時間をおいて `status` / `read_session` → `send_prompt` で追加の指示。作業が終われば VM は自動停止します。
+- 状態を見るだけのクライアントには read token を渡してください。read token で書き込みの tool (`up` / `start_session` / `send_prompt` / `stop`) を呼ぶと tool のエラーになります。
 
 ### Cloud Run に置いてどこからでも使う
 
-[infra/README.md](infra/README.md) の Terraform で、API を Cloud Run に公開できます。構築後は URL と token を取り出し、上の `localhost:8787` を URL に置き換えて使います。
+[infra/README.md](infra/README.md) の Terraform で、API を Cloud Run に公開できます。構築後は MCP の URL と token を取り出し、上の `http://localhost:8787/mcp` を置き換えて使います。
 
 ```bash
-URL=$(terraform -chdir=infra output -raw url)
-AUTH="Authorization: Bearer $(gcloud secrets versions access latest --secret cloud-coder-api-write-tokens --project <project>)"
-curl -s -X POST -H "$AUTH" "$URL/v1/vm/start"
+MCP_URL=$(terraform -chdir=infra output -raw mcp_url)
+TOKEN=$(gcloud secrets versions access latest --secret cloud-coder-api-write-tokens --project <project>)
+claude mcp add --transport http cloud-coder "$MCP_URL" --header "Authorization: Bearer $TOKEN"
 ```
 
-- endpoint はインターネットに公開され、token だけで守られます。write token は VM のシェルと同等の権限なので、渡す相手と保存場所に注意してください。見るだけのクライアントには read token (`cloud-coder-api-read-tokens`) を渡します。
-- Cloud Run 上では `/healthz` に届きません (Cloud Run の予約パス)。生存確認には `GET /v1/status` を使います。
+- endpoint はインターネットに公開され、token (と OAuth grant) だけで守られます。write token は VM のシェルと同等の権限なので、渡す相手と保存場所に注意してください。見るだけのクライアントには read token (`cloud-coder-api-read-tokens`) を渡します。
+- Cloud Run 上では `/healthz` に届きません (Cloud Run の予約パス)。生存確認は token なしで `curl -s "${MCP_URL%/mcp}/.well-known/oauth-authorization-server"` のように OAuth の metadata を読むか、MCP の `status` tool を呼びます。
 - 1 回の呼び出しに数秒かかります (IAP 経由の SSH)。
 
 ### ChatGPT から使う
 
-Cloud Run に置いた API は `/mcp` で MCP server も提供しているので、ChatGPT の developer mode のアプリとして登録できます。仕組みと注意は [README の MCP over HTTP](README.md#mcp-over-http-chatgpt-など) にあります。
+Cloud Run に置いた API は `/mcp` で MCP server も提供しているので、ChatGPT の developer mode のアプリとして登録できます。仕組みと注意は [README の HTTP API](README.md#http-api) にあります。
 
 1. MCP の URL と write token を手元に用意する。
    ```bash
