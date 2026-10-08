@@ -183,6 +183,9 @@ def configure_github_https(enabled: bool) -> None:
 
 # Several sessions on one VM each build in their own worktree, and the incremental
 # caches under target/*/incremental grow with every worktree (TTRSQ/cloud-coder#32).
+# The file counts as cloud-coder's only while it equals this text byte for byte: changing
+# the text makes existing VMs' files look like the user's (kept, never removed) unless
+# the old text is also accepted.
 CARGO_CONFIG = """\
 # Created by cloud-coder (vm.cargo_disable_incremental). cloud-coder never edits this
 # file once it differs from what it wrote; set vm.cargo_disable_incremental: false to
@@ -224,7 +227,8 @@ def configure_cargo_incremental(home: Path, disable: bool) -> str:
             tmp.unlink()
     print(
         f"cloud-coder: note: left the existing Cargo config in {path.parent} as is; to "
-        "turn off incremental builds VM-wide, add `[build] incremental = false` to it",
+        "turn off incremental builds VM-wide, set `incremental = false` in its [build] "
+        "table (add the table if it has none)",
         flush=True,
     )
     return "kept existing"
@@ -281,6 +285,7 @@ def install_user(config: VmConfig, home: Path) -> None:
     if not paths.claude_bin(home).exists():
         subprocess.run(["bash", "-c", CLAUDE_INSTALLER], check=True)
     dev_tools.install(dev_tools.missing(config.tools, "user", home))
-    configure_cargo_incremental(home, config.cargo_disable_incremental)
     configure_github_https(config.github_https)  # before cloning dotfiles over https
     install_dotfiles(config, home)
+    # after the dotfiles, so a Cargo config they link in is the user's and stays untouched
+    configure_cargo_incremental(home, config.cargo_disable_incremental)

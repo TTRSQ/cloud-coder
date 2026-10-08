@@ -144,19 +144,20 @@ VM には次のツールを入れます (`vm.tools` で選択、既定はすべ�
 
 VM の Cargo の既定値として incremental compilation を切ります (`build.incremental = false`)。1 台の VM で複数のセッションがそれぞれの worktree で build すると、`target/debug/incremental` が worktree の数だけ増えて disk を圧迫するためです ([#32](https://github.com/TTRSQ/cloud-coder/issues/32))。代わりに、1 ファイルを変えた後の再 build は遅くなります (変えた crate とそれに依存する crate を毎回すべてコンパイルし直すため)。
 
-- agent の install 時に `~/.cargo/config.toml` が無ければ、次の内容で作ります。`~/.cargo/config.toml` か旧名の `~/.cargo/config` が既にあれば (symlink も含めて) 何も書き換えず、install のログに案内を出すだけです。その場合に incremental を切るには、自分でそのファイルに次の 2 行を足してください。
+- agent の install 時に `~/.cargo/config.toml` が無ければ、次の内容で作ります。`~/.cargo/config.toml` か旧名の `~/.cargo/config` が既にあれば (symlink も含めて) 何も書き換えず、install のログに案内を出すだけです。その場合に incremental を切るには、そのファイルの `[build]` テーブルに `incremental = false` を足してください (`[build]` が無ければテーブルごと足す。既にあるのに `[build]` をもう一つ書くと TOML のエラーで cargo が動かなくなります)。dotfiles の install の後に確認するので、dotfiles が置いた Cargo の設定もユーザーのものとして扱います。`vm.tools` で `rust` を選んでいなくても作ります (後から手で入れた Rust にも効くように)。
 
   ```toml
   [build]
   incremental = false
   ```
 
-- 既存の VM には、この版の cloud-coder で次に `up` / `connect` したときに入ります (agent の再 install)。ファイルは一時ファイルからの link で一度に現れ、既にあるファイルを置き換えることはありません。cargo は起動時に設定を読むので、実行中の build はそのまま元の設定で終わります。切り替えた後の最初の build では、各 worktree の workspace の crate が一度だけコンパイルし直されます (依存 crate はそのまま)。既にある `target/*/incremental` は消さないので、容量を空けるにはその worktree で消してください。
+- 既存の VM には、この版の cloud-coder で次に `up` / `connect` したときに入ります (agent の再 install)。ファイルは一時ファイルからの link で一度に現れ、既にあるファイルを置き換えることはありません。cargo は起動時に設定を読むので、実行中の build はそのまま元の設定で終わります。切り替えた後の最初の build では、各 worktree の workspace の crate が一度だけコンパイルし直されます (依存 crate はそのまま)。既にある `target/*/incremental` は消さないので、容量を空けるにはその worktree で消してください。このファイルを消した場合に作り直すのも、次に agent か config が変わって install が走ったときです。
 - 上書きの方法 (上ほど強い)。`CARGO_INCREMENTAL` 以外は Cargo の[設定の優先順位](https://doc.rust-lang.org/cargo/reference/config.html#hierarchical-structure)に従います。
   1. 環境変数 `CARGO_INCREMENTAL=1` (`0` なら逆に、リポジトリの設定があっても切る)
-  2. `cargo --config build.incremental=true ...`、環境変数 `CARGO_BUILD_INCREMENTAL=true`
-  3. リポジトリの `.cargo/config.toml` の `[build] incremental = true` (`~/.cargo` より深いディレクトリの設定が優先される)
-  4. `~/.cargo/config.toml` (cloud-coder が作るもの)
+  2. `cargo --config build.incremental=true ...`
+  3. 環境変数 `CARGO_BUILD_INCREMENTAL=true`
+  4. リポジトリの `.cargo/config.toml` の `[build] incremental = true` (`~/.cargo` より深いディレクトリの設定が優先される)
+  5. `~/.cargo/config.toml` (cloud-coder が作るもの)
 
   `Cargo.toml` の `[profile.dev] incremental = true` や `CARGO_PROFILE_DEV_INCREMENTAL` は `build.incremental` より弱いので効きません。
 - cloud-coder にこの既定値を入れさせない場合は `vm.cargo_disable_incremental: false` にします。cloud-coder が作ったまま変更されていない `~/.cargo/config.toml` を削除し (編集してあれば残す)、以後は作りません。
