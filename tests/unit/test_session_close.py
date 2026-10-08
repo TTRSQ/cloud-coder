@@ -449,9 +449,10 @@ def test_a_cache_named_directory_with_tracked_files_is_not_judged_whole(home, di
     assert not worktree.exists()  # removed by git: index.js is on the remote
 
 
-def test_inspecting_a_worktree_leaves_its_index_alone(home):
+def test_inspecting_a_worktree_leaves_its_index_alone(home, monkeypatch):
     """The session may be running `git add` or `git commit` in the worktree: inspecting
     it must not take the index lock to refresh the index."""
+    monkeypatch.delenv("GIT_OPTIONAL_LOCKS", raising=False)  # git would take the lock
     worktree = home.joinpath(*WORKTREE)
     (worktree / "f.txt").write_text("committed")
     git("add", "f.txt", cwd=worktree)
