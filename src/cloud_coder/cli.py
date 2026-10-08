@@ -119,7 +119,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--dry-run",
         action="store_true",
-        help="only report what close would do: blockers, caches and reclaimable size",
+        help="only report what close would do: blockers, caches and the space it frees",
     )
     p.add_argument(
         "--discard-ignored",

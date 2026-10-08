@@ -194,6 +194,18 @@ _DIRECTORY_CACHES: dict[str, Callable[[Path], str | None]] = {
 }
 
 
+def cache_root(relative: str) -> str:
+    """The path to judge for an ignored path git listed: the outermost directory on it
+    named like a cache. A cache that ignores itself (pytest, ruff, mypy and uv write a
+    .gitignore of "*" in theirs) is listed by its content, .venv/pyvenv.cfg and so on,
+    and is judged as the whole directory."""
+    parts = relative.rstrip("/").split("/")
+    for i, part in enumerate(parts[:-1]):
+        if part in _DIRECTORY_CACHES:
+            return "/".join(parts[: i + 1]) + "/"
+    return relative
+
+
 def why_not_a_cache(path: Path) -> str | None:
     """None when ``path`` is a regenerable cache; otherwise why it is not one."""
     try:

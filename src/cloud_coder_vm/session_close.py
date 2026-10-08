@@ -109,20 +109,26 @@ def inspect(workdir: Path, discard_ignored: bool, ended_pids: set[int]) -> Inspe
     """Paths are relative to ``workdir``, as git lists them. Processes in
     ``ended_pids`` are ended with the session's tmux session, so they do not block."""
     found = Inspection()
-    status = _git(["status", "--porcelain=v1", "-z", "--ignored=matching"], workdir)
+    status = _git(
+        ["status", "--porcelain=v1", "-z", "--untracked-files=normal", "--ignored=matching"],
+        workdir,
+    )
     if status.returncode != 0:
         found.blockers.append(f"git status failed: {status.stderr.strip()}")
         return found
     changed, ignored = parse_status(status.stdout)
     found.blockers += [f"uncommitted or untracked: {path}" for path in changed]
-    for path in ignored:
+    for path in dict.fromkeys(regenerable_caches.cache_root(p) for p in ignored):
         reason = regenerable_caches.why_not_a_cache(workdir / path)
         if reason is None:
             found.caches.append(path)
-        elif discard_ignored:
-            found.discarded.append(path)
-        else:
+        elif not discard_ignored:
             found.blockers.append(f"ignored file: {path} ({reason})")
+        elif repository := git_repository_in(workdir / path):
+            # its commits may be on no remote
+            found.blockers.append(f"git repository in an ignored path: {repository}")
+        else:
+            found.discarded.append(path)
     if unpushed("HEAD", workdir):
         found.blockers.append("commits that are not on any remote")
     found.blockers += [f"mount point: {point}" for point in mount_points_under(workdir)]
@@ -134,21 +140,13 @@ def inspect(workdir: Path, discard_ignored: bool, ended_pids: set[int]) -> Inspe
     return found
 
 
-def unsaved_work(workdir: Path) -> str | None:
-    """What removing ``workdir`` would lose, or None when everything is on a remote.
-    Ignored files count: `git worktree remove` deletes them, and they may be the only
-    copy (a .env, a local database)."""
-    status = _git(["status", "--porcelain", "--ignored"], workdir)
-    if status.returncode != 0:
-        return f"git status failed: {status.stderr.strip()}"
-    lines = status.stdout.splitlines()
-    ignored = [line[3:] for line in lines if line.startswith("!! ")]
-    if len(ignored) < len(lines):
-        return "uncommitted changes"
-    if ignored:
-        return "ignored files that would be deleted (" + ", ".join(ignored[:5]) + ")"
-    if unpushed("HEAD", workdir):
-        return "commits that are not pushed"
+def git_repository_in(path: Path) -> str | None:
+    """A .git (a repository or a worktree's link to one) at or under ``path``."""
+    if path.is_symlink():
+        return None
+    for root, dirs, files in os.walk(path):
+        if ".git" in dirs or ".git" in files:
+            return os.path.join(root, ".git")
     return None
 
 
@@ -209,9 +207,9 @@ def refusal(workdir: Path, blockers: list[str], session_name: str) -> str:
     listed = "; ".join(blockers[:LISTED_BLOCKERS])
     if len(blockers) > LISTED_BLOCKERS:
         listed += f"; and {len(blockers) - LISTED_BLOCKERS} more"
+    # no pointer to --discard-ignored: an ignored file may be the only copy of
+    # something (.env, research output); deleting it is the user's decision
     hint = f"`cloud-coder close {session_name} --dry-run` lists them all"
-    if all(b.startswith("ignored file: ") for b in blockers):
-        hint += "; `--discard-ignored` deletes ignored files (never uncommitted or unpushed work)"
     return f"{workdir} has {listed}; nothing was closed ({hint})"
 
 
@@ -296,11 +294,14 @@ def close(
                     "close again"
                 )
             delete_ignored(workdir, found.caches + found.discarded)
-            reason = unsaved_work(workdir)
-            if reason is not None:
+            # nothing may be left for `git worktree remove` to delete but committed files
+            left = inspect(workdir, False, set())
+            if left.blockers or left.caches:
                 raise CloseError(
-                    f"{workdir} has {reason}; its tmux session was ended, the worktree "
-                    "is kept: save or remove them, then close again"
+                    f"{workdir} has "
+                    + "; ".join(left.blockers[:LISTED_BLOCKERS] or left.caches)
+                    + "; its tmux session was ended and its caches deleted, the worktree is "
+                    "kept: save or remove them, then close again"
                 )
             removed = _git(["worktree", "remove", str(workdir)], main)
             if removed.returncode != 0:
@@ -341,26 +342,38 @@ def preview(
     own_pids: set[int],
 ) -> dict:
     """What `close` would do, without doing it. Sizes are what deleting frees on the
-    disk; reclaimable is the whole worktree."""
+    disk: per cache, and for the whole worktree (what closing it frees)."""
     if is_worktree:
         worktree = str(workdir)
     else:
         worktree = "kept (main checkout)" if workdir == main else "absent"
+    procs = process_table.snapshot()
+    caches = [
+        {"path": path, "bytes": regenerable_caches.disk_usage(workdir / path)}
+        for path in found.caches
+    ]
     out: dict = {
         "session": session_name,
         "dry_run": True,
         "closable": not found.blockers,
         "worktree": worktree,
-        "tmux": "running, ended by close (with its Claude Code)" if own_pids else "absent",
-        "blockers": found.blockers,
-        "caches": [
-            {"path": path, "bytes": regenerable_caches.disk_usage(workdir / path)}
-            for path in found.caches
+        "tmux": "running, ended by close" if own_pids else "absent",
+        # what ending the tmux session stops besides Claude Code and the shells
+        "ended_processes": [
+            f"{pid} ({os.path.basename(procs[pid].argv0)})"
+            for pid in sorted(own_pids)
+            if pid in procs
+            and not process_table.is_shell(procs[pid])
+            and not process_table.is_claude(procs[pid])
+            and not process_table.is_wrapper(procs[pid])
         ],
+        "blockers": found.blockers,
+        "caches": caches,
+        "caches_bytes": sum(cache["bytes"] for cache in caches),
     }
     if found.discarded:
         out["discarded_ignored"] = found.discarded
-    reclaimable = regenerable_caches.disk_usage(workdir) if is_worktree else 0
-    out["reclaimable_bytes"] = reclaimable
-    out["reclaimable"] = regenerable_caches.human_size(reclaimable)
+    size = regenerable_caches.disk_usage(workdir) if is_worktree else 0
+    out["worktree_bytes"] = size
+    out["worktree_size"] = regenerable_caches.human_size(size)
     return out

@@ -2,6 +2,7 @@ import contextlib
 import json
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -75,7 +76,7 @@ def test_a_clean_worktree_session_is_removed_with_its_branch(home):
 
 
 @pytest.mark.parametrize("change", ["uncommitted", "untracked", "ignored", "unpushed"])
-def test_unsaved_work_keeps_everything(home, change):
+def test_unsaved_or_ignored_work_keeps_everything(home, change):
     worktree = home / "git" / "wt" / "app-2"
     (worktree / "f.txt").write_text("work")
     if change == "ignored":  # e.g. a .env: git worktree remove would delete it
@@ -217,7 +218,7 @@ def test_anything_but_caches_keeps_everything(caches, make, blocker):
     with pytest.raises(CloseError, match="nothing was closed") as refused:
         close(CONFIG, caches, "cc-app-2")
     assert blocker in str(refused.value)
-    assert "--discard-ignored" in str(refused.value)
+    assert "--discard-ignored" not in str(refused.value)  # deleting them is for a person
     assert (worktree / ".venv" / "pyvenv.cfg").exists()  # not even the caches go
     assert (worktree / "crates" / "a" / "target" / "CACHEDIR.TAG").exists()
     assert registered(caches) == {"cc-app-1", "cc-app-2"}
@@ -255,9 +256,8 @@ def test_discard_ignored_never_discards_uncommitted_or_unpushed_work(caches, cha
         git("add", "f.txt", cwd=worktree)
     if change == "unpushed":
         git("commit", "-q", "-m", "work", cwd=worktree)
-    with pytest.raises(CloseError, match="nothing was closed") as refused:
+    with pytest.raises(CloseError, match="nothing was closed"):
         close(CONFIG, caches, "cc-app-2", discard_ignored=True)
-    assert "--discard-ignored" not in str(refused.value)
     assert (worktree / ".env").exists() and (worktree / "f.txt").exists()
     assert registered(caches) == {"cc-app-1", "cc-app-2"}
 
@@ -276,7 +276,9 @@ def test_dry_run_reports_blockers_caches_and_size_and_changes_nothing(caches):
     sizes = {c["path"]: c["bytes"] for c in preview["caches"]}
     assert set(sizes) == {".venv/", "crates/a/target/", "pkg/__pycache__/"}
     assert sizes["crates/a/target/"] >= 100_000
-    assert preview["reclaimable_bytes"] >= sum(sizes.values())
+    assert preview["caches_bytes"] == sum(sizes.values())
+    assert preview["worktree_bytes"] >= preview["caches_bytes"]
+    assert preview["ended_processes"] == []
     discarding = close(CONFIG, caches, "cc-app-2", dry_run=True, discard_ignored=True)
     assert discarding["closable"] is True and discarding["discarded_ignored"] == [".env"]
 
@@ -284,7 +286,7 @@ def test_dry_run_reports_blockers_caches_and_size_and_changes_nothing(caches):
 def test_dry_run_of_the_main_checkout(home):
     preview = close(CONFIG, home, "cc-app-1", dry_run=True)
     assert preview["worktree"] == "kept (main checkout)"
-    assert preview["closable"] is True and preview["reclaimable_bytes"] == 0
+    assert preview["closable"] is True and preview["worktree_bytes"] == 0
 
 
 @pytest.fixture
@@ -348,3 +350,75 @@ def test_cli_dry_run_prints_the_preview(caches, monkeypatch, capsys):
     assert "ignored file: .env" in json.loads(capsys.readouterr().out)["error"]
     assert vm_cli.main(["close-session", "--session", "cc-app-2", "--discard-ignored"]) == 0
     assert json.loads(capsys.readouterr().out)["discarded_ignored"] == [".env"]
+
+
+def test_caches_that_ignore_themselves_are_judged_whole(home):
+    """pytest, ruff, mypy and uv write a .gitignore of "*" into their caches: git then
+    lists what is inside, not the directory, when the repository does not ignore it."""
+    worktree = home.joinpath(*WORKTREE)
+    (worktree / ".pytest_cache" / "v" / "cache").mkdir(parents=True)
+    (worktree / ".pytest_cache" / "CACHEDIR.TAG").write_bytes(TAG)
+    (worktree / ".pytest_cache" / ".gitignore").write_text("*\n")
+    (worktree / ".venv" / "bin").mkdir(parents=True)
+    (worktree / ".venv" / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    (worktree / ".venv" / ".gitignore").write_text("*\n")
+    preview = close(CONFIG, home, "cc-app-2", dry_run=True)
+    assert preview["blockers"] == []
+    assert sorted(c["path"] for c in preview["caches"]) == [".pytest_cache/", ".venv/"]
+    (worktree / ".venv" / "notes.db").write_text("")  # ignored by .venv/.gitignore too
+    with pytest.raises(CloseError, match=r"\.venv/ \(has notes\.db"):
+        close(CONFIG, home, "cc-app-2")
+
+
+def test_a_git_repository_in_an_ignored_path_is_never_discarded(caches):
+    worktree = caches.joinpath(*WORKTREE)
+    (worktree / "out" / "experiment").mkdir(parents=True)
+    git("init", "-q", str(worktree / "out" / "experiment"), cwd=worktree)
+    with pytest.raises(CloseError, match="git repository in an ignored path: .*out/experiment"):
+        close(CONFIG, caches, "cc-app-2", discard_ignored=True)
+    assert (worktree / "out" / "experiment" / ".git").exists()
+
+
+def test_untracked_files_count_whatever_status_showuntrackedfiles_says(home):
+    worktree = home.joinpath(*WORKTREE)
+    git("config", "status.showUntrackedFiles", "no", cwd=worktree)
+    (worktree / "f.txt").write_text("work")
+    with pytest.raises(CloseError, match="uncommitted or untracked: f.txt"):
+        close(CONFIG, home, "cc-app-2")
+    assert (worktree / "f.txt").exists()
+
+
+def test_the_session_s_own_long_running_processes_are_listed_in_the_preview(home, monkeypatch):
+    sleeper = subprocess.Popen(["sleep", "60"])
+    try:
+        monkeypatch.setattr(session_close, "session_pids", lambda name: {sleeper.pid})
+        preview = close(CONFIG, home, "cc-app-2", dry_run=True)
+    finally:
+        sleeper.kill()
+        sleeper.wait()
+    assert preview["ended_processes"] == [f"{sleeper.pid} (sleep)"]
+    assert preview["tmux"] == "running, ended by close"
+
+
+def test_a_process_that_only_maps_a_file_of_the_worktree_keeps_everything(caches, tmp_path):
+    """Python run from outside as .venv/bin/python: its exe is the interpreter the
+    symlink points to, and the .venv's libraries are mapped, not open."""
+    library = caches.joinpath(*WORKTREE) / ".venv" / "lib" / "ext.so"
+    library.parent.mkdir(parents=True)
+    library.write_bytes(b"\0" * 4096)
+    script = (
+        "import mmap, sys, time\n"
+        "f = open(sys.argv[1], 'rb'); m = mmap.mmap(f.fileno(), 0, prot=mmap.PROT_READ)\n"
+        "f.close(); print('mapped', flush=True); time.sleep(60)\n"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", script, str(library)], cwd=tmp_path, stdout=subprocess.PIPE
+    )
+    try:
+        assert proc.stdout.readline() == b"mapped\n"
+        with pytest.raises(CloseError, match=f"process {proc.pid} .* uses the worktree"):
+            close(CONFIG, caches, "cc-app-2")
+    finally:
+        proc.kill()
+        proc.wait()
+    assert library.exists()

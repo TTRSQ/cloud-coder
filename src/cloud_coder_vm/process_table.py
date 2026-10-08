@@ -117,7 +117,8 @@ def _within(target: str, directory: str) -> bool:
 
 def processes_using(directory: Path, proc_root: Path = Path("/proc")) -> list[Process]:
     """Processes (this user's: others' /proc entries cannot be read) whose working
-    directory, root, executable or an open file is ``directory`` or under it."""
+    directory, root, executable, an open file or a mapped file is ``directory`` or under
+    it."""
     resolved = os.path.realpath(directory)
     using = []
     for entry in os.listdir(proc_root):
@@ -127,14 +128,18 @@ def processes_using(directory: Path, proc_root: Path = Path("/proc")) -> list[Pr
         links = [base / "cwd", base / "root", base / "exe"]
         with contextlib.suppress(OSError):
             links += [base / "fd" / fd for fd in os.listdir(base / "fd")]
+        targets = []
         for link in links:
-            try:
-                target = os.readlink(link)
-            except OSError:
-                continue
-            if _within(target, resolved):
-                proc = read_process(int(entry), proc_root)
-                if proc is not None:
-                    using.append(proc)
-                break
+            with contextlib.suppress(OSError):
+                targets.append(os.readlink(link))
+        # mapped files: a .venv's libraries stay mapped after the files are closed
+        with contextlib.suppress(OSError):
+            for line in (base / "maps").read_text(errors="surrogateescape").splitlines():
+                fields = line.split(maxsplit=5)
+                if len(fields) == 6:
+                    targets.append(fields[5])
+        if any(_within(target, resolved) for target in targets):
+            proc = read_process(int(entry), proc_root)
+            if proc is not None:
+                using.append(proc)
     return using

@@ -8,6 +8,7 @@ import pytest
 from cloud_coder_vm.regenerable_caches import (
     CACHEDIR_SIGNATURE,
     NOT_A_CACHE,
+    cache_root,
     disk_usage,
     human_size,
     why_not_a_cache,
@@ -175,3 +176,18 @@ def test_human_size():
     assert human_size(512) == "512 B"
     assert human_size(1536) == "1.5 KiB"
     assert human_size(3 * 1024**3) == "3.0 GiB"
+
+
+@pytest.mark.parametrize(
+    ("listed", "root"),
+    [
+        (".venv/pyvenv.cfg", ".venv/"),
+        (".pytest_cache/v/", ".pytest_cache/"),
+        ("web/node_modules/x/target/a", "web/node_modules/"),
+        ("crates/a/target/", "crates/a/target/"),
+        ("out/", "out/"),
+        (".env", ".env"),
+    ],
+)
+def test_cache_root(listed, root):
+    assert cache_root(listed) == root

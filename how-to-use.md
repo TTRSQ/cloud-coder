@@ -210,21 +210,23 @@ cloud-coder close cc-REPO-2                       # 終わったセッション�
 
     | パス (worktree 内のどこでも) | キャッシュとみなす条件 |
     | --- | --- |
-    | `target/` | cargo が置く `CACHEDIR.TAG` があり、上 2 階層に cargo が書くもの (`debug/`・`release/` などと、その中の `deps/`・`incremental/`・`build/`・`.fingerprint/`、dep-info の `.d`、`deps/` から hard link された成果物) しか無い |
+    | `target/` | cargo が置く `CACHEDIR.TAG` があり、上 2 階層に cargo が書くもの (`debug/`・`release/` などと、その中の `deps/`・`incremental/`・`build/`・`.fingerprint/`、dep-info の `.d`、`deps/` から hard link された成果物。ほかに `doc/`・`package/`・`tmp/`) しか無い。`deps/` や `tmp/` などの中までは見ません |
     | `.venv/` | `pyvenv.cfg` があり、直下に venv / uv が作るもの (`bin/`・`lib/`・`include/` など) しか無い |
     | `node_modules/` | 隣に `package.json` がある |
     | `__pycache__/`、`*.pyc` | `.pyc` しか無い |
     | `.pytest_cache/`、`.ruff_cache/`、`.mypy_cache/` | `CACHEDIR.TAG` がある |
+
+    リポジトリの `.gitignore` に書かれていなくても、ツールが自分で置いた `.gitignore` (`*`) で ignored になっていれば、ディレクトリ全体を 1 つとして判定します。
 
   - 次のどれかがあると、何も消さずにエラーにします。エラーには原因のパスが出ます。
     - 未コミットの変更 (untracked のファイルを含む) と、どの remote にも無いコミット
     - キャッシュ以外の ignored のファイルやディレクトリ (`.env`、sqlite などのローカル DB、`out/` の研究データ、`dist/`・`build/`、その他の未知のもの)。`target/` などの名前でも、中に cargo などが書かないもの (手で置いた `target/results.csv` など) があればキャッシュとみなしません。
     - symlink の ignored パス (`target` が別の場所を指しているなど。指す先はもちろん、symlink 自体も消しません)
     - worktree の中の mount point
-    - そのセッションの tmux の外で、worktree を使っているプロセス (worktree を作業ディレクトリにしている、そこの実行ファイルを実行している、そこのファイルを開いている。例: 別の端末から起動した研究プロセスやビルド)
-  - `--dry-run` を付けると、何も変えずに結果だけを JSON で出します。`closable` (閉じられるか)、`blockers` (閉じるのを止めるもの)、`caches` (一緒に消えるキャッシュとその大きさ)、`reclaimable` (worktree 全体で空く容量の見込み。外から hard link されているファイルは数えません) が分かります。
-  - `--discard-ignored` を付けると、キャッシュ以外の ignored のファイルも消して閉じます (symlink はリンク自体だけを消します)。`.env` や `out/` も消えるので、`--dry-run --discard-ignored` で `discarded_ignored` を確かめてから使ってください。未コミットの変更、push していないコミット、mount point、worktree を使っているプロセスがあるときは、このオプションでもエラーにします。CLI だけのオプションで、MCP / HTTP API からは close 自体を使えません。
-  - 閉じるときは、tmux session を終了した後、worktree を使うプロセスが終わるのを最大 15 秒待ち、もう一度全部を確かめてから、キャッシュ (と `--discard-ignored` の ignored ファイル) を消します。そのうえで worktree に何も残っていないことを確かめてから `git worktree remove` (`--force` なし) で削除します。この途中で何か見つかったときは、tmux session は終了済み (キャッシュを消した後なら、キャッシュも削除済み) ですが、worktree と登録は残します。
+    - そのセッションの tmux の外で、worktree を使っているプロセス (worktree を作業ディレクトリにしている、そこの実行ファイルを実行している、そこのファイルを開いているか mmap している。例: 別の端末から起動した研究プロセスやビルド、worktree の `.venv/bin/python` で動いているスクリプト)
+  - `--dry-run` を付けると、何も変えずに結果だけを JSON で出します。`closable` (閉じられるか)、`blockers` (閉じるのを止めるもの)、`caches` / `caches_bytes` (一緒に消えるキャッシュとその大きさ)、`worktree_size` (閉じたときに worktree 全体で空く容量の見込み。外から hard link されているファイルは数えません)、`tmux` と `ended_processes` (close で終了する tmux session と、その中で Claude Code とシェル以外に動いているプロセス) が分かります。
+  - `--discard-ignored` を付けると、キャッシュ以外の ignored のファイルも消して閉じます (symlink はリンク自体だけを消します)。`.env` や `out/` も消えるので、`--dry-run --discard-ignored` で `discarded_ignored` を確かめてから使ってください。未コミットの変更、push していないコミット、ignored のパスの中の Git リポジトリ (`.git`)、mount point、worktree を使っているプロセスがあるときは、このオプションでもエラーにします。close のエラーはこのオプションを案内しません (消してよいかは人が判断するため)。CLI だけのオプションで、MCP / HTTP API からは close 自体を使えません。
+  - 閉じるときは、tmux session を終了した後、worktree を使うプロセスが終わるのを最大 15 秒待ち、もう一度全部を確かめてから、キャッシュ (と `--discard-ignored` の ignored ファイル) を消します。そのうえで worktree にコミット済みのファイル以外が何も残っていないことを確かめてから `git worktree remove` (`--force` なし) で削除します。この途中で何か見つかったときは、tmux session は終了済み (キャッシュを消した後なら、キャッシュも削除済み) ですが、worktree と登録は残します。
   - Docker container が bind mount で worktree を使っている場合は検出できません。container を止めてから閉じてください。
   - 以前の版が既定の tmux server で起動したセッションがまだ動いているときもエラーにします ([README の tmux server の分離](README.md#tmux-server-の分離))。
   - Claude Code が作業中 (`BUSY`) でも確認せずに終了します。`cloud-coder status` で確かめてから閉じてください。
