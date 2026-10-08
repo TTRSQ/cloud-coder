@@ -22,6 +22,12 @@ HOOK_EVENTS: list[tuple[str, str | None]] = [
     ("StopFailure", None),
     ("Notification", "idle_prompt"),
     ("SessionEnd", None),
+    # dialogs, which a prompt for a busy Claude Code must not be typed into
+    ("PermissionRequest", None),
+    ("Elicitation", None),
+    ("PostToolUse", None),
+    ("PostToolUseFailure", None),
+    ("ElicitationResult", None),
 ]
 # Always installed: what cloud-coder itself and most toolchains (cargo, node-gyp) need.
 BASE_APT_PACKAGES = ["tmux", "git", "curl", "ca-certificates", "build-essential", "jq"]

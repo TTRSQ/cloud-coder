@@ -7,9 +7,10 @@ tmux servers apart: a Claude Code in pane %N of the default server (see tmux_pan
 shares the record of the one in %N of cloud-coder's. That only errs towards busy.
 """
 
+import hashlib
 import json
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from cloud_coder_vm.state_lock import write_atomic
@@ -17,6 +18,12 @@ from cloud_coder_vm.state_lock import write_atomic
 BUSY = "BUSY"
 READY = "READY"
 IDLE = "IDLE"
+
+# Hook events that show or close a dialog: a permission prompt (AskUserQuestion included)
+# or an MCP elicitation. While one is shown, Enter would answer it, so no prompt is typed.
+# They leave BUSY / READY / IDLE alone.
+DIALOG_SHOWN = ("PermissionRequest", "Elicitation")
+DIALOG_CLOSED = ("PostToolUse", "PostToolUseFailure", "ElicitationResult")
 
 
 @dataclass
@@ -31,6 +38,8 @@ class SessionState:
     cwd: str | None = None
     last_event: str | None = None
     updated_at: float = 0.0
+    open_dialogs: list[str] = field(default_factory=list)
+    prompts_submitted: int = 0  # UserPromptSubmit events: a typed prompt was received
 
 
 def next_state(current: str | None, payload: dict, last_event: str | None = None) -> str | None:
@@ -70,6 +79,35 @@ def next_state(current: str | None, payload: dict, last_event: str | None = None
     if event == "SessionEnd":
         return None
     return current
+
+
+def dialog_id(payload: dict) -> str:
+    """What a dialog asks about, so that its closing event finds it: the tool call (the same
+    tool_input reaches PermissionRequest and PostToolUse), or the MCP server eliciting."""
+    if payload.get("hook_event_name") in ("Elicitation", "ElicitationResult"):
+        subject = ["elicitation", payload.get("mcp_server_name")]
+    else:
+        subject = [payload.get("tool_name"), payload.get("tool_input")]
+    encoded = json.dumps(subject, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(encoded.encode()).hexdigest()[:16]
+
+
+def next_dialogs(dialogs: list[str], payload: dict) -> list[str]:
+    """The dialogs still shown after a hook event. A dialog denied with Esc or "No" fires
+    no event: it counts as shown until the turn ends, which errs towards not typing."""
+    event = payload.get("hook_event_name")
+    if event in DIALOG_SHOWN:
+        return [*dialogs, dialog_id(payload)]
+    if event in DIALOG_CLOSED:
+        closed = dialog_id(payload)
+        if closed in dialogs:
+            remaining = list(dialogs)
+            remaining.remove(closed)
+            return remaining
+        return dialogs
+    if event in ("Stop", "StopFailure", "SessionStart", "SessionEnd"):
+        return []
+    return dialogs
 
 
 def state_key(tmux_pane: str | None, session_id: str) -> str:

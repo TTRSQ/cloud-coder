@@ -1,9 +1,12 @@
 """Claude Code hook entry point: records BUSY / READY / IDLE for the calling session.
 
-Registered for SessionStart, UserPromptSubmit, Stop, Notification(idle_prompt)
-and SessionEnd. Reads the hook payload from stdin and never fails the hook.
-Each event is logged as one line to the journal (`journalctl -t cloud-coder-hook`),
-which outlives the VM's shutdown unlike the state on tmpfs.
+Registered for SessionStart, UserPromptSubmit, Stop, StopFailure,
+Notification(idle_prompt) and SessionEnd, and for the events that show or close a
+dialog (see session_state.DIALOG_SHOWN / DIALOG_CLOSED), which a prompt sent to a busy
+Claude Code must not be typed into. Reads the hook payload from stdin and never fails
+the hook. Each event but the per-tool-call ones is logged as one line to the journal
+(`journalctl -t cloud-coder-hook`), which outlives the VM's shutdown unlike the state on
+tmpfs.
 """
 
 import json
@@ -49,6 +52,15 @@ def apply_event(
     current = session_state.load(state_dir, key)
     event = payload.get("hook_event_name")
 
+    if event in session_state.DIALOG_SHOWN + session_state.DIALOG_CLOSED:
+        if current is None:
+            return None
+        dialogs = session_state.next_dialogs(current.open_dialogs, payload)
+        if dialogs != current.open_dialogs:
+            current.open_dialogs = dialogs
+            session_state.save(state_dir, current)
+        return current.state
+
     if event == "SessionEnd" and current is not None and current.session_id != session_id:
         return current.state  # end of a session this pane already replaced (/clear, /resume)
 
@@ -77,6 +89,9 @@ def apply_event(
         record.cloud_coder_session = logical
         record.cwd = payload.get("cwd") or record.cwd
         record.last_event = event
+        record.open_dialogs = session_state.next_dialogs(record.open_dialogs, payload)
+        if event == "UserPromptSubmit":
+            record.prompts_submitted += 1
         if claude_proc is not None:
             record.claude_pid = claude_proc.pid
             record.claude_starttime = claude_proc.starttime
@@ -135,7 +150,8 @@ def main(stdin=sys.stdin) -> int:
             )
             if new == BUSY:
                 idle_check.cancel_grace()
-        _journal(describe(payload, os.environ, new))
+        if payload.get("hook_event_name") not in ("PostToolUse", "PostToolUseFailure"):
+            _journal(describe(payload, os.environ, new))
     except Exception as e:
         frames = traceback.extract_tb(e.__traceback__)
         where = next((f for f in reversed(frames) if "cloud_coder_vm" in f.filename), frames[-1])

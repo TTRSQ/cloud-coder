@@ -1,6 +1,13 @@
 import pytest
 
-from cloud_coder_vm.session_state import BUSY, IDLE, READY, next_state, state_key
+from cloud_coder_vm.session_state import (
+    BUSY,
+    IDLE,
+    READY,
+    next_dialogs,
+    next_state,
+    state_key,
+)
 
 
 def stop(tasks=None, crons=None, missing=False):
@@ -76,3 +83,38 @@ def test_idle_prompt_after_session_start_without_a_turn():
     assert next_state(BUSY, IDLE_PROMPT, last_event="SessionStart") == IDLE
     assert next_state(BUSY, IDLE_PROMPT, last_event="UserPromptSubmit") == BUSY
     assert next_state(BUSY, IDLE_PROMPT, last_event="Stop") == BUSY  # background work
+
+
+def tool(event, name="Write", path="/w/a.txt"):
+    return {"hook_event_name": event, "tool_name": name, "tool_input": {"file_path": path}}
+
+
+def test_permission_dialog_closes_when_its_own_tool_call_ends():
+    shown = next_dialogs([], tool("PermissionRequest"))
+    assert len(shown) == 1
+    assert next_dialogs(shown, tool("PostToolUse", path="/w/b.txt")) == shown  # another call
+    assert next_dialogs(shown, tool("PostToolUse", name="Edit")) == shown
+    assert next_dialogs(shown, tool("PostToolUseFailure")) == []
+    assert next_dialogs([], tool("PostToolUse")) == []
+
+
+def test_identical_dialogs_close_one_at_a_time():
+    two = next_dialogs(next_dialogs([], tool("PermissionRequest")), tool("PermissionRequest"))
+    assert len(next_dialogs(two, tool("PostToolUse"))) == 1
+
+
+def test_elicitation_closes_with_its_result():
+    shown = next_dialogs([], {"hook_event_name": "Elicitation", "mcp_server_name": "a"})
+    assert next_dialogs(shown, {"hook_event_name": "ElicitationResult", "mcp_server_name": "b"})
+    assert not next_dialogs(shown, {"hook_event_name": "ElicitationResult", "mcp_server_name": "a"})
+
+
+@pytest.mark.parametrize("event", ["Stop", "StopFailure", "SessionStart", "SessionEnd"])
+def test_end_of_turn_closes_every_dialog(event):
+    # a dialog denied with Esc or "No" fires no hook event
+    assert next_dialogs(["x"], {"hook_event_name": event}) == []
+
+
+@pytest.mark.parametrize("event", ["UserPromptSubmit", "Notification"])
+def test_other_events_keep_dialogs(event):
+    assert next_dialogs(["x"], {"hook_event_name": event}) == ["x"]

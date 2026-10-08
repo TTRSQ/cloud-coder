@@ -89,7 +89,13 @@ cloud-coder api                                     # HTTP API を 127.0.0.1:878
 - プロンプトが無い `connect` (attach して見るとき) は、従来どおり直近のセッションに戻ります。
 - 応答 (`connect` の JSON 出力、MCP `start_session` の結果) の `created` はセッションを新しく作ったか (`true` / `false`)、`conversation` は Claude Code の会話が新しいか続きか (`new` / `continued`) を示します。`conversation` は Claude Code を起動しないとき (`--no-claude`) にはありません。`--session` で指定したセッションでも、まだ会話の履歴が無ければ `new` になります。
 - Claude Code を新しく起動 / resume するときは、`claude ... --remote-control <名前> -- "<prompt>"` の位置引数として最初のプロンプトを渡します。プロンプトは base64 で VM に送り、一時ファイル経由で展開するので、複数行・引用符・`$` などもそのまま届きます。
-- 既に Claude Code が動いているセッションには、その Claude Code が `READY` か `IDLE` のときだけ tmux の bracketed paste で入力して Enter を送ります。`BUSY` やまだ状態を報告していない場合は何も入力せずにエラー終了します (作業中の入力を壊さないため)。
+- 既に Claude Code が動いているセッションには、tmux の bracketed paste で入力欄に貼り付けて Enter を送ります。`BUSY` (作業中) でも送れます。作業中の Claude Code は送られた入力を自分のキューに積み (画面に `Press up to edit queued messages`)、作業を止めずに次の区切り (tool の実行が終わったところ、またはターンの終わり) で同じ会話に取り込みます。cloud-coder 側にキューはありません。
+  - Claude Code 2.1.294 で確認した挙動: tool の実行中に送った 2 つのプロンプト (複数行・日本語・絵文字・引用符・`$` を含む) が送った順にキューへ入り、`UserPromptSubmit` hook はキューに入った時点で発火し、tool の終了後に同じターンの中で両方が処理されました (先行の作業は中断・再起動されない)。transcript には `queue-operation` (`enqueue` / `remove`) として記録されます。
+  - 応答の `prompt` は、Claude Code が入力待ち (`READY` / `IDLE`) だったときは `sent`、作業中 (`BUSY`) だったときは `queued` です。どちらも Claude Code の `UserPromptSubmit` hook で受け取りを確認してから返します。10 秒以内に確認できなければ、送れたことにはせずエラーにします (入力欄に残っているか失われている可能性があるので、画面を見てから送り直す)。
+  - ダイアログ (権限の確認、`AskUserQuestion` の質問、MCP の elicitation) が出ている間は、何も入力せずにエラーにします。ダイアログに Enter を送ると選択肢が確定してしまうためです (2.1.294 で、権限の確認中に貼り付けて Enter を送ると `Write` が許可され、プロンプトは失われることを確認)。ダイアログの表示と終了は hook (`PermissionRequest` / `Elicitation` と `PostToolUse` / `PostToolUseFailure` / `ElicitationResult`) で記録します ([自動停止](#自動停止))。貼り付けと Enter の間にダイアログが出た場合も Enter を送らずにエラーにします。
+  - まだ状態を報告していない Claude Code (起動直後やログイン前) には何も入力せずにエラーにします。
+  - 同じ Claude Code への送信は 1 つずつ行います (`/run/cloud-coder/prompts/claude-<pid>.lock`)。同時に送っても貼り付けが混ざらず、送った分だけ別々のプロンプトになります。
+  - 防げないこと: 人が attach して入力欄に打ちかけている文字列は、貼り付けたプロンプトとつながって送られます。hook で分からない画面 (`/model` などのメニューを人が開いている) では、入力が失われることがあります (受け取りを確認できないのでエラーになります)。
 - `--detach` と組み合わせると、タスクを投げて放置し、終わって idle になったら VM が自動停止する、という使い方が CLI だけでできます。
 - private repository の clone 方法は 2 通りあります。
   - SSH URL (`git@github.com:OWNER/REPO.git`): `connect` はローカルの ssh-agent を VM に転送します (`ssh -A`) ので、鍵を agent に登録しておけば clone できます。転送は `connect` の間だけなので、VM 上での後の `git push` などには使えません。
@@ -197,14 +203,14 @@ claude mcp add cloud-coder -- cloud-coder mcp
 | `status` | なし | VM の状態、セッション一覧、各 Claude Code の状態 (`BUSY` / `READY` / `IDLE`)、自動停止の状態 (`status --json` と同じ内容) |
 | `up` | なし | VM が止まっていれば起動を要求して**待たずに**返す。動いていれば agent を確認し、必要なら VM 上でインストール・更新を始める (`agent_installing: true`。インストールは VM 上の切り離したプロセスで進み、ログは VM の `~/cloud-coder-install.log`)。`ready: true` になるまで間をおいて呼び直す |
 | `start_session` | `repo?`, `new?`, `session?`, `prompt?` | `connect --detach` と同じ。repository の clone、tmux、Claude Code の起動 (または resume) を行い、セッション名と `accepted: true`、次の行動の指示 `next` を返す。`prompt` があって `session` が無ければ `repo` に新しいセッションと会話を作り、続きにするのは `session` を指定したときだけ ([プロンプトを渡す](#プロンプトを渡す))。応答の `created` / `conversation` で新規か継続かが分かる |
-| `send_prompt` | `session`, `text` | `connect --session <session> -p <text> --detach` と同じ。Claude Code が `READY` / `IDLE` のときだけ送る。応答は `start_session` と同じく `accepted` と `next` を含む |
+| `send_prompt` | `session`, `text` | `connect --session <session> -p <text> --detach` と同じ。Claude Code が `BUSY` なら Claude Code のキューに入り、次の区切りで取り込まれる (`prompt: queued`)。`READY` / `IDLE` なら `prompt: sent`。ダイアログの表示中は拒否する ([プロンプトを渡す](#プロンプトを渡す))。応答は `start_session` と同じく `accepted` と `next` を含む |
 | `read_session` | `session`, `lines?` (1〜2000、既定 200) | セッションの Claude Code の画面 (tmux pane、scrollback 含む) の最後の `lines` 行と状態。VM は起動しない |
 | `stop` | なし | VM の停止を要求して待たずに返す (`status` で `stopped` を確認) |
 
 - 操作対象の VM は起動時の設定 (`config.yaml` と `cloud-coder mcp` に付けたオプション) だけで決まります。tool は project / zone / instance を引数に取らず、任意のコマンドを実行する tool もありません。`!` で始まるプロンプト (Claude Code の shell モード) と、改行・タブ以外の制御文字を含むプロンプトは拒否します。
 - `cloud-coder mcp --machine-type` などの VM 作成用のオプションは、VM を新しく作るときにだけ使われます。既存 VM の machine type は CLI で変えてください ([マシンスペックを変える](how-to-use.md#マシンスペックを変える))。
 - tool は長く待ちません。VM の起動・停止と agent のインストールは要求・開始だけ行い、呼び出し側が `up` / `status` で確認します。どの tool の呼び出しも 2 分 (120 秒) で打ち切り、エラーを返します。gcloud や SSH が応答しなくなっても、呼び出しがいつまでも返らないことはありません。打ち切られても VM 上の処理は続いていることがあるので、再実行の前に `status` で確かめてください。大きな repository の初回 clone のように時間のかかる `start_session` は、CLI の `connect` で済ませておくと確実です。
-- Claude Code の作業は数分〜数時間かかり、LLM の 1 ターンには収まりません。server の instructions と tool の説明は、作業を始めたらユーザーに報告してターンを終え、`BUSY` が終わるのを `status` / `read_session` のポーリングで待たないよう LLM に指示します。`start_session` / `send_prompt` の応答の `next`、`BUSY` のときの `status` / `read_session` の応答の `note` も同じ指示です。`BUSY` で拒否された `send_prompt` のエラーには、再送しないよう書き添えます。
+- Claude Code の作業は数分〜数時間かかり、LLM の 1 ターンには収まりません。server の instructions と tool の説明は、作業を始めたらユーザーに報告してターンを終え、`BUSY` が終わるのを `status` / `read_session` のポーリングで待たないよう LLM に指示します。`start_session` / `send_prompt` の応答の `next`、`BUSY` のときの `status` / `read_session` の応答の `note` も同じ指示です。`send_prompt` は `BUSY` でも Claude Code のキューに入れるので、`BUSY` が終わるのを待つ必要はありません。拒否された `send_prompt` (ダイアログの表示中など) のエラーには、再送しないよう書き添えます。
 - `status` / `read_session` で `BUSY` と分かってから 60 秒以内に同じもの (`status`、または同じセッションの `read_session`) を呼ぶと、VM に問い合わせずに `rechecked: false` と前回の確認からの秒数、ポーリングをやめるよう求める `note` だけを返します。60 秒以内に続けて確認したい場合は、時間をおいてから呼び直してください。書き込みの tool (`up` / `start_session` / `send_prompt` / `stop`) を呼ぶと、この記録は消えます。記録は server のプロセスのメモリにだけあります。
 - server は tool の呼び出しごとに、tool 名・成否・所要時間を stderr のログに出します (例: `cloud-coder: MCP tool read_session: ok in 6.4s`)。
 - `start_session` / `send_prompt` は VM が ready でなければ起動を要求したうえでエラーを返します (`up` で ready を待ってから再実行)。
@@ -285,12 +291,15 @@ Claude Code の状態は hook で更新されます。hook は Claude Code の m
 | `SessionStart` 由来の `BUSY` (ターン未実行) に `idle_prompt` | `IDLE` |
 | `SessionStart` 由来の `BUSY` のまま 10 分間イベントなし | idle とみなす |
 | `SessionEnd` | 状態を削除 |
+| `PermissionRequest` / `Elicitation` | 状態は変えず、ダイアログ表示中として記録 (プロンプトを入力しない) |
+| `PostToolUse` / `PostToolUseFailure` (同じ tool と入力) / `ElicitationResult` (同じ MCP server) | 状態は変えず、そのダイアログの記録を消す |
 
 - 状態は Claude Code のプロセスごとに `/run/cloud-coder/sessions/` (tmpfs) へ保存され、tmux pane とプロセス ID で実態と突き合わせます。プロセスが消えた状態ファイル (クラッシュ等で `SessionEnd` が来なかったもの) は無視して削除します。
 - まだ状態を報告していない Claude Code (起動直後やログイン前) は busy 扱いです。hook はログインと trust の後でないと動かないため、ログイン画面のまま放置した Claude Code は VM を止め続けます。初回は attach してログインを済ませてください。
 - 新規起動 (`startup`) は、プロセスも会話も新しく background task も cron も存在しないので、プロンプトが送られるまで `IDLE` とします。起動しただけで放置したセッションが VM を止めなくなるのを防ぐためです。tmux の他の pane の判定はそのまま効き、プロンプトが送られれば `UserPromptSubmit` で `BUSY` に戻ります。同じプロセスで既に記録済みのイベントを、遅れて届いた `SessionStart` で上書きすることはありません。
 - `resume` は cron (`CronCreate`) を復元するため `BUSY` にしています。ただし resume しただけ (ターン未実行) の状態では `idle_prompt` が来ないことを確認したので、イベントが無いまま 10 分経ったら idle とみなします。停止した VM に再接続して見るだけ、という最もよくある使い方で止まらなくなるのを防ぐためです。代わりに、復元された cron のうち 10 分 + grace period より先に発火するものは、VM が止まると発火しません。
 - `Esc` でターンを中断した場合は `Stop` もほかの hook も発火しないため、次のプロンプトまで `BUSY` のまま残ります。
+- ダイアログの記録は、送ったプロンプトをダイアログに入力しないためだけに使い、自動停止の判定には使いません。権限の確認に答えたことを知らせる hook は無いので、許可した tool の実行が終わる (`PostToolUse`) まではダイアログ表示中とみなします (default モードで長いコマンドを許可した後は、その間プロンプトを拒否します)。権限の確認を `Esc` や `No` で断ったときは hook が発火しないので、そのターンが終わる (`Stop` / `StopFailure`) まで、または Claude Code が再起動するまで表示中とみなします (送信を拒否する側に倒す)。`PostToolUse` などは tool の呼び出しごとに hook が動くので、journal には書きません。
 - 未送信の入力をプロンプト欄に入れたまま grace period を超えて放置すると、新規起動のセッションは停止対象になります。
 - `connect` も grace period を取り消します。`/run/cloud-coder/state.lock` の flock は短いファイル更新の間だけ持ち、clone や Claude Code の起動など時間のかかる処理の間は `/run/cloud-coder/busy/` のマーカー (pid 付き、プロセスが消えたら無効) で busy にします。hook は lock を最大 2 秒だけ待ち、取れなければ lock 無しで状態ファイルを原子的に書き換えます (Claude Code を待たせないため)。
 - `idle_prompt` は Claude Code が応答を終えて約 60 秒間入力が無いときに送られます。ただし Remote Control のセッションで、送られないケースを確認しています (Claude Code 2.1.288。スマホから接続中、あるいはダイアログ表示中と思われる。同じ RC セッションでも別のタイミングでは約 60 秒で送られた)。そのため、`READY` のまま 2 分間イベントが無いセッションも idle とみなします。`Stop` 由来の `READY` は background task も cron も無いと報告された状態なので、`idle_prompt` を待つ場合と同じ根拠で判定しています。`StopFailure` 由来の `READY` は task の情報が無いので、`idle_prompt` を待ちます。

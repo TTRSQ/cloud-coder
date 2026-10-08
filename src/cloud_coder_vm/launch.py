@@ -2,7 +2,7 @@
 
 Every step checks the current state first and only does what is missing,
 so ``connect`` can be re-run at any point. Existing working trees are never
-pulled or reset, and a pane where something is running is never typed into.
+pulled or reset, and a pane where something other than Claude Code runs is never typed into.
 """
 
 import grp
@@ -313,31 +313,76 @@ def write_prompt_file(session: LogicalSession, prompt: str) -> Path:
     return path
 
 
-def send_prompt_to_running(pane_id: str, claude_pid: int, prompt: str) -> None:
-    """Type a prompt into a running Claude Code, only when it is waiting for input."""
-    states = session_state.load_all(paths.SESSION_STATE_DIR)
-    state = next(
+# How long Claude Code has to confirm, through its UserPromptSubmit hook, a typed prompt.
+PROMPT_CONFIRM_SECONDS = 10.0
+
+
+def _reported_state(pane_id: str, claude_pid: int) -> session_state.SessionState | None:
+    return next(
         (
             s
-            for s in states
+            for s in session_state.load_all(paths.SESSION_STATE_DIR)
             if s.claude_pid == claude_pid or (s.claude_pid is None and s.tmux_pane == pane_id)
         ),
         None,
     )
+
+
+def _typeable_state(pane_id: str, claude_pid: int) -> session_state.SessionState:
+    """The state of a Claude Code that a prompt may be typed into: one that reported its
+    state and shows no dialog (Enter would answer the dialog, and the text would be lost)."""
+    state = _reported_state(pane_id, claude_pid)
     if state is None:
         raise LaunchError(
             "Claude Code in this session has not reported its state yet; prompt not sent"
         )
-    if state.state not in (READY, IDLE):
-        raise LaunchError(f"Claude Code in this session is {state.state}; prompt not sent")
-    buffer = f"cloud-coder-{os.getpid()}"
-    subprocess.run(
-        [*tmux_command(), "load-buffer", "-b", buffer, "-"], input=prompt, text=True, check=True
+    if state.open_dialogs:
+        raise LaunchError(
+            "Claude Code in this session is waiting for an answer to a permission prompt or "
+            "a question; prompt not sent"
+        )
+    return state
+
+
+def send_prompt_to_running(pane_id: str, claude_pid: int, prompt: str) -> str:
+    """Type a prompt into a running Claude Code and submit it. Returns ``"sent"`` when
+    Claude Code was waiting for input, ``"queued"`` when it was working (BUSY): Claude
+    Code then queues the prompt itself and takes it in at its next step, in the same
+    conversation, without interrupting the work. Raises LaunchError unless Claude Code
+    confirms, through its UserPromptSubmit hook, that it received the prompt."""
+    paths.PROMPT_DIR.mkdir(parents=True, exist_ok=True)
+    # One prompt at a time per Claude Code: interleaved pastes would merge into one prompt.
+    with state_lock(paths.PROMPT_DIR / f"claude-{claude_pid}.lock"):
+        before = _typeable_state(pane_id, claude_pid)
+        buffer = f"cloud-coder-{os.getpid()}"
+        subprocess.run(
+            [*tmux_command(), "load-buffer", "-b", buffer, "-"],
+            input=prompt,
+            text=True,
+            check=True,
+        )
+        # Bracketed paste (-p) keeps newlines inside the prompt instead of submitting each line.
+        _check([*tmux_command(), "paste-buffer", "-p", "-d", "-b", buffer, "-t", pane_id])
+        time.sleep(0.3)
+        typed = _reported_state(pane_id, claude_pid)
+        if typed is None or typed.open_dialogs:
+            raise LaunchError(
+                "Claude Code in this session showed a dialog or ended while the prompt was "
+                "typed; prompt not submitted, and it may be left in the input box. Check the "
+                "session's screen"
+            )
+        _check([*tmux_command(), "send-keys", "-t", pane_id, "Enter"])
+        deadline = time.monotonic() + PROMPT_CONFIRM_SECONDS
+        while time.monotonic() < deadline:
+            time.sleep(0.2)
+            now = _reported_state(pane_id, claude_pid)
+            if now is not None and now.prompts_submitted > before.prompts_submitted:
+                return "sent" if before.state in (READY, IDLE) else "queued"
+    raise LaunchError(
+        "Claude Code in this session did not confirm receiving the prompt within "
+        f"{PROMPT_CONFIRM_SECONDS:.0f} s; prompt not confirmed, and it may be left in the "
+        "input box or lost. Check the session's screen before sending it again"
     )
-    # Bracketed paste (-p) keeps newlines inside the prompt instead of submitting each line.
-    _check([*tmux_command(), "paste-buffer", "-p", "-d", "-b", buffer, "-t", pane_id])
-    time.sleep(0.3)
-    _check([*tmux_command(), "send-keys", "-t", pane_id, "Enter"])
 
 
 def _cmdline(pid: int) -> list[str]:
@@ -370,8 +415,7 @@ def ensure_claude(
                 "pane": pane.pane_id,
             }
             if prompt is not None:
-                send_prompt_to_running(pane.pane_id, proc.pid, prompt)
-                result["prompt"] = "sent"
+                result["prompt"] = send_prompt_to_running(pane.pane_id, proc.pid, prompt)
             return result
         if (
             reuse_pane

@@ -341,7 +341,7 @@ def fake_tmux(monkeypatch, *, claude_running: bool, transcript: bool):
         lambda pid, procs, children: ([claude], []) if claude_running else ([], [shell]),
     )
     monkeypatch.setattr(launch_mod, "_cmdline", lambda pid: ["claude", "--remote-control"])
-    monkeypatch.setattr(launch_mod, "send_prompt_to_running", lambda *a: sent.append(a))
+    monkeypatch.setattr(launch_mod, "send_prompt_to_running", lambda *a: sent.append(a) or "queued")
     monkeypatch.setattr(launch_mod, "transcript_exists", lambda home, sid: transcript)
     monkeypatch.setattr(launch_mod, "write_prompt_file", lambda s, p: Path("/run/p.txt"))
     return sent
@@ -363,6 +363,7 @@ def test_result_says_whether_the_conversation_is_new_or_continued(
     fake_tmux(monkeypatch, claude_running=claude_running, transcript=transcript)
     result = ensure_claude(entry("cc-app-1", "app", 1), Path("/home/coder"), "go", True)
     assert (result["claude"], result["conversation"]) == (claude, conversation)
+    assert result["prompt"] == ("queued" if claude_running else "passed-at-start")
 
 
 def test_claude_runs_without_tmux_but_keeps_its_pane(tmp_path):
@@ -397,3 +398,174 @@ def test_a_session_left_on_the_default_tmux_server_is_not_started_twice(monkeypa
     with pytest.raises(LaunchError, match="default tmux server"):
         launch.ensure_tmux_session(entry("cc-a-1", "a", 1))
     assert calls[0][:3] == ["tmux", "-L", "cloud-coder"]
+
+
+# Prompts for a Claude Code that already runs (issue #35): typed while READY / IDLE, queued
+# by Claude Code itself while BUSY, never typed into a dialog, and confirmed by the hook.
+
+
+class FakeClaude:
+    """tmux and a Claude Code behind it: Enter submits what was pasted, which fires the
+    real hook (UserPromptSubmit) unless a dialog is shown or ``confirms`` is off."""
+
+    PANE = "%7"
+    PID = 700
+
+    def __init__(self, tmp_path, monkeypatch):
+        from cloud_coder_vm import launch, paths
+        from cloud_coder_vm.process_table import Process
+
+        self.tmp_path = tmp_path
+        self.states = tmp_path / "sessions"
+        self.states.mkdir()
+        monkeypatch.setattr(paths, "SESSION_STATE_DIR", self.states)
+        monkeypatch.setattr(paths, "PROMPT_DIR", tmp_path / "prompts")
+        monkeypatch.setattr(launch, "PROMPT_CONFIRM_SECONDS", 1.0)
+        monkeypatch.setattr(launch, "_check", self.check)
+        monkeypatch.setattr(launch.subprocess, "run", self.run)
+        self.proc = Process(self.PID, 1, "claude", "", 1)
+        self.ops: list[str] = []
+        self.buffers: dict[str, str] = {}
+        self.input = ""
+        self.submitted: list[str] = []
+        self.confirms = True
+        self.on_paste = None
+
+    def event(self, payload):
+        from cloud_coder_vm.hook import apply_event
+
+        env = {"TMUX_PANE": self.PANE, "CLOUD_CODER_SESSION": "cc-app-1"}
+        payload = {"session_id": "S", **payload}
+        return apply_event(payload, env, self.states, self.tmp_path / "reg.json", self.proc)
+
+    def state(self):
+        from cloud_coder_vm import session_state
+
+        return session_state.load(self.states, "pane-7")
+
+    def run(self, args, input=None, text=None, check=None):
+        import subprocess
+
+        assert "load-buffer" in args and args[-1] == "-"
+        self.buffers[args[args.index("-b") + 1]] = input
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    def check(self, args, cwd=None):
+        if "paste-buffer" in args:
+            assert "-p" in args  # bracketed paste: newlines stay in the prompt
+            self.ops.append("paste")
+            self.input += self.buffers.pop(args[args.index("-b") + 1])
+            if self.on_paste:
+                self.on_paste()
+        elif args[-1] == "Enter":
+            self.ops.append("enter")
+            if self.confirms and not self.state().open_dialogs:
+                self.submitted.append(self.input)
+                self.event({"hook_event_name": "UserPromptSubmit", "prompt": self.input})
+            self.input = ""
+        return ""
+
+    def send(self, prompt):
+        from cloud_coder_vm.launch import send_prompt_to_running
+
+        return send_prompt_to_running(self.PANE, self.PID, prompt)
+
+
+@pytest.fixture
+def claude(tmp_path, monkeypatch):
+    return FakeClaude(tmp_path, monkeypatch)
+
+
+STOP = {"hook_event_name": "Stop", "background_tasks": [], "session_crons": []}
+WRITE = {"tool_name": "Write", "tool_input": {"file_path": "/w/a.txt", "content": "x"}}
+
+
+def test_prompt_to_a_waiting_claude_is_sent(claude):
+    claude.event({"hook_event_name": "SessionStart", "source": "startup"})  # IDLE
+    assert claude.send("first") == "sent"
+    claude.event(STOP)  # READY
+    assert claude.send("second") == "sent"
+    assert claude.submitted == ["first", "second"]
+
+
+def test_prompt_to_a_busy_claude_is_queued_in_order(claude):
+    claude.event({"hook_event_name": "UserPromptSubmit"})  # BUSY
+    prompt = "日本語の追加指示 🚀\nline 2 with $HOME `id` \"dq\" 'sq' <tag> & | ;\n\tindented"
+    assert claude.send(prompt) == "queued"
+    assert claude.send("then this") == "queued"
+    assert claude.submitted == [prompt, "then this"]
+    assert claude.state().prompts_submitted == 3
+
+
+def test_concurrent_prompts_are_not_merged(claude):
+    from concurrent.futures import ThreadPoolExecutor
+
+    claude.event({"hook_event_name": "UserPromptSubmit"})
+    prompts = [f"prompt {i}" for i in range(4)]
+    with ThreadPoolExecutor(4) as pool:
+        results = list(pool.map(claude.send, prompts))
+    assert results == ["queued"] * 4
+    assert sorted(claude.submitted) == prompts  # each one whole, none twice
+    assert claude.ops == ["paste", "enter"] * 4
+
+
+def test_nothing_is_typed_before_claude_reports_its_state(claude):
+    with pytest.raises(LaunchError, match="not reported its state yet; prompt not sent"):
+        claude.send("go")
+    assert claude.ops == []
+
+
+@pytest.mark.parametrize(
+    "shown",
+    [
+        {"hook_event_name": "PermissionRequest", **WRITE},
+        {
+            "hook_event_name": "PermissionRequest",
+            "tool_name": "AskUserQuestion",
+            "tool_input": {"questions": []},
+        },
+        {"hook_event_name": "Elicitation", "mcp_server_name": "srv", "message": "?"},
+    ],
+)
+def test_nothing_is_typed_into_a_dialog(claude, shown):
+    """Enter would answer the dialog (seen with Claude Code 2.1.294: it approved a Write)."""
+    claude.event({"hook_event_name": "UserPromptSubmit"})
+    claude.event(shown)
+    with pytest.raises(LaunchError, match="permission prompt or a question; prompt not sent"):
+        claude.send("go")
+    assert claude.ops == []
+
+
+def test_prompt_is_queued_once_the_dialog_is_answered(claude):
+    claude.event({"hook_event_name": "UserPromptSubmit"})
+    claude.event({"hook_event_name": "PermissionRequest", **WRITE})
+    other = {"tool_name": "Write", "tool_input": {"file_path": "/w/b.txt", "content": "y"}}
+    claude.event({"hook_event_name": "PostToolUse", **other})  # a parallel call, no dialog
+    with pytest.raises(LaunchError, match="prompt not sent"):
+        claude.send("go")
+    claude.event({"hook_event_name": "PostToolUse", **WRITE, "tool_response": {}})
+    assert claude.send("go") == "queued"
+
+
+def test_a_dialog_denied_without_an_event_blocks_until_the_turn_ends(claude):
+    claude.event({"hook_event_name": "UserPromptSubmit"})
+    claude.event({"hook_event_name": "PermissionRequest", **WRITE})  # then Esc: no event
+    with pytest.raises(LaunchError, match="prompt not sent"):
+        claude.send("go")
+    claude.event(STOP)
+    assert claude.send("go") == "sent"
+
+
+def test_no_enter_when_a_dialog_opens_while_typing(claude):
+    claude.event({"hook_event_name": "UserPromptSubmit"})
+    claude.on_paste = lambda: claude.event({"hook_event_name": "PermissionRequest", **WRITE})
+    with pytest.raises(LaunchError, match="prompt not submitted"):
+        claude.send("go")
+    assert claude.ops == ["paste"]
+
+
+def test_unconfirmed_prompt_is_not_reported_as_sent(claude):
+    claude.event({"hook_event_name": "UserPromptSubmit"})
+    claude.confirms = False
+    with pytest.raises(LaunchError, match="prompt not confirmed"):
+        claude.send("go")

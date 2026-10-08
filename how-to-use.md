@@ -180,8 +180,10 @@ cloud-coder connect --session cc-REPO-2 -p "..." --detach   # その会話の続
 
 `--session` で指定したセッションの会話に渡します。Claude Code が既に動いていれば、その入力欄に貼り付けて Enter を送ります。
 
-- 送れるのは Claude Code が `READY` か `IDLE` (応答を終えて入力待ち) のときだけです。
-- `BUSY` (作業中) や、まだ状態を報告していないときは何も入力せず、`Claude Code in this session is BUSY; prompt not sent` などのエラーで終了します。`cloud-coder status` で状態を確認してから送り直してください。
+- Claude Code が作業中 (`BUSY`) でも送れます。Claude Code が自分のキューに入れ、作業を止めずに次の区切り (tool の実行が終わったところ) で同じ会話に取り込みます。出力の `prompt` は、入力待ちだったときは `sent`、作業中だったときは `queued` です。終わるのを待ってから送り直す必要はありません。
+- 権限の確認や Claude Code からの質問 (ダイアログ) が出ている間と、まだ状態を報告していないときは何も入力せず、`... prompt not sent` のエラーで終了します。attach してダイアログに答えてから送り直してください。
+- Claude Code が受け取ったことを hook で確認できなかったときは `... prompt not confirmed` のエラーになります。入力欄に残っているか失われているので、画面を見てから送り直してください。
+- attach して入力欄に打ちかけている文字列があると、送ったプロンプトとつながって送られます。
 - Claude Code が止まっていたセッション (VM 停止後など) では、Claude Code を起動 / resume するときの最初のプロンプトとして渡します。
 
 ## 複数のセッションを並行して使う
@@ -231,7 +233,7 @@ cloud-coder が起動する Claude Code は、すべて Remote Control 付き (`
 - Claude Code の作業は数分〜数時間かかります。server は LLM に、作業を始めたらターンを終え、`BUSY` が終わるのをポーリングで待たないよう指示します (`start_session` / `send_prompt` の応答の `next`、`BUSY` のときの応答の `note`)。`BUSY` と分かってから 60 秒以内に同じ `status` / `read_session` を呼ぶと、VM に問い合わせずに `rechecked: false` だけが返ります ([README の MCP server](README.md#mcp-server))。
 - `up` は agent のインストール・更新を VM 上で始めてすぐに返り、終わるまでは `ready: false` (`agent_installing: true`) を返します。初回は数分かかります。失敗すると、次の `up` がエラーを返すと同時にインストールをやり直します (失敗したときのログは VM の `~/cloud-coder-install.log.prev`)。CLI の `up` / `connect` は、VM 上で動いているインストールの終了を待ってから続けます。
 - `read_session` は tmux の画面の文字列をそのまま返します。Claude Code の応答のほか、権限の確認や trust 画面など入力を待っている表示もそのまま読めます。
-- `send_prompt` は Claude Code が `BUSY` の間はエラーになります (CLI の `-p` と同じ)。
+- `send_prompt` は Claude Code が `BUSY` でも送れます。Claude Code のキューに入り、次の区切りで取り込まれます (応答の `prompt` が `queued`)。ダイアログの表示中はエラーになります (CLI の `-p` と同じ)。
 - VM 上で行う初回の Claude Code のログイン (`/login`) と `gh auth login` は MCP からはできません。[初回セットアップ](#初回セットアップ)を CLI で済ませてから使ってください。
 
 ### MCP Inspector で tool を直接呼ぶ
