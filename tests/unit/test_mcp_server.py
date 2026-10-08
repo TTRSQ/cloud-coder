@@ -143,13 +143,29 @@ def test_start_session_tells_the_client_to_end_its_turn(monkeypatch):
 def test_agent_errors_reach_the_client(monkeypatch):
     monkeypatch.setattr(connect, "up", lambda cfg, wait: connect.UpResult("running", True, False))
 
-    def busy(*a, **kw):
-        raise connect.AgentError("Claude Code in this session is BUSY; prompt not sent")
+    def dialog(*a, **kw):
+        raise connect.AgentError(
+            "Claude Code in this session shows a permission prompt or a question, or one "
+            "was dismissed and Claude Code has not finished its work since; prompt not sent"
+        )
 
-    monkeypatch.setattr(connect, "launch", busy)
+    monkeypatch.setattr(connect, "launch", dialog)
     result = call("send_prompt", {"session": "cc-a-1", "text": "go"})
-    assert result.is_error and "is BUSY; prompt not sent" in result.content[0].text
-    assert "do not resend" in result.content[0].text
+    assert result.is_error and "since; prompt not sent" in result.content[0].text
+    assert "Do not resend" in result.content[0].text
+
+
+def test_prompt_queued_by_a_busy_claude_is_reported_as_queued(monkeypatch):
+    monkeypatch.setattr(connect, "up", lambda cfg, wait: connect.UpResult("running", True, False))
+    monkeypatch.setattr(
+        connect, "launch", lambda cfg, repo, **kw: {"session": kw["session"], "prompt": "queued"}
+    )
+    for name, args in [
+        ("send_prompt", {"session": "cc-a-1", "text": "also do X"}),
+        ("start_session", {"session": "cc-a-1", "prompt": "also do X"}),
+    ]:
+        result = result_json(call(name, args))
+        assert result["prompt"] == "queued" and result["next"] == mcp_server.QUEUED_NEXT
 
 
 def test_read_session_does_not_start_the_vm(monkeypatch):

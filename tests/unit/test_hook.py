@@ -115,3 +115,30 @@ def test_a_failing_hook_says_where_in_the_journal(monkeypatch, tmp_path):
         and "(traceback in" in lines[0]
         and (tmp_path / "hook.log").exists()
     )
+
+
+def test_dialog_events_track_dialogs_without_touching_the_state(tmp_path):
+    (tmp_path / "s").mkdir()
+    write = {"session_id": "A", "tool_name": "Write", "tool_input": {"file_path": "/w/a"}}
+    assert run(tmp_path, {"hook_event_name": "PermissionRequest", **write}) is None  # no record
+    run(tmp_path, {"hook_event_name": "UserPromptSubmit", "session_id": "A"})
+    assert run(tmp_path, {"hook_event_name": "PermissionRequest", **write}) == "BUSY"
+    st = session_state.load(tmp_path / "s", "pane-4")
+    assert (st.state, st.last_event, len(st.open_dialogs)) == ("BUSY", "UserPromptSubmit", 1)
+    run(tmp_path, {"hook_event_name": "PostToolUse", **write})
+    assert session_state.load(tmp_path / "s", "pane-4").open_dialogs == []
+
+
+def test_prompts_are_counted_and_a_stop_closes_dialogs(tmp_path):
+    (tmp_path / "s").mkdir()
+    run(tmp_path, {"hook_event_name": "UserPromptSubmit", "session_id": "A"})
+    run(tmp_path, {"hook_event_name": "PermissionRequest", "session_id": "A", "tool_name": "X"})
+    run(tmp_path, {"hook_event_name": "UserPromptSubmit", "session_id": "A"})  # queued
+    st = session_state.load(tmp_path / "s", "pane-4")
+    assert (st.prompts_submitted, len(st.open_dialogs)) == (2, 1)
+    run(
+        tmp_path,
+        {"hook_event_name": "Stop", "session_id": "A", "background_tasks": [], "session_crons": []},
+    )
+    st = session_state.load(tmp_path / "s", "pane-4")
+    assert (st.state, st.open_dialogs, st.prompts_submitted) == ("READY", [], 2)

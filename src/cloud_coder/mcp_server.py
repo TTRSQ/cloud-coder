@@ -41,7 +41,7 @@ Claude Code's work takes minutes to hours, far longer than one turn of yours. On
 `start_session` or `send_prompt` succeeds, tell the user the work has started and end
 your turn. Do not poll `status` or `read_session` to wait for BUSY to end; call them only
 when the user asks how the work is going or for its result. When `send_prompt` is
-refused because Claude Code is BUSY, do not resend it; tell the user.
+refused, do not resend it; tell the user.
 - `status` shows the VM, its sessions and each Claude Code's state (BUSY / READY / IDLE).
 - `up` starts the VM and returns at once. While `ready` is false the VM is starting
   (about a minute) or the agent is being installed (the first time, several minutes):
@@ -51,9 +51,12 @@ refused because Claude Code is BUSY, do not resend it; tell the user.
   instead, pass its `session` (name from `status`); ask the user when it is unclear
   which they want. Without a prompt it opens the repository's latest session.
   The result's `conversation` says whether it is `new` or `continued`.
-  `send_prompt` gives an existing session a new instruction; it is refused while
-  Claude Code is BUSY. `read_session` returns the session's recent screen text: Claude
-  Code's answer, its progress, or a question it is waiting on.
+  `send_prompt` gives an existing session a new instruction. While Claude Code is BUSY
+  it queues the instruction and takes it in at its next step, without stopping its
+  work (`prompt` in the result is `queued`, else `sent`); it is refused while Claude
+  Code waits for an answer to a permission prompt or a question. `read_session`
+  returns the session's recent screen text: Claude Code's answer, its progress, or a
+  question it is waiting on.
 - `stop` stops the VM at once, interrupting any work; normally let it stop itself.
 """
 
@@ -63,6 +66,11 @@ STARTED_NEXT = (
     "has started and end your turn. Do not call status or read_session to wait for it; "
     "call them only when the user asks."
 )
+QUEUED_NEXT = (
+    "Claude Code was working: it queued the instruction and takes it in at its next step, "
+    "in the same conversation. Tell the user it was queued and end your turn. Do not call "
+    "status or read_session to wait for it; call them only when the user asks."
+)
 SESSION_READY_NEXT = (
     "The session is ready and Claude Code has no new work. Tell the user; give it work "
     "with send_prompt when the user asks."
@@ -71,10 +79,7 @@ BUSY_NOTE = (
     "Claude Code is still working (BUSY). Report the progress so far to the user and end "
     "your turn; do not call status or read_session again in this turn."
 )
-PROMPT_NOT_RESENT = (
-    "Claude Code is still working on an earlier instruction: do not resend this prompt; "
-    "tell the user and end your turn"
-)
+PROMPT_NOT_RESENT = "Do not resend this prompt; tell the user and end your turn"
 
 # A tool call ends within this. Clients cut tool calls off after a limit of their own
 # (unpublished for ChatGPT): this keeps a stuck gcloud or ssh from outlasting it by far,
@@ -160,7 +165,7 @@ def tool_call(name: str) -> Iterator[None]:
     except guards.VmNotRunning as e:
         raise ToolError(f"{e}; nothing to read") from e
     except connect.AgentError as e:
-        if str(e).endswith("is BUSY; prompt not sent"):
+        if "; prompt not " in str(e):
             raise ToolError(f"{e}. {PROMPT_NOT_RESENT}") from e
         raise ToolError(str(e)) from e
     except EXPECTED_ERRORS as e:
@@ -195,7 +200,10 @@ def build_server(
             yield
 
     def started(result: dict) -> dict:
-        next_step = STARTED_NEXT if "prompt" in result else SESSION_READY_NEXT
+        if result.get("prompt") == "queued":
+            next_step = QUEUED_NEXT
+        else:
+            next_step = STARTED_NEXT if "prompt" in result else SESSION_READY_NEXT
         return {**result, "accepted": True, "next": next_step}
 
     @server.tool(annotations=READ_ONLY)
@@ -247,8 +255,8 @@ def build_server(
             str | None,
             Field(
                 description="instruction for Claude Code. Without `session` it starts a "
-                "new session and conversation; with `session` it continues that one, and is "
-                "sent only when Claude Code is READY or IDLE"
+                "new session and conversation; with `session` it continues that one (queued "
+                "while Claude Code is BUSY)"
             ),
         ] = None,
     ) -> dict:
@@ -272,10 +280,12 @@ def build_server(
         session: Annotated[str, Field(description="session name from `status`")],
         text: Annotated[str, Field(description="the instruction for Claude Code")],
     ) -> dict:
-        """Type an instruction into the session's Claude Code and submit it. Refused
-        unless Claude Code is READY or IDLE (do not resend it then); if Claude Code is not
-        running it is started (or resumed) with this instruction. Claude Code works on it
-        for minutes to hours: tell the user it has started and end your turn."""
+        """Type an instruction into the session's Claude Code and submit it. While Claude
+        Code is BUSY it queues the instruction and takes it in at its next step (`prompt`
+        is `queued`); otherwise `prompt` is `sent`. Refused while Claude Code waits for an
+        answer to a permission prompt or a question (do not resend it then); if Claude Code
+        is not running it is started (or resumed) with this instruction. Claude Code works
+        on it for minutes to hours: tell the user and end your turn."""
         with write_call("send_prompt"):
             guards.checked_prompt(text)
             guards.require_ready(cfg)
