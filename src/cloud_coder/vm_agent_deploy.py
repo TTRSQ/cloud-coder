@@ -59,6 +59,7 @@ def vm_config(cfg: Config) -> VmConfig:
         dotfiles_repo=cfg.dotfiles_repo,
         dotfiles_branch=cfg.dotfiles_branch,
         dotfiles_install=cfg.dotfiles_install,
+        cargo_disable_incremental=cfg.cargo_disable_incremental,
     )
 
 

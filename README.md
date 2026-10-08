@@ -140,6 +140,27 @@ VM には次のツールを入れます (`vm.tools` で選択、既定はすべ�
 - `docker` グループは新しいログインから有効になります。グループ追加より前から動いている tmux server に新しいセッションを作るときは、`sg docker` 経由でシェルを起動して sudo なしで `docker` を使えるようにします。既存の pane や自分で開いた window は tmux server のグループを引き継ぐので、再ログインしても使えません。cloud-coder に新しいセッションを作らせる (`connect REPO --new` など) か、VM を停止してから `connect` し直してください。
 - 稼働中のコンテナ (`docker compose up -d` など tmux の外で動くもの) があると自動停止しません。止めてよい場合は `vm.ignore_docker: true` にしてください。
 
+### Cargo の incremental compilation
+
+VM の Cargo の既定値として incremental compilation を切ります (`build.incremental = false`)。1 台の VM で複数のセッションがそれぞれの worktree で build すると、`target/debug/incremental` が worktree の数だけ増えて disk を圧迫するためです ([#32](https://github.com/TTRSQ/cloud-coder/issues/32))。代わりに、1 ファイルを変えた後の再 build は遅くなります (変えた crate とそれに依存する crate を毎回すべてコンパイルし直すため)。
+
+- agent の install 時に `~/.cargo/config.toml` が無ければ、次の内容で作ります。`~/.cargo/config.toml` か旧名の `~/.cargo/config` が既にあれば (symlink も含めて) 何も書き換えず、install のログに案内を出すだけです。その場合に incremental を切るには、自分でそのファイルに次の 2 行を足してください。
+
+  ```toml
+  [build]
+  incremental = false
+  ```
+
+- 既存の VM には、この版の cloud-coder で次に `up` / `connect` したときに入ります (agent の再 install)。ファイルは一時ファイルからの link で一度に現れ、既にあるファイルを置き換えることはありません。cargo は起動時に設定を読むので、実行中の build はそのまま元の設定で終わります。切り替えた後の最初の build では、各 worktree の workspace の crate が一度だけコンパイルし直されます (依存 crate はそのまま)。既にある `target/*/incremental` は消さないので、容量を空けるにはその worktree で消してください。
+- 上書きの方法 (上ほど強い)。`CARGO_INCREMENTAL` 以外は Cargo の[設定の優先順位](https://doc.rust-lang.org/cargo/reference/config.html#hierarchical-structure)に従います。
+  1. 環境変数 `CARGO_INCREMENTAL=1` (`0` なら逆に、リポジトリの設定があっても切る)
+  2. `cargo --config build.incremental=true ...`、環境変数 `CARGO_BUILD_INCREMENTAL=true`
+  3. リポジトリの `.cargo/config.toml` の `[build] incremental = true` (`~/.cargo` より深いディレクトリの設定が優先される)
+  4. `~/.cargo/config.toml` (cloud-coder が作るもの)
+
+  `Cargo.toml` の `[profile.dev] incremental = true` や `CARGO_PROFILE_DEV_INCREMENTAL` は `build.incremental` より弱いので効きません。
+- cloud-coder にこの既定値を入れさせない場合は `vm.cargo_disable_incremental: false` にします。cloud-coder が作ったまま変更されていない `~/.cargo/config.toml` を削除し (編集してあれば残す)、以後は作りません。
+
 ### GitHub の認証
 
 gh の認証は対話操作なので cloud-coder は行いません。初回だけ VM に入って設定してください。
@@ -339,6 +360,7 @@ vm:
   ignore_docker: false       # true で稼働中のコンテナを自動停止の判定から外す
   ignore_ssh_sessions: false # true で SSH の対話ログインを自動停止の判定から外す
   ssh_session_idle_minutes: 30   # 入力がこの時間無い SSH ログインは数えない
+  cargo_disable_incremental: true   # ~/.cargo/config.toml が無ければ作り、Cargo の incremental を既定で切る
 git:
   github_https: true         # GitHub の SSH URL を HTTPS に読み替える
 claude:

@@ -1,11 +1,16 @@
 import json
 import os
+import shutil
 import subprocess
+
+import pytest
 
 from cloud_coder_vm import paths
 from cloud_coder_vm.install import (
+    CARGO_CONFIG,
     HOOK_EVENTS,
     cloud_coder_hooks,
+    configure_cargo_incremental,
     install_dotfiles,
     remove_legacy_user_hooks,
     without_cloud_coder_hooks,
@@ -108,6 +113,7 @@ def vm_config(**kw):
         dotfiles_repo=None,
         dotfiles_branch=None,
         dotfiles_install="./install.sh",
+        cargo_disable_incremental=True,
     )
     base.update(kw)
     return VmConfig(**base)
@@ -231,3 +237,84 @@ def test_configure_github_https_with_real_git(tmp_path, monkeypatch):
         text=True,
     ).stdout.strip()
     assert helper_now == helper
+
+
+def test_cargo_config_is_created_once_and_kept(tmp_path):
+    config = paths.cargo_config_path(tmp_path)
+    assert configure_cargo_incremental(tmp_path, True) == "created"
+    assert config.read_text() == CARGO_CONFIG
+    assert config.stat().st_mode & 0o777 == 0o644
+    assert configure_cargo_incremental(tmp_path, True) == "installed"
+    assert [p.name for p in config.parent.iterdir()] == ["config.toml"]  # no temp file left
+
+
+@pytest.mark.parametrize("name", ["config.toml", "config"])
+def test_existing_cargo_config_is_never_written(tmp_path, name, capsys):
+    cargo_home = tmp_path / ".cargo"
+    cargo_home.mkdir()
+    own = cargo_home / name
+    own.write_text("[build]\njobs = 4\n")
+    assert configure_cargo_incremental(tmp_path, True) == "kept existing"
+    assert own.read_text() == "[build]\njobs = 4\n"
+    assert sorted(p.name for p in cargo_home.iterdir()) == [name]
+    assert "incremental = false" in capsys.readouterr().out
+    assert configure_cargo_incremental(tmp_path, False) == "unchanged"
+    assert own.read_text() == "[build]\njobs = 4\n"
+
+
+def test_linked_cargo_config_is_never_written(tmp_path):
+    target = tmp_path / "dotfiles" / "cargo.toml"
+    target.parent.mkdir()
+    target.write_text(CARGO_CONFIG)  # even identical content belongs to the dotfiles
+    link = paths.cargo_config_path(tmp_path)
+    link.parent.mkdir()
+    link.symlink_to(target)
+    assert configure_cargo_incremental(tmp_path, True) == "kept existing"
+    assert configure_cargo_incremental(tmp_path, False) == "unchanged"
+    assert link.is_symlink() and target.read_text() == CARGO_CONFIG
+
+
+def test_disabling_removes_only_our_unchanged_cargo_config(tmp_path):
+    config = paths.cargo_config_path(tmp_path)
+    configure_cargo_incremental(tmp_path, True)
+    assert configure_cargo_incremental(tmp_path, False) == "removed"
+    assert not config.exists()
+    assert configure_cargo_incremental(tmp_path, False) == "unchanged"
+
+    configure_cargo_incremental(tmp_path, True)
+    config.write_text(CARGO_CONFIG + "jobs = 4\n")  # edited by the user: theirs now
+    assert configure_cargo_incremental(tmp_path, False) == "unchanged"
+    assert config.read_text().endswith("jobs = 4\n")
+
+
+@pytest.mark.skipif(shutil.which("cargo") is None, reason="needs cargo")
+def test_cargo_honours_the_config_and_its_documented_overrides(tmp_path, monkeypatch):
+    """The precedence README documents, checked against the real cargo."""
+    for var in ("CARGO_INCREMENTAL", "CARGO_BUILD_INCREMENTAL", "CARGO_TARGET_DIR"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("CARGO_HOME", str(tmp_path / ".cargo"))
+    configure_cargo_incremental(tmp_path, True)
+
+    def build(name, env=None, repo_config=None, manifest_extra=""):
+        crate = tmp_path / name
+        (crate / "src").mkdir(parents=True)
+        (crate / "Cargo.toml").write_text(
+            f'[package]\nname = "{name}"\nversion = "0.1.0"\nedition = "2021"\n' + manifest_extra
+        )
+        (crate / "src/main.rs").write_text("fn main() {}\n")
+        if repo_config:
+            (crate / ".cargo").mkdir()
+            (crate / ".cargo/config.toml").write_text(repo_config)
+        subprocess.run(
+            ["cargo", "build", "--offline", "-q", "-j", "1"],
+            cwd=crate,
+            env={**os.environ, **(env or {})},
+            check=True,
+        )
+        # cargo creates the directory either way; incremental builds fill it
+        return any((crate / "target/debug/incremental").iterdir())
+
+    assert not build("vmdefault")
+    assert not build("profile", manifest_extra="[profile.dev]\nincremental = true\n")
+    assert build("repoconfig", repo_config="[build]\nincremental = true\n")
+    assert build("envvar", env={"CARGO_INCREMENTAL": "1"})

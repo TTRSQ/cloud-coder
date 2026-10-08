@@ -181,6 +181,55 @@ def configure_github_https(enabled: bool) -> None:
         )
 
 
+# Several sessions on one VM each build in their own worktree, and the incremental
+# caches under target/*/incremental grow with every worktree (TTRSQ/cloud-coder#32).
+CARGO_CONFIG = """\
+# Created by cloud-coder (vm.cargo_disable_incremental). cloud-coder never edits this
+# file once it differs from what it wrote; set vm.cargo_disable_incremental: false to
+# have it removed while unchanged.
+[build]
+incremental = false
+"""
+
+
+def configure_cargo_incremental(home: Path, disable: bool) -> str:
+    """Make build.incremental = false the VM-wide Cargo default, by creating the user's
+    Cargo config only when there is none. An existing config (the user's own, or a
+    dotfiles symlink) is never written; with ``disable`` false only cloud-coder's
+    unchanged file is removed.
+
+    The file appears through a single link(2), so a cargo starting meanwhile reads
+    either no file or the whole file, and a file created meanwhile is never replaced."""
+    path = paths.cargo_config_path(home)
+    ours = path.is_file() and not path.is_symlink() and path.read_text() == CARGO_CONFIG
+    if not disable:
+        if ours:
+            path.unlink()
+            return "removed"
+        return "unchanged"
+    if ours:
+        return "installed"
+    legacy = path.with_name("config")
+    if not any(p.exists() or p.is_symlink() for p in (path, legacy)):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(CARGO_CONFIG)
+        tmp.chmod(0o644)
+        try:
+            os.link(tmp, path)
+            return "created"
+        except FileExistsError:
+            pass
+        finally:
+            tmp.unlink()
+    print(
+        f"cloud-coder: note: left the existing Cargo config in {path.parent} as is; to "
+        "turn off incremental builds VM-wide, add `[build] incremental = false` to it",
+        flush=True,
+    )
+    return "kept existing"
+
+
 def dotfiles_dir(config: VmConfig, home: Path) -> Path | None:
     if not config.dotfiles_repo:
         return None
@@ -232,5 +281,6 @@ def install_user(config: VmConfig, home: Path) -> None:
     if not paths.claude_bin(home).exists():
         subprocess.run(["bash", "-c", CLAUDE_INSTALLER], check=True)
     dev_tools.install(dev_tools.missing(config.tools, "user", home))
+    configure_cargo_incremental(home, config.cargo_disable_incremental)
     configure_github_https(config.github_https)  # before cloning dotfiles over https
     install_dotfiles(config, home)

@@ -26,6 +26,7 @@ class VmConfig:
     dotfiles_repo: str | None  # Claude Code config repository cloned into the workspace
     dotfiles_branch: str | None
     dotfiles_install: str  # shell command run in the clone
+    cargo_disable_incremental: bool  # create ~/.cargo/config.toml with build.incremental = false
 
 
 def render_config(config: VmConfig) -> str:

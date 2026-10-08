@@ -8,7 +8,9 @@ from cloud_coder_vm.session_close import CloseError, close
 from cloud_coder_vm.session_registry import LogicalSession
 from cloud_coder_vm.system_files import VmConfig
 
-CONFIG = VmConfig("coder", 0, "git", "git/wt", False, 0, [], False, False, 0, False, None, None, "")
+CONFIG = VmConfig(
+    "coder", 0, "git", "git/wt", False, 0, [], False, False, 0, False, None, None, "", True
+)
 IDENTITY = ["-c", "user.email=a@b", "-c", "user.name=a"]
 
 

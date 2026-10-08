@@ -306,7 +306,7 @@ def test_launch_hands_a_prompt_to_a_new_session(tmp_path, monkeypatch):
     registry.parent.mkdir(parents=True)
     session_registry.save(registry, {"cc-app-1": entry("cc-app-1", "app", 5, url="u")})
     config = VmConfig(
-        "coder", 0, "git", "git/wt", False, 0, [], False, False, 0, False, None, None, ""
+        "coder", 0, "git", "git/wt", False, 0, [], False, False, 0, False, None, None, "", True
     )
 
     def run(**kw):

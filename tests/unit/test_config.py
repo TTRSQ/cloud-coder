@@ -86,6 +86,14 @@ def test_ssh_and_git_config():
     assert cfg.github_https is False
 
 
+def test_cargo_incremental_is_disabled_by_default():
+    assert Config().cargo_disable_incremental is True
+    cfg = from_mapping({"vm": {"cargo_disable_incremental": False}})
+    assert cfg.cargo_disable_incremental is False
+    with pytest.raises(ConfigError):
+        from_mapping({"vm": {"cargo_disable_incremental": "no"}})
+
+
 def test_layout_and_dotfiles_config():
     cfg = Config()
     assert (cfg.workspace, cfg.worktrees) == ("git", "git/wt")

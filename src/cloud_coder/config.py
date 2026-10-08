@@ -36,6 +36,7 @@ class Config:
     ignore_docker: bool = False  # running containers block auto-stop unless true
     ignore_ssh_sessions: bool = False  # interactive SSH logins block auto-stop unless true
     ssh_session_idle_minutes: int = 30
+    cargo_disable_incremental: bool = True  # VM-wide Cargo default build.incremental = false
     # git
     github_https: bool = True  # use https://github.com/ for git@github.com: URLs on the VM
     # claude
@@ -67,6 +68,7 @@ SECTIONS: dict[str, dict[str, str]] = {
         "ignore_docker": "ignore_docker",
         "ignore_ssh_sessions": "ignore_ssh_sessions",
         "ssh_session_idle_minutes": "ssh_session_idle_minutes",
+        "cargo_disable_incremental": "cargo_disable_incremental",
     },
     "git": {"github_https": "github_https"},
     "claude": {

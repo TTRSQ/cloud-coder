@@ -49,5 +49,11 @@ def claude_global_config_path(home: Path) -> Path:
     return home / ".claude.json"
 
 
+def cargo_config_path(home: Path) -> Path:
+    """The user's Cargo config (rustup's default CARGO_HOME). Cargo also reads the
+    legacy name ``config`` in the same directory."""
+    return home / ".cargo/config.toml"
+
+
 def claude_bin(home: Path) -> Path:
     return home / ".local/bin/claude"
