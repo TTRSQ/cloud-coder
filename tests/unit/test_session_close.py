@@ -1,8 +1,10 @@
 import contextlib
 import json
+import os
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -445,3 +447,24 @@ def test_a_cache_named_directory_with_tracked_files_is_not_judged_whole(home, di
     assert preview["discarded_ignored"] == ["node_modules/dep/.env"]
     close(CONFIG, home, "cc-app-2", discard_ignored=True)
     assert not worktree.exists()  # removed by git: index.js is on the remote
+
+
+def test_inspecting_a_worktree_leaves_its_index_alone(home, monkeypatch):
+    """The session may be running `git add` or `git commit` in the worktree: inspecting
+    it must not take the index lock to refresh the index."""
+    monkeypatch.delenv("GIT_OPTIONAL_LOCKS", raising=False)  # git would take the lock
+    worktree = home.joinpath(*WORKTREE)
+    (worktree / "f.txt").write_text("committed")
+    git("add", "f.txt", cwd=worktree)
+    git("commit", "-q", "-m", "f", cwd=worktree)
+    os.utime(worktree / "f.txt", (0, 0))  # stat differs from the index: git would refresh it
+    index = Path(
+        git("rev-parse", "--path-format=absolute", "--git-path", "index", cwd=worktree)
+        .stdout.decode()
+        .strip()
+    )
+    before = index.stat()
+    found = session_close.inspect(worktree, False, set())
+    assert not [b for b in found.blockers if b.startswith("uncommitted")]
+    after = index.stat()
+    assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
