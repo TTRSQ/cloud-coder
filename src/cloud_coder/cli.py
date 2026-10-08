@@ -108,12 +108,25 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "status", parents=[common], help="VM, sessions and auto-stop state"
     ).add_argument("--json", action="store_true")
-    sub.add_parser(
+    p = sub.add_parser(
         "close",
         parents=[common],
         help="end a session (and its Claude Code), remove its worktree and forget it; "
-        "refused while the worktree has uncommitted, ignored or unpushed files",
-    ).add_argument("session", help="session name (see `status`)")
+        "regenerable caches (target/, .venv/, node_modules/, ...) go with it, anything "
+        "else unsaved (uncommitted, unpushed, other ignored files) refuses the close",
+    )
+    p.add_argument("session", help="session name (see `status`)")
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="only report what close would do: blockers, caches and the space it frees",
+    )
+    p.add_argument(
+        "--discard-ignored",
+        action="store_true",
+        help="also delete ignored files that are not regenerable caches (.env, out/, ...); "
+        "uncommitted and unpushed work still refuses the close",
+    )
     sub.add_parser("stop", parents=[common], help="stop the VM (disk is kept)")
     sub.add_parser(
         "mcp", parents=[common], help="serve the VM and its sessions as MCP tools over stdio"
@@ -167,7 +180,10 @@ def main(argv: list[str] | None = None) -> int:
             return ssh.attach_tmux(cfg, launched["session"])
         if args.command == "close":
             connect.up(cfg, requested)
-            print(json.dumps(connect.close_session(cfg, args.session)))
+            closed = connect.close_session(
+                cfg, args.session, dry_run=args.dry_run, discard_ignored=args.discard_ignored
+            )
+            print(json.dumps(closed, indent=2 if args.dry_run else None))
             return 0
         if args.command == "status":
             st = connect.status(cfg)

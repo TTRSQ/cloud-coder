@@ -86,7 +86,13 @@ def cmd_launch(args) -> int:
 
 def cmd_close_session(args) -> int:
     try:
-        result = session_close.close(_load_config(), Path.home(), args.session)
+        result = session_close.close(
+            _load_config(),
+            Path.home(),
+            args.session,
+            dry_run=args.dry_run,
+            discard_ignored=args.discard_ignored,
+        )
     except session_close.CloseError as e:
         print(json.dumps({"error": str(e)}))
         return 1
@@ -156,6 +162,12 @@ def main(argv: list[str] | None = None) -> int:
         "close-session", help="end a session and remove its worktree when nothing is unsaved"
     )
     p.add_argument("--session", required=True)
+    p.add_argument("--dry-run", action="store_true", help="report what close would do, only")
+    p.add_argument(
+        "--discard-ignored",
+        action="store_true",
+        help="also delete ignored files that are not regenerable caches",
+    )
     p.set_defaults(func=cmd_close_session)
 
     p = sub.add_parser("install-system", help="(root) install units and files")

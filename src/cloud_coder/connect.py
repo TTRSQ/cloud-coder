@@ -161,11 +161,19 @@ def read_session(cfg: Config, session: str, lines: int = 200) -> dict:
     return agent_result(ssh.run(cfg, command))
 
 
-def close_session(cfg: Config, session: str) -> dict:
+def close_session(
+    cfg: Config, session: str, dry_run: bool = False, discard_ignored: bool = False
+) -> dict:
     """End the session's tmux session (and Claude Code in it), remove its worktree and
-    forget it; refused while the worktree has uncommitted, ignored or unpushed files."""
-    command = shlex.join(["python3", str(paths.AGENT_PYZ), "close-session", "--session", session])
-    return agent_result(ssh.run(cfg, command))
+    forget it; refused while the worktree has uncommitted or unpushed work, or ignored
+    files other than regenerable caches (unless ``discard_ignored``). ``dry_run`` only
+    reports what would happen."""
+    command = ["python3", str(paths.AGENT_PYZ), "close-session", "--session", session]
+    if dry_run:
+        command.append("--dry-run")
+    if discard_ignored:
+        command.append("--discard-ignored")
+    return agent_result(ssh.run(cfg, shlex.join(command)))
 
 
 def status(cfg: Config) -> dict:
