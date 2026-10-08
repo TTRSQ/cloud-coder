@@ -318,3 +318,7 @@ def test_cargo_honours_the_config_and_its_documented_overrides(tmp_path, monkeyp
     assert not build("profile", manifest_extra="[profile.dev]\nincremental = true\n")
     assert build("repoconfig", repo_config="[build]\nincremental = true\n")
     assert build("envvar", env={"CARGO_INCREMENTAL": "1"})
+    assert build("buildenv", env={"CARGO_BUILD_INCREMENTAL": "true"})
+    assert not build(
+        "envoff", env={"CARGO_INCREMENTAL": "0"}, repo_config="[build]\nincremental = true\n"
+    )

@@ -151,7 +151,7 @@ VM の Cargo の既定値として incremental compilation を切ります (`bui
   incremental = false
   ```
 
-- 既存の VM には、この版の cloud-coder で次に `up` / `connect` したときに入ります (agent の再 install)。ファイルは一時ファイルからの link で一度に現れ、既にあるファイルを置き換えることはありません。cargo は起動時に設定を読むので、実行中の build はそのまま元の設定で終わります。切り替えた後の最初の build では、各 worktree の workspace の crate が一度だけコンパイルし直されます (依存 crate はそのまま)。既にある `target/*/incremental` は消さないので、容量を空けるにはその worktree で消してください。このファイルを消した場合に作り直すのも、次に agent か config が変わって install が走ったときです。
+- 既存の VM には、この版の cloud-coder で次に `up` / `connect` したときに入ります (agent の再 install)。ファイルは一時ファイルからの link で一度に現れ、既にあるファイルを置き換えることはありません。cargo は起動時に設定を読むので、実行中の build はそのまま元の設定で終わります。切り替えた後の最初の build では、各 worktree の workspace の crate が一度だけコンパイルし直されます (依存 crate はそのまま)。既にある `target/*/incremental` は消さないので、容量を空けるにはその worktree で消してください。このファイルを消した場合に作り直すのも、次に install が走ったとき (agent や config の更新時など) です。
 - 上書きの方法 (上ほど強い)。`CARGO_INCREMENTAL` 以外は Cargo の[設定の優先順位](https://doc.rust-lang.org/cargo/reference/config.html#hierarchical-structure)に従います。
   1. 環境変数 `CARGO_INCREMENTAL=1` (`0` なら逆に、リポジトリの設定があっても切る)
   2. `cargo --config build.incremental=true ...`
