@@ -92,11 +92,15 @@ def dialog_id(payload: dict) -> str:
     return hashlib.sha256(encoded.encode()).hexdigest()[:16]
 
 
+def _is_shell(task: object) -> bool:
+    return isinstance(task, dict) and task.get("type") == "shell"
+
+
 def next_dialogs(dialogs: list[str], payload: dict) -> list[str]:
     """The dialogs still shown after a hook event. A dialog denied with Esc or "No" fires
-    no event: it counts as shown until a turn ends with no background task left (one may
-    still ask for a permission after the turn) or Claude Code restarts, which errs
-    towards not typing."""
+    no event: it counts as shown until a turn ends with no background task left that may
+    ask for a permission (any but a shell) or Claude Code restarts, which errs towards
+    not typing."""
     event = payload.get("hook_event_name")
     if event in DIALOG_SHOWN:
         return [*dialogs, dialog_id(payload)]
@@ -107,7 +111,8 @@ def next_dialogs(dialogs: list[str], payload: dict) -> list[str]:
             remaining.remove(closed)
             return remaining
         return dialogs
-    if event == "Stop" and payload.get("background_tasks") == []:
+    tasks = payload.get("background_tasks")
+    if event == "Stop" and isinstance(tasks, list) and all(_is_shell(t) for t in tasks):
         return []
     if event in ("SessionStart", "SessionEnd"):
         return []

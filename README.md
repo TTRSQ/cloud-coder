@@ -293,13 +293,14 @@ Claude Code の状態は hook で更新されます。hook は Claude Code の m
 | `SessionEnd` | 状態を削除 |
 | `PermissionRequest` / `Elicitation` | 状態は変えず、ダイアログ表示中として記録 (プロンプトを入力しない) |
 | `PostToolUse` / `PostToolUseFailure` (同じ tool と入力) / `ElicitationResult` (同じ MCP server) | 状態は変えず、そのダイアログの記録を消す |
+| shell 以外の background task が無い `Stop`、`SessionStart`、`SessionEnd` | ダイアログの記録をすべて消す |
 
 - 状態は Claude Code のプロセスごとに `/run/cloud-coder/sessions/` (tmpfs) へ保存され、tmux pane とプロセス ID で実態と突き合わせます。プロセスが消えた状態ファイル (クラッシュ等で `SessionEnd` が来なかったもの) は無視して削除します。
 - まだ状態を報告していない Claude Code (起動直後やログイン前) は busy 扱いです。hook はログインと trust の後でないと動かないため、ログイン画面のまま放置した Claude Code は VM を止め続けます。初回は attach してログインを済ませてください。
 - 新規起動 (`startup`) は、プロセスも会話も新しく background task も cron も存在しないので、プロンプトが送られるまで `IDLE` とします。起動しただけで放置したセッションが VM を止めなくなるのを防ぐためです。tmux の他の pane の判定はそのまま効き、プロンプトが送られれば `UserPromptSubmit` で `BUSY` に戻ります。同じプロセスで既に記録済みのイベントを、遅れて届いた `SessionStart` で上書きすることはありません。
 - `resume` は cron (`CronCreate`) を復元するため `BUSY` にしています。ただし resume しただけ (ターン未実行) の状態では `idle_prompt` が来ないことを確認したので、イベントが無いまま 10 分経ったら idle とみなします。停止した VM に再接続して見るだけ、という最もよくある使い方で止まらなくなるのを防ぐためです。代わりに、復元された cron のうち 10 分 + grace period より先に発火するものは、VM が止まると発火しません。
 - `Esc` でターンを中断した場合は `Stop` もほかの hook も発火しないため、次のプロンプトまで `BUSY` のまま残ります。
-- ダイアログの記録は、送ったプロンプトをダイアログに入力しないためだけに使い、自動停止の判定には使いません。権限の確認に答えたことを知らせる hook は無いので、許可した tool の実行が終わる (`PostToolUse`) まではダイアログ表示中とみなします (default モードで長いコマンドを許可した後は、その間プロンプトを拒否します)。権限の確認を `Esc` や `No` で断ったときは hook が発火しないので、background task が残っていない `Stop` が来るまで (background の agent はターンの後も権限を求めうるため)、または Claude Code が再起動するまで表示中とみなします (送信を拒否する側に倒す)。`Esc` でターンも中断した場合は `Stop` が来ないので、attach か Remote Control で次のプロンプトを送るまで、MCP / CLI からの送信は拒否され続けます。`PostToolUse` などは tool の呼び出しごとに hook が動くので、journal には書きません。
+- ダイアログの記録は、送ったプロンプトをダイアログに入力しないためだけに使い、自動停止の判定には使いません。権限の確認に答えたことを知らせる hook は無いので、許可した tool の実行が終わる (`PostToolUse`) まではダイアログ表示中とみなします (default モードで長いコマンドを許可した後は、その間プロンプトを拒否します)。権限の確認を `Esc` や `No` で断ったときは hook が発火しないので、shell 以外の background task (ターンの後も権限を求めうる agent など) が残っていない `Stop` が来るまで、または Claude Code が再起動するまで表示中とみなします (送信を拒否する側に倒す)。`Esc` でターンも中断した場合は `Stop` が来ないので、attach か Remote Control で次のプロンプトを送り、そのターンが終わるまで、MCP / CLI からの送信は拒否され続けます。`PostToolUse` などは tool の呼び出しごとに hook が動くので、journal には書きません。
 - 未送信の入力をプロンプト欄に入れたまま grace period を超えて放置すると、新規起動のセッションは停止対象になります。
 - `connect` も grace period を取り消します。`/run/cloud-coder/state.lock` の flock は短いファイル更新の間だけ持ち、clone や Claude Code の起動など時間のかかる処理の間は `/run/cloud-coder/busy/` のマーカー (pid 付き、プロセスが消えたら無効) で busy にします。hook は lock を最大 2 秒だけ待ち、取れなければ lock 無しで状態ファイルを原子的に書き換えます (Claude Code を待たせないため)。
 - `idle_prompt` は Claude Code が応答を終えて約 60 秒間入力が無いときに送られます。ただし Remote Control のセッションで、送られないケースを確認しています (Claude Code 2.1.288。スマホから接続中、あるいはダイアログ表示中と思われる。同じ RC セッションでも別のタイミングでは約 60 秒で送られた)。そのため、`READY` のまま 2 分間イベントが無いセッションも idle とみなします。`Stop` 由来の `READY` は background task も cron も無いと報告された状態なので、`idle_prompt` を待つ場合と同じ根拠で判定しています。`StopFailure` 由来の `READY` は task の情報が無いので、`idle_prompt` を待ちます。

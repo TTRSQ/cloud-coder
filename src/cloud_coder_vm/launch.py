@@ -339,7 +339,7 @@ def _typeable_state(pane_id: str, claude_pid: int) -> session_state.SessionState
     if state.open_dialogs:
         raise LaunchError(
             "Claude Code in this session shows a permission prompt or a question, or one "
-            "was dismissed during its current turn; prompt not sent"
+            "was dismissed and Claude Code has not finished its work since; prompt not sent"
         )
     return state
 

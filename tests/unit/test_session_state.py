@@ -111,7 +111,12 @@ def test_elicitation_closes_with_its_result():
 
 @pytest.mark.parametrize(
     "payload",
-    [stop(), {"hook_event_name": "SessionStart"}, {"hook_event_name": "SessionEnd"}],
+    [
+        stop(),
+        stop(tasks=[{"type": "shell"}]),  # a background shell asks for nothing
+        {"hook_event_name": "SessionStart"},
+        {"hook_event_name": "SessionEnd"},
+    ],
 )
 def test_end_of_all_work_closes_every_dialog(payload):
     # a dialog denied with Esc or "No" fires no hook event
@@ -121,7 +126,8 @@ def test_end_of_all_work_closes_every_dialog(payload):
 @pytest.mark.parametrize(
     "payload",
     [
-        stop(tasks=[{"type": "agent"}]),  # a background agent may still show a dialog
+        stop(tasks=[{"type": "shell"}, {"type": "agent"}]),  # an agent may still ask
+        stop(tasks=[{"type": "new-kind"}]),
         stop(missing=True),
         {"hook_event_name": "StopFailure"},
         {"hook_event_name": "UserPromptSubmit"},  # a queued prompt does not close one
