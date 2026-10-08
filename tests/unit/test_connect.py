@@ -121,6 +121,29 @@ def test_cli_close_starts_the_vm_and_closes_the_session(monkeypatch, capsys):
     assert commands[0][2:] == ["close-session", "--session", "cc-a-2"]
 
 
+@pytest.mark.parametrize(
+    ("flags", "agent_flags"),
+    [
+        (["--dry-run"], ["--dry-run"]),
+        (["--discard-ignored"], ["--discard-ignored"]),
+        (["--dry-run", "--discard-ignored"], ["--dry-run", "--discard-ignored"]),
+    ],
+)
+def test_cli_close_passes_dry_run_and_discard_ignored(monkeypatch, capsys, flags, agent_flags):
+    monkeypatch.setattr(cli, "resolve_config", lambda args: Config(project="p"))
+    monkeypatch.setattr(connect, "up", lambda cfg, requested: None)
+    commands = []
+
+    def fake_run(cfg, command, **kw):
+        commands.append(shlex.split(command))
+        return completed('{"session": "cc-a-2", "closable": false}')
+
+    monkeypatch.setattr(ssh, "run", fake_run)
+    assert cli.main(["close", "cc-a-2", *flags]) == 0
+    assert json.loads(capsys.readouterr().out)["closable"] is False
+    assert commands[0][2:] == ["close-session", "--session", "cc-a-2", *agent_flags]
+
+
 def test_cli_reports_agent_errors_on_stderr(monkeypatch, capsys):
     monkeypatch.setattr(cli, "resolve_config", lambda args: Config(project="p"))
 

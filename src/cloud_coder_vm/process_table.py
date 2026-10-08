@@ -1,5 +1,6 @@
 """Snapshot of /proc used to inspect what runs under each tmux pane."""
 
+import contextlib
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -108,3 +109,32 @@ def find_claude_ancestor(pid: int, procs: dict[int, Process]) -> Process | None:
             return proc
         pid = proc.ppid
     return None
+
+
+def _within(target: str, directory: str) -> bool:
+    return target == directory or target.startswith(directory + "/")
+
+
+def processes_using(directory: Path, proc_root: Path = Path("/proc")) -> list[Process]:
+    """Processes (this user's: others' /proc entries cannot be read) whose working
+    directory, root, executable or an open file is ``directory`` or under it."""
+    resolved = os.path.realpath(directory)
+    using = []
+    for entry in os.listdir(proc_root):
+        if not entry.isdigit() or int(entry) == os.getpid():
+            continue
+        base = proc_root / entry
+        links = [base / "cwd", base / "root", base / "exe"]
+        with contextlib.suppress(OSError):
+            links += [base / "fd" / fd for fd in os.listdir(base / "fd")]
+        for link in links:
+            try:
+                target = os.readlink(link)
+            except OSError:
+                continue
+            if _within(target, resolved):
+                proc = read_process(int(entry), proc_root)
+                if proc is not None:
+                    using.append(proc)
+                break
+    return using

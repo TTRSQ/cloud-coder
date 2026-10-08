@@ -1,9 +1,12 @@
 import contextlib
+import json
+import shutil
 import subprocess
 
 import pytest
 
 from cloud_coder_vm import launch, paths, session_close, session_registry
+from cloud_coder_vm.regenerable_caches import NOT_A_CACHE
 from cloud_coder_vm.session_close import CloseError, close
 from cloud_coder_vm.session_registry import LogicalSession
 from cloud_coder_vm.system_files import VmConfig
@@ -63,6 +66,7 @@ def test_a_clean_worktree_session_is_removed_with_its_branch(home):
         "session": "cc-app-2",
         "tmux": "absent",
         "worktree": "removed",
+        "deleted_caches": [],
         "branch": "deleted",
     }
     assert not (home / "git" / "wt" / "app-2").exists()
@@ -150,3 +154,197 @@ def test_a_new_task_does_not_reuse_the_name_of_a_closed_pushed_session(home):
         now=0,
     )
     assert target.session.name == "cc-app-3"
+
+
+TAG = b"Signature: 8a477f597d28d172789f06886806bc55\n"
+WORKTREE = ("git", "wt", "app-2")
+
+
+def ignore(home, *patterns):
+    """Ignore ``patterns`` in every worktree of the clone, as a .gitignore would."""
+    exclude = home / "git" / "app" / ".git" / "info" / "exclude"
+    exclude.write_text("".join(f"{p}\n" for p in patterns))
+
+
+def make_caches(worktree):
+    """What `uv sync`, `pytest` and `cargo build` (in a crate in a subdirectory) leave."""
+    (worktree / ".venv" / "bin").mkdir(parents=True)
+    (worktree / ".venv" / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    (worktree / "pkg" / "__pycache__").mkdir(parents=True)
+    (worktree / "pkg" / "__pycache__" / "m.cpython-312.pyc").write_bytes(b"\0" * 5000)
+    target = worktree / "crates" / "a" / "target"
+    (target / "debug" / ".fingerprint").mkdir(parents=True)
+    (target / "debug" / "deps").mkdir()
+    (target / "debug" / "deps" / "a-0123").write_bytes(b"\0" * 100_000)
+    (target / "CACHEDIR.TAG").write_bytes(TAG)
+
+
+@pytest.fixture
+def caches(home):
+    ignore(home, ".venv/", "__pycache__/", "target", ".env", "out/", "link")
+    make_caches(home.joinpath(*WORKTREE))
+    return home
+
+
+def test_a_worktree_with_only_caches_left_is_closed(caches):
+    result = close(CONFIG, caches, "cc-app-2")
+    assert result["worktree"] == "removed"
+    assert sorted(result["deleted_caches"]) == [".venv/", "crates/a/target/", "pkg/__pycache__/"]
+    assert result["branch"] == "deleted"
+    assert not caches.joinpath(*WORKTREE).exists()
+    assert registered(caches) == {"cc-app-1"}
+
+
+@pytest.mark.parametrize(
+    ("make", "blocker"),
+    [
+        (lambda wt: (wt / ".env").write_text("TOKEN=x"), "ignored file: .env"),
+        (lambda wt: (wt / "out").mkdir() or (wt / "out" / "raw.parquet").write_text(""), "out/"),
+        (
+            lambda wt: (wt / "crates" / "a" / "target" / "results.csv").write_text("1"),
+            "crates/a/target/ (has results.csv",
+        ),
+        (lambda wt: (wt / ".venv" / "notes.db").write_text(""), ".venv/ (has notes.db"),
+        (  # a cache inside protected data does not make the data a cache
+            lambda wt: shutil.copytree(wt / "crates" / "a" / "target", wt / "out" / "target"),
+            "ignored file: out/",
+        ),
+    ],
+)
+def test_anything_but_caches_keeps_everything(caches, make, blocker):
+    worktree = caches.joinpath(*WORKTREE)
+    make(worktree)
+    with pytest.raises(CloseError, match="nothing was closed") as refused:
+        close(CONFIG, caches, "cc-app-2")
+    assert blocker in str(refused.value)
+    assert "--discard-ignored" in str(refused.value)
+    assert (worktree / ".venv" / "pyvenv.cfg").exists()  # not even the caches go
+    assert (worktree / "crates" / "a" / "target" / "CACHEDIR.TAG").exists()
+    assert registered(caches) == {"cc-app-1", "cc-app-2"}
+
+
+def test_a_symlink_to_a_target_elsewhere_is_kept_and_refuses(caches):
+    worktree = caches.joinpath(*WORKTREE)
+    shared = caches / "shared-target"
+    shutil.move(worktree / "crates" / "a" / "target", shared)
+    (worktree / "crates" / "a" / "target").symlink_to(shared)
+    with pytest.raises(CloseError, match=r"crates/a/target \(a symlink\)"):
+        close(CONFIG, caches, "cc-app-2")
+    assert (shared / "CACHEDIR.TAG").exists()
+
+
+def test_discard_ignored_deletes_other_ignored_files_but_not_what_links_point_to(caches):
+    worktree = caches.joinpath(*WORKTREE)
+    (worktree / ".env").write_text("TOKEN=x")
+    outside = caches / "outside"
+    outside.mkdir()
+    (outside / "keep").write_text("data")
+    (worktree / "link").symlink_to(outside)
+    result = close(CONFIG, caches, "cc-app-2", discard_ignored=True)
+    assert result["worktree"] == "removed"
+    assert sorted(result["discarded_ignored"]) == [".env", "link"]
+    assert (outside / "keep").read_text() == "data"
+
+
+@pytest.mark.parametrize("change", ["uncommitted", "untracked", "unpushed"])
+def test_discard_ignored_never_discards_uncommitted_or_unpushed_work(caches, change):
+    worktree = caches.joinpath(*WORKTREE)
+    (worktree / ".env").write_text("TOKEN=x")
+    (worktree / "f.txt").write_text("work")
+    if change != "untracked":
+        git("add", "f.txt", cwd=worktree)
+    if change == "unpushed":
+        git("commit", "-q", "-m", "work", cwd=worktree)
+    with pytest.raises(CloseError, match="nothing was closed") as refused:
+        close(CONFIG, caches, "cc-app-2", discard_ignored=True)
+    assert "--discard-ignored" not in str(refused.value)
+    assert (worktree / ".env").exists() and (worktree / "f.txt").exists()
+    assert registered(caches) == {"cc-app-1", "cc-app-2"}
+
+
+def test_dry_run_reports_blockers_caches_and_size_and_changes_nothing(caches):
+    worktree = caches.joinpath(*WORKTREE)
+    (worktree / ".env").write_text("TOKEN=x")
+    before = sorted(caches.joinpath("git").rglob("*"))
+    preview = close(CONFIG, caches, "cc-app-2", dry_run=True)
+    assert sorted(caches.joinpath("git").rglob("*")) == before
+    assert registered(caches) == {"cc-app-1", "cc-app-2"}
+    assert preview["dry_run"] is True and preview["closable"] is False
+    assert preview["worktree"] == str(worktree)
+    assert preview["tmux"] == "absent"
+    assert preview["blockers"] == [f"ignored file: .env ({NOT_A_CACHE})"]
+    sizes = {c["path"]: c["bytes"] for c in preview["caches"]}
+    assert set(sizes) == {".venv/", "crates/a/target/", "pkg/__pycache__/"}
+    assert sizes["crates/a/target/"] >= 100_000
+    assert preview["reclaimable_bytes"] >= sum(sizes.values())
+    discarding = close(CONFIG, caches, "cc-app-2", dry_run=True, discard_ignored=True)
+    assert discarding["closable"] is True and discarding["discarded_ignored"] == [".env"]
+
+
+def test_dry_run_of_the_main_checkout(home):
+    preview = close(CONFIG, home, "cc-app-1", dry_run=True)
+    assert preview["worktree"] == "kept (main checkout)"
+    assert preview["closable"] is True and preview["reclaimable_bytes"] == 0
+
+
+@pytest.fixture
+def sleeper(home):
+    proc = subprocess.Popen(["sleep", "60"], cwd=home.joinpath(*WORKTREE))
+    yield proc
+    proc.kill()
+    proc.wait()
+
+
+def test_a_process_using_the_worktree_keeps_everything(home, sleeper):
+    with pytest.raises(CloseError, match=f"process {sleeper.pid} \\(sleep\\) uses the worktree"):
+        close(CONFIG, home, "cc-app-2")
+    assert home.joinpath(*WORKTREE).exists()
+    assert registered(home) == {"cc-app-1", "cc-app-2"}
+
+
+def test_a_process_left_after_the_tmux_session_ends_keeps_the_worktree(home, sleeper, monkeypatch):
+    """A process of the session's own panes that survives ending them (nohup, say)."""
+    monkeypatch.setattr(session_close, "session_pids", lambda name: {sleeper.pid})
+    monkeypatch.setattr(session_close, "EXIT_WAIT_SECONDS", 0.2)
+    with pytest.raises(CloseError, match="processes still use .* the worktree is kept"):
+        close(CONFIG, home, "cc-app-2")
+    assert home.joinpath(*WORKTREE).exists()
+    assert registered(home) == {"cc-app-1", "cc-app-2"}
+
+
+def test_a_mount_point_in_the_worktree_keeps_everything(home, monkeypatch, tmp_path):
+    worktree = home.joinpath(*WORKTREE)
+    mountinfo = tmp_path / "mountinfo"
+    mountinfo.write_text(
+        "22 1 8:1 / / rw - ext4 /dev/sda1 rw\n"
+        f"90 22 0:50 / {worktree}/data\\040set rw - tmpfs tmpfs rw\n"
+        f"91 22 0:51 / {worktree}-other rw - tmpfs tmpfs rw\n"
+    )
+    monkeypatch.setattr(session_close, "MOUNTINFO", mountinfo)
+    assert session_close.mount_points_under(worktree, mountinfo) == [f"{worktree}/data set"]
+    monkeypatch.setattr(session_close, "mount_points_under", lambda d: [f"{worktree}/data set"])
+    with pytest.raises(CloseError, match="mount point: .*data set"):
+        close(CONFIG, home, "cc-app-2", discard_ignored=True)
+    assert worktree.exists()
+
+
+def test_parse_status_keeps_renames_and_ignored_apart():
+    output = "R  new.py\0old.py\0?? a b.txt\0!! target/\0!! x.pyc\0 M f\0"
+    assert session_close.parse_status(output) == (
+        ["new.py", "a b.txt", "f"],
+        ["target/", "x.pyc"],
+    )
+
+
+def test_cli_dry_run_prints_the_preview(caches, monkeypatch, capsys):
+    from cloud_coder_vm import cli as vm_cli
+
+    monkeypatch.setattr(vm_cli, "_load_config", lambda: CONFIG)
+    monkeypatch.setattr(vm_cli.Path, "home", classmethod(lambda cls: caches))
+    assert vm_cli.main(["close-session", "--session", "cc-app-2", "--dry-run"]) == 0
+    assert json.loads(capsys.readouterr().out)["closable"] is True
+    (caches.joinpath(*WORKTREE) / ".env").write_text("x")
+    assert vm_cli.main(["close-session", "--session", "cc-app-2"]) == 1
+    assert "ignored file: .env" in json.loads(capsys.readouterr().out)["error"]
+    assert vm_cli.main(["close-session", "--session", "cc-app-2", "--discard-ignored"]) == 0
+    assert json.loads(capsys.readouterr().out)["discarded_ignored"] == [".env"]

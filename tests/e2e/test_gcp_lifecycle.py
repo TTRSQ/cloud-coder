@@ -120,6 +120,30 @@ def test_close_removes_a_clean_worktree_session(cc):
     assert task["session"] not in {s["name"] for s in st["sessions"]}
 
 
+def test_close_takes_caches_with_it_but_not_other_ignored_files(cc):
+    """This repository ignores .venv/ and __pycache__/ (caches) and dist/ (not one)."""
+    task = last_json(cc("connect", REPO, "--no-claude", "--new", "--no-attach").stdout)
+    wt = task["workdir"]
+    vm_shell(
+        f"cd {wt} && python3 -m venv --without-pip .venv && python3 -m compileall -q src "
+        "&& mkdir -p dist && echo keep > dist/notes.txt"
+    )
+    preview = json.loads(cc("close", task["session"], "--dry-run").stdout)
+    assert not preview["closable"]
+    assert any("dist/" in b for b in preview["blockers"])
+    assert {".venv/"} <= {c["path"] for c in preview["caches"]}
+    refused = cc("close", task["session"], check=False)
+    assert refused.returncode != 0 and "nothing was closed" in refused.stderr
+    assert vm_shell(f"cat {wt}/dist/notes.txt").strip() == "keep"
+    # --discard-ignored still keeps a commit that is on no remote
+    vm_shell(f"cd {wt} && git -c user.name=e2e -c user.email=e2e@x commit -q --allow-empty -m x")
+    refused = cc("close", task["session"], "--discard-ignored", check=False)
+    assert refused.returncode != 0 and "not on any remote" in refused.stderr
+    vm_shell(f"cd {wt} && git reset -q --hard HEAD~1 && rm -r dist")
+    closed = last_json(cc("close", task["session"]).stdout)
+    assert closed["worktree"] == "removed" and ".venv/" in closed["deleted_caches"]
+
+
 def test_tmux_run_by_claudes_tools_cannot_reach_the_sessions(cc):
     session = last_json(cc("connect", REPO, "--no-attach").stdout)["session"]
     pid = vm_shell(f"pgrep -n -f 'remote-control {session}( |$)'").strip()

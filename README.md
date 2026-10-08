@@ -71,7 +71,8 @@ cloud-coder connect --session cc-REPO-2             # セッション名を指�
 cloud-coder connect REPO -p "テストを直して" --detach         # タスクを新しいセッションで始めて放置 (終われば自動停止)
 cloud-coder connect --session cc-REPO-2 -p "続けて" --detach  # そのセッションの会話の続きとして指示する
 cloud-coder connect REPO --prompt-file task.md       # プロンプトをファイルから (- で標準入力)
-cloud-coder close cc-REPO-2                         # セッションを閉じて worktree を片付ける
+cloud-coder close cc-REPO-2 --dry-run               # 閉じたら何が消え、何が止めるかを確かめる (何も変えない)
+cloud-coder close cc-REPO-2                         # セッションを閉じて worktree を片付ける (target/ などのキャッシュも消える)
 cloud-coder status                                  # VM / セッション / 自動停止の可否
 cloud-coder stop                                    # VM を停止する (disk は残る)
 cloud-coder up                                      # VM の作成・起動と agent のインストールだけ行う
