@@ -145,13 +145,13 @@ def test_agent_errors_reach_the_client(monkeypatch):
 
     def dialog(*a, **kw):
         raise connect.AgentError(
-            "Claude Code in this session is waiting for an answer to a permission prompt or "
-            "a question; prompt not sent"
+            "Claude Code in this session shows a permission prompt or a question, or one "
+            "was dismissed during its current turn; prompt not sent"
         )
 
     monkeypatch.setattr(connect, "launch", dialog)
     result = call("send_prompt", {"session": "cc-a-1", "text": "go"})
-    assert result.is_error and "a question; prompt not sent" in result.content[0].text
+    assert result.is_error and "turn; prompt not sent" in result.content[0].text
     assert "Do not resend" in result.content[0].text
 
 

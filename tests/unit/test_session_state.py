@@ -109,12 +109,24 @@ def test_elicitation_closes_with_its_result():
     assert not next_dialogs(shown, {"hook_event_name": "ElicitationResult", "mcp_server_name": "a"})
 
 
-@pytest.mark.parametrize("event", ["Stop", "StopFailure", "SessionStart", "SessionEnd"])
-def test_end_of_turn_closes_every_dialog(event):
+@pytest.mark.parametrize(
+    "payload",
+    [stop(), {"hook_event_name": "SessionStart"}, {"hook_event_name": "SessionEnd"}],
+)
+def test_end_of_all_work_closes_every_dialog(payload):
     # a dialog denied with Esc or "No" fires no hook event
-    assert next_dialogs(["x"], {"hook_event_name": event}) == []
+    assert next_dialogs(["x"], payload) == []
 
 
-@pytest.mark.parametrize("event", ["UserPromptSubmit", "Notification"])
-def test_other_events_keep_dialogs(event):
-    assert next_dialogs(["x"], {"hook_event_name": event}) == ["x"]
+@pytest.mark.parametrize(
+    "payload",
+    [
+        stop(tasks=[{"type": "agent"}]),  # a background agent may still show a dialog
+        stop(missing=True),
+        {"hook_event_name": "StopFailure"},
+        {"hook_event_name": "UserPromptSubmit"},  # a queued prompt does not close one
+        IDLE_PROMPT,
+    ],
+)
+def test_other_events_keep_dialogs(payload):
+    assert next_dialogs(["x"], payload) == ["x"]

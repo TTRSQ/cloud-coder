@@ -94,7 +94,9 @@ def dialog_id(payload: dict) -> str:
 
 def next_dialogs(dialogs: list[str], payload: dict) -> list[str]:
     """The dialogs still shown after a hook event. A dialog denied with Esc or "No" fires
-    no event: it counts as shown until the turn ends, which errs towards not typing."""
+    no event: it counts as shown until a turn ends with no background task left (one may
+    still ask for a permission after the turn) or Claude Code restarts, which errs
+    towards not typing."""
     event = payload.get("hook_event_name")
     if event in DIALOG_SHOWN:
         return [*dialogs, dialog_id(payload)]
@@ -105,7 +107,9 @@ def next_dialogs(dialogs: list[str], payload: dict) -> list[str]:
             remaining.remove(closed)
             return remaining
         return dialogs
-    if event in ("Stop", "StopFailure", "SessionStart", "SessionEnd"):
+    if event == "Stop" and payload.get("background_tasks") == []:
+        return []
+    if event in ("SessionStart", "SessionEnd"):
         return []
     return dialogs
 

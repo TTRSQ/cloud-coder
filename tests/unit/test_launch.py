@@ -531,7 +531,7 @@ def test_nothing_is_typed_into_a_dialog(claude, shown):
     """Enter would answer the dialog (seen with Claude Code 2.1.294: it approved a Write)."""
     claude.event({"hook_event_name": "UserPromptSubmit"})
     claude.event(shown)
-    with pytest.raises(LaunchError, match="permission prompt or a question; prompt not sent"):
+    with pytest.raises(LaunchError, match="permission prompt or a question, or one"):
         claude.send("go")
     assert claude.ops == []
 
@@ -547,9 +547,13 @@ def test_prompt_is_queued_once_the_dialog_is_answered(claude):
     assert claude.send("go") == "queued"
 
 
-def test_a_dialog_denied_without_an_event_blocks_until_the_turn_ends(claude):
+def test_a_dialog_denied_without_an_event_blocks_until_all_work_ends(claude):
     claude.event({"hook_event_name": "UserPromptSubmit"})
     claude.event({"hook_event_name": "PermissionRequest", **WRITE})  # then Esc: no event
+    with pytest.raises(LaunchError, match="prompt not sent"):
+        claude.send("go")
+    # the turn ends while a background agent, which may be the one asking, still runs
+    claude.event({**STOP, "background_tasks": [{"type": "agent"}]})
     with pytest.raises(LaunchError, match="prompt not sent"):
         claude.send("go")
     claude.event(STOP)
