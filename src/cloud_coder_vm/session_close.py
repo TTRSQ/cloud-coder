@@ -118,7 +118,7 @@ def inspect(workdir: Path, discard_ignored: bool, ended_pids: set[int]) -> Inspe
         return found
     changed, ignored = parse_status(status.stdout)
     found.blockers += [f"uncommitted or untracked: {path}" for path in changed]
-    for path in dict.fromkeys(regenerable_caches.cache_root(p) for p in ignored):
+    for path in dict.fromkeys(judged_path(p, workdir) for p in ignored):
         reason = regenerable_caches.why_not_a_cache(workdir / path)
         if reason is None:
             found.caches.append(path)
@@ -138,6 +138,17 @@ def inspect(workdir: Path, discard_ignored: bool, ended_pids: set[int]) -> Inspe
         if proc.pid not in ended_pids
     ]
     return found
+
+
+def judged_path(ignored: str, workdir: Path) -> str:
+    """The path to judge for an ignored path git listed: the cache directory around it
+    (see `regenerable_caches.cache_root`) unless git tracks a file in that directory,
+    which deleting it would take along."""
+    root = regenerable_caches.cache_root(ignored)
+    if root == ignored:
+        return ignored
+    tracked = _git(["ls-files", "-z", "--", root], workdir)
+    return root if tracked.returncode == 0 and not tracked.stdout else ignored
 
 
 def git_repository_in(path: Path) -> str | None:

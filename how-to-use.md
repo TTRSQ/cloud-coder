@@ -216,7 +216,7 @@ cloud-coder close cc-REPO-2                       # 終わったセッション�
     | `__pycache__/`、`*.pyc` | `.pyc` しか無い |
     | `.pytest_cache/`、`.ruff_cache/`、`.mypy_cache/` | `CACHEDIR.TAG` がある |
 
-    リポジトリの `.gitignore` に書かれていなくても、ツールが自分で置いた `.gitignore` (`*`) で ignored になっていれば、ディレクトリ全体を 1 つとして判定します。
+    リポジトリの `.gitignore` に書かれていなくても、ツールが自分で置いた `.gitignore` (`*`) で ignored になっていれば、ディレクトリ全体を 1 つとして判定します (中に Git 管理下のファイルがあるディレクトリは除き、ignored のパスを 1 つずつ判定します)。
 
   - 次のどれかがあると、何も消さずにエラーにします。エラーには原因のパスが出ます。
     - 未コミットの変更 (untracked のファイルを含む) と、どの remote にも無いコミット

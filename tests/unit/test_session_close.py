@@ -422,3 +422,26 @@ def test_a_process_that_only_maps_a_file_of_the_worktree_keeps_everything(caches
         proc.kill()
         proc.wait()
     assert library.exists()
+
+
+@pytest.mark.parametrize("discard_ignored", [False, True])
+def test_a_cache_named_directory_with_tracked_files_is_not_judged_whole(home, discard_ignored):
+    """A repository that commits node_modules (a JavaScript GitHub Action, say): only
+    the ignored paths in it are judged, and nothing tracked is deleted."""
+    worktree = home.joinpath(*WORKTREE)
+    (worktree / "package.json").write_text("{}")
+    (worktree / "node_modules" / "dep").mkdir(parents=True)
+    (worktree / "node_modules" / "dep" / "index.js").write_text("module.exports = 1\n")
+    git("add", "package.json", "node_modules", cwd=worktree)
+    git("commit", "-q", "-m", "vendor", cwd=worktree)
+    git("push", "-q", "origin", "cloud-coder/cc-app-2", cwd=worktree)
+    ignore(home, ".env")
+    (worktree / "node_modules" / "dep" / ".env").write_text("TOKEN=x")
+    preview = close(CONFIG, home, "cc-app-2", dry_run=True, discard_ignored=discard_ignored)
+    assert preview["caches"] == []
+    if not discard_ignored:
+        assert preview["blockers"] == [f"ignored file: node_modules/dep/.env ({NOT_A_CACHE})"]
+        return
+    assert preview["discarded_ignored"] == ["node_modules/dep/.env"]
+    close(CONFIG, home, "cc-app-2", discard_ignored=True)
+    assert not worktree.exists()  # removed by git: index.js is on the remote
