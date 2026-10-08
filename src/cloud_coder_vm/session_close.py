@@ -109,8 +109,17 @@ def inspect(workdir: Path, discard_ignored: bool, ended_pids: set[int]) -> Inspe
     """Paths are relative to ``workdir``, as git lists them. Processes in
     ``ended_pids`` are ended with the session's tmux session, so they do not block."""
     found = Inspection()
+    # --no-optional-locks: refreshing the index would take its lock, and the session's
+    # own `git add` or `git commit` in this worktree fails while it is held
     status = _git(
-        ["status", "--porcelain=v1", "-z", "--untracked-files=normal", "--ignored=matching"],
+        [
+            "--no-optional-locks",
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=normal",
+            "--ignored=matching",
+        ],
         workdir,
     )
     if status.returncode != 0:
