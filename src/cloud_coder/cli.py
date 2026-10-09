@@ -134,7 +134,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser(
         "api",
         parents=[common],
-        help="serve the MCP server over HTTP at /mcp (tokens and public URL from the environment)",
+        help="serve the MCP server over HTTP at /mcp (OAuth settings from the environment)",
     )
     p.add_argument("--host", default="127.0.0.1", help="address to bind (default 127.0.0.1)")
     p.add_argument("--port", type=int, default=8787, help="port to bind (default 8787)")

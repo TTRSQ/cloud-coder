@@ -2,7 +2,7 @@
 # Prepare gcloud's SSH key and the cloud-coder config, then serve the HTTP API.
 #   CLOUD_CODER_SSH_KEY_FILE   the private key (mounted from Secret Manager)
 #   CLOUD_CODER_CONFIG_YAML    the contents of config.yaml
-#   CLOUD_CODER_API_*_TOKENS   bearer tokens (the server refuses to start without one)
+#   CLOUD_CODER_OAUTH_*, CLOUD_CODER_GOOGLE_*  OAuth settings (the server refuses to start without them)
 #   CLOUD_CODER_PUBLIC_URL     the URL clients reach the API at (the OAuth issuer)
 set -eu
 

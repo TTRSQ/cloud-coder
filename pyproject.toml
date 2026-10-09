@@ -5,6 +5,7 @@ description = "Run Claude Code workers on a GCE VM over tmux, and stop the VM au
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "httpx2>=2.13",
     "mcp>=2.3,<3",
     "pydantic>=2",
     "pyyaml>=6.0",
