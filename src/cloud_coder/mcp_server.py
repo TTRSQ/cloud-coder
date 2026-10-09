@@ -59,6 +59,8 @@ refused, do not resend it; tell the user.
   question it is waiting on.
 - `resource_usage` shows the VM's CPU, memory and disk usage now; it does not start
   the VM.
+- `close_session` ends a session for good, even while Claude Code is BUSY; call it only
+  when the user asks. When it is refused, tell the user what blocks it; do not retry.
 - `stop` stops the VM at once, interrupting any work; normally let it stop itself.
 """
 
@@ -137,7 +139,7 @@ class BusyReads:
 READ_ONLY = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 STARTS = ToolAnnotations(destructive_hint=False, idempotent_hint=True, open_world_hint=False)
 ACTS = ToolAnnotations(destructive_hint=False, open_world_hint=False)
-STOPS = ToolAnnotations(destructive_hint=True, idempotent_hint=True, open_world_hint=False)
+ENDS = ToolAnnotations(destructive_hint=True, idempotent_hint=True, open_world_hint=False)
 
 # Failures the tools expect; anything else is a bug and reaches the client only as
 # "Error executing tool".
@@ -321,7 +323,21 @@ def build_server(
         with tool_call("resource_usage"):
             return read_resource_usage(cfg)
 
-    @server.tool(annotations=STOPS)
+    @server.tool(annotations=ENDS)
+    def close_session(
+        session: Annotated[str, Field(description="session name from `status`")],
+    ) -> dict:
+        """End the session for good: end its tmux session and Claude Code in it (even
+        while BUSY), remove its git worktree and the branch when that is pushed, and
+        remove it from `status`. The main checkout of a repository is kept. Refused, with
+        nothing closed, while the worktree has uncommitted or unpushed work or ignored
+        files other than regenerable caches: tell the user what blocks it. A session
+        that is already closed is reported as unknown. Requires a ready VM (see `up`)."""
+        with write_call("close_session"):
+            guards.require_ready(cfg)
+            return connect.close_session(cfg, session)
+
+    @server.tool(annotations=ENDS)
     def stop() -> dict:
         """Stop the VM now (its disk is kept) and return without waiting. Interrupts
         any running work; the VM also stops by itself once every session is idle."""

@@ -46,12 +46,14 @@ def test_tools_never_take_the_target_vm():
         "send_prompt",
         "read_session",
         "resource_usage",
+        "close_session",
     }
     for tool in tools.values():
         assert not {"project", "zone", "instance"} & set(tool.input_schema.get("properties", {}))
     assert tools["status"].annotations.read_only_hint
     assert tools["resource_usage"].annotations.read_only_hint
     assert tools["stop"].annotations.destructive_hint
+    assert tools["close_session"].annotations.destructive_hint
 
 
 def test_up_returns_without_waiting(monkeypatch):
@@ -74,8 +76,13 @@ def test_up_returns_without_waiting(monkeypatch):
 def test_session_tools_need_a_ready_vm(monkeypatch):
     monkeypatch.setattr(connect, "up", lambda cfg, wait: connect.UpResult("started", False, False))
     monkeypatch.setattr(connect, "launch", lambda *a, **kw: pytest.fail("launched"))
-    result = call("start_session", {"repo": "https://github.com/o/r.git"})
-    assert result.is_error and "call `up`" in result.content[0].text
+    monkeypatch.setattr(connect, "close_session", lambda *a, **kw: pytest.fail("closed"))
+    for name, arguments in [
+        ("start_session", {"repo": "https://github.com/o/r.git"}),
+        ("close_session", {"session": "cc-a-2"}),
+    ]:
+        result = call(name, arguments)
+        assert result.is_error and "call `up`" in result.content[0].text
 
 
 def test_send_prompt_launches_the_session_without_agent_forwarding(monkeypatch):
@@ -200,6 +207,36 @@ def test_resource_usage_does_not_start_or_reach_a_stopped_vm(monkeypatch):
 def test_stop_does_not_wait(monkeypatch):
     monkeypatch.setattr(gce, "stop", lambda cfg, wait: gce.STOPPING if not wait else gce.STOPPED)
     assert result_json(call("stop")) == {"vm": "stopping"}
+
+
+def test_close_session_runs_the_vm_agent_close_without_discarding(monkeypatch):
+    """Only the safe close: ignored files other than caches are never discarded over MCP
+    (that stays a decision of a person at the CLI)."""
+    monkeypatch.setattr(connect, "up", lambda cfg, wait: connect.UpResult("running", True, False))
+    commands = []
+
+    def fake_run(cmd, **kw):
+        commands.append(cmd)
+        out = {"session": "cc-a-2", "tmux": "killed", "worktree": "removed"}
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(out), stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = result_json(call("close_session", {"session": "cc-a-2"}))
+    assert result == {"session": "cc-a-2", "tmux": "killed", "worktree": "removed"}
+    [remote] = [arg for cmd in commands for arg in cmd if arg.startswith("--command=")]
+    assert remote.endswith("close-session --session cc-a-2")
+
+
+def test_a_refused_close_reaches_the_client(monkeypatch):
+    monkeypatch.setattr(connect, "up", lambda cfg, wait: connect.UpResult("running", True, False))
+    refusal = {"error": "/w/cc-a-2 has uncommitted or untracked: x.py; nothing was closed"}
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, stdout=json.dumps(refusal)),
+    )
+    result = call("close_session", {"session": "cc-a-2"})
+    assert result.is_error and "uncommitted or untracked: x.py" in result.content[0].text
 
 
 @pytest.mark.parametrize(

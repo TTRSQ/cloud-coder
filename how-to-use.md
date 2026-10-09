@@ -227,7 +227,8 @@ cloud-coder close cc-REPO-2                       # 終わったセッション�
     - worktree の中の mount point
     - そのセッションの tmux の外で、worktree を使っているプロセス (worktree を作業ディレクトリにしている、そこの実行ファイルを実行している、そこのファイルを開いているか mmap している。例: 別の端末から起動した研究プロセスやビルド、worktree の `.venv/bin/python` で動いているスクリプト)
   - `--dry-run` を付けると、何も変えずに結果だけを JSON で出します。`closable` (閉じられるか)、`blockers` (閉じるのを止めるもの)、`caches` / `caches_bytes` (一緒に消えるキャッシュとその大きさ)、`worktree_size` (閉じたときに worktree 全体で空く容量の見込み。外から hard link されているファイルは数えません)、`tmux` と `ended_processes` (close で終了する tmux session と、その中で Claude Code とシェル以外に動いているプロセス) が分かります。
-  - `--discard-ignored` を付けると、キャッシュ以外の ignored のファイルも消して閉じます (symlink はリンク自体だけを消します)。`.env` や `out/` も消えるので、`--dry-run --discard-ignored` で `discarded_ignored` を確かめてから使ってください。未コミットの変更、push していないコミット、ignored のパスの中の Git リポジトリ (`.git`)、mount point、worktree を使っているプロセスがあるときは、このオプションでもエラーにします。close のエラーはこのオプションを案内しません (消してよいかは人が判断するため)。CLI だけのオプションで、MCP / HTTP API からは close 自体を使えません。
+  - `--discard-ignored` を付けると、キャッシュ以外の ignored のファイルも消して閉じます (symlink はリンク自体だけを消します)。`.env` や `out/` も消えるので、`--dry-run --discard-ignored` で `discarded_ignored` を確かめてから使ってください。未コミットの変更、push していないコミット、ignored のパスの中の Git リポジトリ (`.git`)、mount point、worktree を使っているプロセスがあるときは、このオプションでもエラーにします。close のエラーはこのオプションを案内しません (消してよいかは人が判断するため)。CLI だけのオプションです。
+  - MCP / HTTP API の `close_session` tool でも閉じられます。`close` (オプションなし) と同じ動作で、`--dry-run` と `--discard-ignored` は使えません。
   - 閉じるときは、tmux session を終了した後、worktree を使うプロセスが終わるのを最大 15 秒待ち、もう一度全部を確かめてから、キャッシュ (と `--discard-ignored` の ignored ファイル) を消します。そのうえで worktree にコミット済みのファイル以外が何も残っていないことを確かめてから `git worktree remove` (`--force` なし) で削除します。この途中で何か見つかったときは、tmux session は終了済み (キャッシュを消した後なら、キャッシュも削除済み) ですが、worktree と登録は残します。
   - Docker container が bind mount で worktree を使っている場合は検出できません。container を止めてから閉じてください。
   - 以前の版が既定の tmux server で起動したセッションがまだ動いているときもエラーにします ([README の tmux server の分離](README.md#tmux-server-の分離))。
@@ -273,7 +274,7 @@ npx @modelcontextprotocol/inspector --cli cloud-coder mcp \
   --method tools/call --tool-name read_session --tool-arg session=cc-REPO-1 --tool-arg lines=50
 ```
 
-- `status` と `read_session` と `resource_usage` は VM を起動しません。`up` / `start_session` / `send_prompt` は VM を起動し、`stop` は止めます。
+- `status` と `read_session` と `resource_usage` は VM を起動しません。`up` / `start_session` / `send_prompt` / `close_session` は VM を起動し、`stop` は止めます。
 - tool がエラーを返すと、Inspector は終了コード 0 以外で終わります (例: VM が止まっているときの `read_session`)。
 - `cloud-coder mcp` にオプションを付けるときは、server のコマンドの後に `--` を置き、Inspector のオプションをその後ろに書きます (Inspector CLI では `--` より前が server のコマンドです。`--config` は Inspector 自身のオプションとも重なります)。
 
@@ -330,7 +331,7 @@ Cloud Run に置いた API は `/mcp` で MCP server も提供しているので
    - 認可 URL が `<公開 URL>/mcp/oauth/authorize`、トークン URL が `<公開 URL>/mcp/oauth/token`、コールバック (redirect) URL が `https://chatgpt.com/connector_platform_oauth_redirect` であることを確かめる。
 4. ChatGPT が Google のログインと同意の画面を開くので、allowlist に入れた Google アカウントで続ける。ChatGPT に戻れば接続完了です。
    - 接続できても tool の呼び出しが認証エラーになるときは、Cloud Run のログの `OAuth: refused a token of a Google account not on the allowlist: <数字>` の数字 (`sub`) を Terraform の変数 `oauth_allowed_subs` に入れて apply します (初回はこれで自分の `sub` を知ります)。
-5. 会話でアプリを選び、「cloud-coder の status を見て」のように頼む。`up` / `start_session` / `send_prompt` / `stop` は書き込みの tool なので、ChatGPT が実行前に確認を求めます。
+5. 会話でアプリを選び、「cloud-coder の status を見て」のように頼む。`up` / `start_session` / `send_prompt` / `close_session` / `stop` は書き込みの tool なので、ChatGPT が実行前に確認を求めます。
 6. 作業を頼むと (例: 「cloud-coder で PR を作って」)、ChatGPT は `start_session` の後に開始したことを伝えてターンを終えます。結果は後で「進み具合を見て」「結果を教えて」のように尋ねてください。
 
 - 接続は、ChatGPT が Google の refresh token で access token (約 1 時間) を更新して続きます。
