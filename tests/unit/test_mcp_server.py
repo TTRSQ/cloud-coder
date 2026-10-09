@@ -45,10 +45,12 @@ def test_tools_never_take_the_target_vm():
         "start_session",
         "send_prompt",
         "read_session",
+        "resource_usage",
     }
     for tool in tools.values():
         assert not {"project", "zone", "instance"} & set(tool.input_schema.get("properties", {}))
     assert tools["status"].annotations.read_only_hint
+    assert tools["resource_usage"].annotations.read_only_hint
     assert tools["stop"].annotations.destructive_hint
 
 
@@ -182,6 +184,16 @@ def test_read_session_does_not_start_the_vm(monkeypatch):
         "5 lines"
     )
     assert call("read_session", {"session": "cc-a-1", "lines": 0}).is_error
+
+
+def test_resource_usage_does_not_start_the_vm(monkeypatch):
+    monkeypatch.setattr(gce, "describe", lambda cfg: gce.Vm(gce.STOPPED))
+    monkeypatch.setattr(connect, "up", lambda *a, **kw: pytest.fail("started the VM"))
+    assert result_json(call("resource_usage")) == {
+        "instance": "cloud-coder",
+        "zone": "asia-northeast1-b",
+        "vm": "stopped",
+    }
 
 
 def test_stop_does_not_wait(monkeypatch):

@@ -27,7 +27,7 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from cloud_coder import config as config_mod
-from cloud_coder import connect, deadline, gce, guards
+from cloud_coder import connect, deadline, gce, guards, resource_usage
 from cloud_coder.config import Config
 from cloud_coder_vm.session_state import BUSY
 
@@ -56,6 +56,8 @@ refused, do not resend it; tell the user.
   Code waits for an answer to a permission prompt or a question. `read_session`
   returns the session's recent screen text: Claude Code's answer, its progress, or a
   question it is waiting on.
+- `resource_usage` shows the VM's CPU, memory and disk usage now; it does not start
+  the VM.
 - `stop` stops the VM at once, interrupting any work; normally let it stop itself.
 """
 
@@ -309,6 +311,15 @@ def build_server(
             busy = screen.get("claude_state") == BUSY
             busy_reads.record(target, busy)
             return {**screen, "note": BUSY_NOTE} if busy else screen
+
+    # Named here: the function's own name would hide the module it calls.
+    @server.tool(name="resource_usage", annotations=READ_ONLY)
+    def read_resource_usage() -> dict:
+        """The VM's CPU (utilization over 1 s, load average, cores), memory (used,
+        available, total) and disk usage (per filesystem) now. Does not start the VM: when
+        it is not running only its state is returned."""
+        with tool_call("resource_usage"):
+            return resource_usage.read(cfg)
 
     @server.tool(annotations=STOPS)
     def stop() -> dict:
