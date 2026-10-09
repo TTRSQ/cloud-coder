@@ -1,7 +1,7 @@
 # The HTTP API (`cloud-coder api`) on Cloud Run, reachable from anywhere and protected only
-# by its own bearer tokens (on /mcp also OAuth grants approved with a write token). Secret
-# values are added with gcloud, never through Terraform, so they stay out of the state
-# (see README.md).
+# by its own OAuth grants, which a Google account on the allowlist approves. Secret values
+# are added with gcloud, never through Terraform, so they stay out of the state (see
+# README.md).
 
 resource "google_service_account" "api" {
   account_id   = "cloud-coder-api"
@@ -47,9 +47,16 @@ locals {
     "https://cloud-coder-api-${data.google_project.this.number}.${var.region}.run.app",
   )
   secrets = {
-    read_tokens  = "cloud-coder-api-read-tokens"
-    write_tokens = "cloud-coder-api-write-tokens"
-    ssh_key      = "cloud-coder-api-ssh-key"
+    ssh_key              = "cloud-coder-api-ssh-key"
+    oauth_signing_keys   = "cloud-coder-api-oauth-signing-keys"
+    oauth_client_secret  = "cloud-coder-api-oauth-client-secret"
+    google_client_secret = "cloud-coder-api-google-client-secret"
+  }
+  # Environment variables read from the secrets above.
+  secret_env = {
+    CLOUD_CODER_OAUTH_SIGNING_KEYS   = "oauth_signing_keys"
+    CLOUD_CODER_OAUTH_CLIENT_SECRET  = "oauth_client_secret"
+    CLOUD_CODER_GOOGLE_CLIENT_SECRET = "google_client_secret"
   }
   config_yaml = yamlencode(merge(
     {
@@ -121,20 +128,22 @@ resource "google_cloud_run_v2_service" "api" {
         value = "/secrets/ssh/google_compute_engine"
       }
       env {
-        name = "CLOUD_CODER_API_READ_TOKENS"
-        value_source {
-          secret_key_ref {
-            secret  = google_secret_manager_secret.api["read_tokens"].secret_id
-            version = "latest"
-          }
-        }
+        name  = "CLOUD_CODER_GOOGLE_CLIENT_ID"
+        value = var.google_oauth_client_id
       }
       env {
-        name = "CLOUD_CODER_API_WRITE_TOKENS"
-        value_source {
-          secret_key_ref {
-            secret  = google_secret_manager_secret.api["write_tokens"].secret_id
-            version = "latest"
+        name  = "CLOUD_CODER_OAUTH_ALLOWED_SUBS"
+        value = join(",", var.oauth_allowed_subs)
+      }
+      dynamic "env" {
+        for_each = local.secret_env
+        content {
+          name = env.key
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.api[env.value].secret_id
+              version = "latest"
+            }
           }
         }
       }
@@ -158,6 +167,13 @@ resource "google_cloud_run_v2_service" "api" {
     }
   }
 
+  lifecycle {
+    precondition {
+      condition     = var.google_oauth_client_id != null
+      error_message = "Set google_oauth_client_id (the Google OAuth client that signs in approvers; see README.md)."
+    }
+  }
+
   depends_on = [
     google_secret_manager_secret_iam_member.api,
     google_compute_instance_iam_member.api_vm_operator,
@@ -166,7 +182,7 @@ resource "google_cloud_run_v2_service" "api" {
   ]
 }
 
-# Public: phones, CI and chat bots call it without Google credentials.
+# Public: ChatGPT calls it without Google credentials; OAuth protects /mcp.
 resource "google_cloud_run_v2_service_iam_member" "public" {
   count = length(google_cloud_run_v2_service.api)
 

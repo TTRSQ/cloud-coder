@@ -298,57 +298,46 @@ claude mcp list   # cloud-coder が Connected になっていること
 
 ## HTTP API として使う
 
-`cloud-coder api` は、MCP server を HTTP (`/mcp`、Streamable HTTP) で提供します。stdio で `cloud-coder mcp` を起動できないクライアント (ChatGPT、別の端末の Claude Code) から同じ tool を使えます。token、OAuth、セキュリティの注意は [README の HTTP API](README.md#http-api) にあります。
-
-```bash
-export CLOUD_CODER_API_READ_TOKENS="$(openssl rand -hex 32)"
-export CLOUD_CODER_API_WRITE_TOKENS="$(openssl rand -hex 32)"
-export CLOUD_CODER_PUBLIC_URL=http://localhost:8787
-cloud-coder api   # 127.0.0.1:8787。別の端末で以下を実行する
-
-# Claude Code に登録する (read token なら status と read_session だけ)
-claude mcp add --transport http cloud-coder http://localhost:8787/mcp \
-  --header "Authorization: Bearer $CLOUD_CODER_API_WRITE_TOKENS"
-```
+`cloud-coder api` は、MCP server を HTTP (`/mcp`、Streamable HTTP) で提供します。stdio で `cloud-coder mcp` を起動できないクライアント (ChatGPT) から同じ tool を使えます。`/mcp` は OAuth の access token だけで守られ、承認には allowlist の Google アカウントでのログインが要ります。環境変数、OAuth、セキュリティの注意は [README の HTTP API](README.md#http-api) に、設計は [docs/mcp-oauth.md](docs/mcp-oauth.md) にあります。
 
 - 使い方は stdio の MCP server と同じです: `up` で VM を ready にする → `start_session` → 時間をおいて `status` / `read_session` → `send_prompt` で追加の指示。作業が終われば VM は自動停止します。
-- 状態を見るだけのクライアントには read token を渡してください。read token で書き込みの tool (`up` / `start_session` / `send_prompt` / `stop`) を呼ぶと tool のエラーになります。
+- 別の端末の Claude Code やスクリプトから使うときは、HTTP API ではなく、その端末に cloud-coder を入れて stdio の MCP server を登録してください ([Claude Code に登録する](#claude-code-に登録する-任意))。gcloud の認証と IAP で VM に届きます。
 
 ### Cloud Run に置いてどこからでも使う
 
-[infra/README.md](infra/README.md) の Terraform で、API を Cloud Run に公開できます。構築後は MCP の URL と token を取り出し、上の `http://localhost:8787/mcp` を置き換えて使います。
+[infra/README.md](infra/README.md) の Terraform で、API を Cloud Run に公開できます。構築には Google の OAuth client と、署名鍵・client secret の Secret が要ります (手順は infra/README.md)。
 
-```bash
-MCP_URL=$(terraform -chdir=infra output -raw mcp_url)
-TOKEN=$(gcloud secrets versions access latest --secret cloud-coder-api-write-tokens --project <project>)
-claude mcp add --transport http cloud-coder "$MCP_URL" --header "Authorization: Bearer $TOKEN"
-```
-
-- endpoint はインターネットに公開され、token (と OAuth grant) だけで守られます。write token は VM のシェルと同等の権限なので、渡す相手と保存場所に注意してください。見るだけのクライアントには read token (`cloud-coder-api-read-tokens`) を渡します。
-- Cloud Run 上では `/healthz` に届きません (Cloud Run の予約パス)。生存確認は token なしで `curl -s "${MCP_URL%/mcp}/.well-known/oauth-authorization-server"` のように OAuth の metadata を読むか、MCP の `status` tool を呼びます。
+- endpoint はインターネットに公開され、allowlist の Google アカウントが承認した OAuth grant だけで守られます。
+- Cloud Run 上では `/healthz` に届きません (Cloud Run の予約パス)。生存確認は token なしで `curl -s "${MCP_URL%/mcp}/.well-known/oauth-authorization-server"` のように OAuth の metadata を読むか、ChatGPT から `status` tool を呼びます。
 - 1 回の呼び出しに数秒かかります (IAP 経由の SSH)。
 
 ### ChatGPT から使う
 
 Cloud Run に置いた API は `/mcp` で MCP server も提供しているので、ChatGPT の developer mode のアプリとして登録できます。仕組みと注意は [README の HTTP API](README.md#http-api) にあります。
 
-1. MCP の URL と write token を手元に用意する。
+1. MCP の URL と client secret を手元に用意する。
    ```bash
    terraform -chdir=infra output -raw mcp_url   # https://cloud-coder-api-<project number>.<region>.run.app/mcp
-   gcloud secrets versions access latest --secret cloud-coder-api-write-tokens --project <project>
+   gcloud secrets versions access latest --secret cloud-coder-api-oauth-client-secret --project <project>
    ```
    URL は `terraform output url` (`…a.run.app`) ではなく `mcp_url` の方を使います。OAuth の issuer と resource がこの URL だからです。
 2. ChatGPT (web) の **Settings → Security and login** で **Developer mode** を有効にする。
 3. ChatGPT の Apps (Plugins) の画面で **+** (Create) を押し、次のように入力して作成する。
    - Name: 任意 (例: cloud-coder)
    - MCP Server URL: 手順 1 の `mcp_url`
-   - Authentication: **OAuth** (client ID と secret は空のまま。ChatGPT が Dynamic Client Registration で登録します)
-4. ChatGPT が cloud-coder の承認ページ (受け取り先の URL、注意書き、write token の入力欄があるページ) を開く。受け取り先が `https://chatgpt.com/…` であることを確かめ、手順 1 の **write token** を貼り付けて **Allow** を押す。ChatGPT に戻れば接続完了です。
+   - Authentication: **OAuth**。この server は Dynamic Client Registration を提供しないので、client を手で入力します。
+     - Client ID: `cloud-coder`
+     - Client secret: 手順 1 の値
+     - トークンエンドポイントの認証方式 (token endpoint auth method): `client_secret_post` (既定が `none` なら変える)
+   - コールバック (redirect) URL が表示されたら `https://chatgpt.com/connector_platform_oauth_redirect` であることを確かめる。
+4. ChatGPT が cloud-coder の同意画面 (client、付与する権限、受け取り先の URL が出るページ) を開く。受け取り先が `https://chatgpt.com/connector_platform_oauth_redirect` であることを確かめ、**Continue with Google** を押して、allowlist に入れた Google アカウントでログインする。ChatGPT に戻れば接続完了です。
+   - 「This Google account may not approve access」と出たら、表示された数字 (`sub`) を Terraform の変数 `oauth_allowed_subs` に入れて apply し、手順 4 をやり直します (初回はこれで自分の `sub` を知ります)。
 5. 会話でアプリを選び、「cloud-coder の status を見て」のように頼む。`up` / `start_session` / `send_prompt` / `stop` は書き込みの tool なので、ChatGPT が実行前に確認を求めます。
 6. 作業を頼むと (例: 「cloud-coder で PR を作って」)、ChatGPT は `start_session` の後に開始したことを伝えてターンを終えます。結果は後で「進み具合を見て」「結果を教えて」のように尋ねてください。
 
-- 承認ページに貼るのは write token だけです (read token では承認できません)。自分で ChatGPT から接続を始めた直後に開いたページにだけ貼ってください。人から送られたリンクの承認ページに貼ると、その人の ChatGPT に権限が渡ります。
-- write token をローテーションして古い token を外すと、ChatGPT の接続は無効になります。アプリの接続をやり直してください。
+- 接続は access token (1 時間) を ChatGPT が refresh して続きます。承認から 30 日たつと切れるので、アプリの接続をやり直してください (手順 4)。
+- 同意画面で Continue を押すのは、自分で ChatGPT から接続を始めた直後に開いたページだけにしてください。
+- client secret か署名鍵を入れ替えた場合、または自分の `sub` を allowlist から外した場合も、接続をやり直します (client secret を変えたら手順 3 の値も更新)。
 - ChatGPT が書き込みの tool を呼べるかはプランによります。OpenAI の developer mode のドキュメントは Plus / Pro でも書き込みを許可 (実行前に確認) としていますが、他のページでは制限がある書き方もあるので、呼べない場合はプランの制限を確認してください。
 
 ## Claude Code のスキルで操作する

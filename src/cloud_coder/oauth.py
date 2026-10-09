@@ -1,14 +1,21 @@
 """OAuth 2.1 authorization server for the MCP endpoint of the HTTP API.
 
-Clients that cannot send a static bearer token (ChatGPT apps, for one) reach /mcp with
-OAuth instead: they register (RFC 7591), send the user to an approval page that asks for
-an existing write token, and exchange the code (PKCE S256 only) for tokens.
+There is one client, configured in advance (no Dynamic Client Registration): ChatGPT,
+with a client secret (``client_secret_post``) and the redirect URI
+https://chatgpt.com/connector_platform_oauth_redirect. A grant is approved by a person:
+the consent page names the client, its redirect URI and the scopes, and "Continue with
+Google" signs the person in with Google (OpenID Connect, code flow with PKCE and nonce).
+Only a Google account whose ``sub`` is on the allowlist gets an authorization code, which
+the client exchanges (PKCE S256 and its secret) for tokens. Google is used only to find
+out who approves; its tokens never leave this server, and /mcp accepts only the access
+tokens issued here (``aud`` = <public URL>/mcp).
 
-Nothing is stored. Client IDs, authorization codes, access and refresh tokens are
-self-contained: base64url JSON claims plus an HMAC-SHA256 over them, with a key derived
-(HKDF) from the write token that approved the grant. So they survive restarts, and
-removing a write token from the configuration revokes every grant it approved. Client
-IDs are signed with the first write token's key.
+Nothing is stored. Authorization requests, the Google ``state``, codes, access and refresh
+tokens are self-contained: base64url JSON claims plus an HMAC-SHA256 over them, with keys
+derived (HKDF) from the OAuth signing keys. The first key signs; every key verifies, so a
+key can be rotated without breaking grants. Every grant carries the approver's ``sub`` and
+the time of approval: it ends GRANT_LIFETIME after approval, and taking the ``sub`` off
+the allowlist ends it at once. See docs/mcp-oauth.md for the design.
 """
 
 import base64
@@ -16,15 +23,16 @@ import hashlib
 import hmac
 import html
 import json
+import logging
 import re
 import secrets
 import time
-from collections import deque
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urlencode, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
+import httpx2
 from mcp.server.auth.handlers.metadata import MetadataHandler
 from mcp.server.auth.provider import (
     AccessToken,
@@ -32,52 +40,100 @@ from mcp.server.auth.provider import (
     AuthorizationParams,
     AuthorizeError,
     RefreshToken,
-    RegistrationError,
     TokenError,
     construct_redirect_uri,
 )
 from mcp.server.auth.routes import build_metadata, cors_middleware, create_auth_routes
 from mcp.server.auth.settings import ClientRegistrationOptions, RevocationOptions
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
-from pydantic import AnyHttpUrl, ConfigDict, TypeAdapter
+from pydantic import AnyHttpUrl, AnyUrl, ConfigDict, TypeAdapter
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 from starlette.routing import Route
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from cloud_coder.config import ConfigError
+from cloud_coder.guards import READ, WRITE
+
+log = logging.getLogger(__name__)
 
 PUBLIC_URL_ENV = "CLOUD_CODER_PUBLIC_URL"
+CLIENT_SECRET_ENV = "CLOUD_CODER_OAUTH_CLIENT_SECRET"
+SIGNING_KEYS_ENV = "CLOUD_CODER_OAUTH_SIGNING_KEYS"
+ALLOWED_SUBS_ENV = "CLOUD_CODER_OAUTH_ALLOWED_SUBS"
 REDIRECT_URIS_ENV = "CLOUD_CODER_OAUTH_REDIRECT_URIS"
-# https://developers.openai.com/plugins/build/auth: the first for authorization servers
-# that send `iss` with the code (RFC 9207, which this one does), the second otherwise.
-CHATGPT_REDIRECT_URIS = (
-    "https://chatgpt.com/connector_platform_oauth_redirect",
-    "https://chatgpt.com/connector/oauth/*",
-)
-MCP_PATH = "/mcp"
-APPROVAL_PATH = "/authorize/approve"
-METADATA_PATH = "/.well-known/oauth-authorization-server"
+GOOGLE_CLIENT_ID_ENV = "CLOUD_CODER_GOOGLE_CLIENT_ID"
+GOOGLE_CLIENT_SECRET_ENV = "CLOUD_CODER_GOOGLE_CLIENT_SECRET"
+
+CLIENT_ID = "cloud-coder"
+# https://developers.openai.com/plugins/build/auth: the redirect URI for authorization
+# servers that send `iss` with the code (RFC 9207), as this one does.
+CHATGPT_REDIRECT_URI = "https://chatgpt.com/connector_platform_oauth_redirect"
+TOKEN_AUTH_METHOD = "client_secret_post"
 OFFLINE_ACCESS = "offline_access"
-TOKEN_AUTH_METHODS = ("none", "client_secret_post", "client_secret_basic")
+SCOPES = (READ, WRITE, OFFLINE_ACCESS)
+DEFAULT_SCOPES = SCOPES  # when the client asks for none
+MIN_SECRET_LENGTH = 32
+
+MCP_PATH = "/mcp"
+AUTHORIZE_PATH = "/authorize"
+METADATA_PATH = "/.well-known/oauth-authorization-server"
+CONSENT_PATH = "/authorize/consent"
+GOOGLE_CALLBACK_PATH = "/authorize/google/callback"
+
+# https://accounts.google.com/.well-known/openid-configuration
+GOOGLE_AUTHORIZATION_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
+GOOGLE_ISSUERS = ("https://accounts.google.com", "accounts.google.com")
+GOOGLE_TIMEOUT = 10
 
 ACCESS_TOKEN_TTL = 3600
-REFRESH_TOKEN_TTL = 30 * 24 * 3600
+REFRESH_TOKEN_TTL = 14 * 24 * 3600  # a refresh token unused this long expires
+GRANT_LIFETIME = 30 * 24 * 3600  # from approval; then the client must be approved again
 CODE_TTL = 300
-APPROVAL_TTL = 600
-MAX_FAILED_APPROVALS = 10
-FAILED_APPROVAL_WINDOW = 600
+FLOW_TTL = 600  # from the authorization request to the Google callback
 
-HKDF_SALT = b"cloud-coder oauth v1"
+# Set on the consent page (CSRF token of its form), replaced when the person continues to
+# Google (binds the Google callback to this browser), deleted at the callback.
+FLOW_COOKIE = "__Host-cloud-coder-oauth"
+
+HKDF_SALT = b"cloud-coder oauth v2"
 
 _URL_AS_IS = TypeAdapter(AnyHttpUrl, config=ConfigDict(url_preserve_empty_path=True))
+_GOOGLE_ERROR = re.compile(r"[a-z_]{1,64}")
+
+
+def _split(value: str | None) -> tuple[str, ...]:
+    return tuple(v.strip() for v in (value or "").split(",") if v.strip())
+
+
+def _required(environ: Mapping[str, str], name: str, what: str) -> str:
+    value = environ.get(name, "").strip()
+    if not value:
+        raise ConfigError(f"no {what}: set {name}")
+    return value
+
+
+def _strong(name: str, value: str) -> str:
+    if len(value) < MIN_SECRET_LENGTH:
+        raise ConfigError(
+            f"{name} must be at least {MIN_SECRET_LENGTH} characters (e.g. openssl rand -base64 32)"
+        )
+    return value
 
 
 @dataclass(frozen=True)
 class OAuthSettings:
-    """Where the API is reachable from outside, and which redirect URIs clients may use."""
+    """The OAuth configuration: where the API is reachable from outside, the client, the
+    keys, and who may approve. Secrets are left out of ``repr``."""
 
     public_url: str
-    redirect_uris: tuple[str, ...] = CHATGPT_REDIRECT_URIS
+    client_secret: str = field(repr=False)
+    signing_keys: tuple[str, ...] = field(repr=False)
+    google_client_id: str
+    google_client_secret: str = field(repr=False)
+    allowed_subs: frozenset[str] = frozenset()
+    redirect_uris: tuple[str, ...] = (CHATGPT_REDIRECT_URI,)
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str]) -> "OAuthSettings":
@@ -93,10 +149,22 @@ class OAuthSettings:
             raise ConfigError(f"{PUBLIC_URL_ENV} must be an https URL, got {public_url!r}")
         if url.path or url.query or url.fragment:
             raise ConfigError(f"{PUBLIC_URL_ENV} must have no path, query or fragment")
-        patterns = tuple(
-            p.strip() for p in environ.get(REDIRECT_URIS_ENV, "").split(",") if p.strip()
+        signing_keys = _split(environ.get(SIGNING_KEYS_ENV))
+        if not signing_keys:
+            raise ConfigError(f"no OAuth signing key: set {SIGNING_KEYS_ENV} (comma-separated)")
+        return cls(
+            public_url=public_url,
+            client_secret=_strong(
+                CLIENT_SECRET_ENV, _required(environ, CLIENT_SECRET_ENV, "OAuth client secret")
+            ),
+            signing_keys=tuple(_strong(SIGNING_KEYS_ENV, k) for k in signing_keys),
+            google_client_id=_required(environ, GOOGLE_CLIENT_ID_ENV, "Google OAuth client ID"),
+            google_client_secret=_required(
+                environ, GOOGLE_CLIENT_SECRET_ENV, "Google OAuth client secret"
+            ),
+            allowed_subs=frozenset(_split(environ.get(ALLOWED_SUBS_ENV))),
+            redirect_uris=_split(environ.get(REDIRECT_URIS_ENV)) or (CHATGPT_REDIRECT_URI,),
         )
-        return cls(public_url, patterns or CHATGPT_REDIRECT_URIS)
 
     @property
     def resource_url(self) -> str:
@@ -106,6 +174,10 @@ class OAuthSettings:
     def issuer_url(self) -> AnyHttpUrl:
         """The public URL as is: issuers compare as strings, so no trailing slash added."""
         return _URL_AS_IS.validate_python(self.public_url)
+
+    @property
+    def google_redirect_uri(self) -> str:
+        return self.public_url + GOOGLE_CALLBACK_PATH
 
 
 def _b64encode(data: bytes) -> str:
@@ -123,154 +195,204 @@ def _hkdf(secret: bytes, info: str) -> bytes:
 
 
 class SignedTokens:
-    """Self-contained tokens: claims and an HMAC keyed by one of the write tokens.
+    """Self-contained tokens: claims and an HMAC keyed by one of the signing keys.
 
     Every kind of token has its own key, so a token of one kind is never valid as another.
+    The first signing key signs; all of them verify.
     """
 
-    KINDS = ("client", "client_secret", "approval", "code", "access", "refresh")
+    KINDS = ("request", "state", "code", "access", "refresh", "csrf", "binding", "pkce", "nonce")
 
-    def __init__(self, write_tokens: tuple[bytes, ...]):
-        if not write_tokens:
-            raise ConfigError("OAuth needs a write token to approve grants with")
-        self._keys = [{kind: _hkdf(t, kind) for kind in self.KINDS} for t in write_tokens]
+    def __init__(self, signing_keys: tuple[str, ...]):
+        self._keys = [{kind: _hkdf(k.encode(), kind) for kind in self.KINDS} for k in signing_keys]
 
-    def _mac(self, signer: int, kind: str, body: str) -> bytes:
-        return hmac.new(self._keys[signer][kind], body.encode(), hashlib.sha256).digest()
+    @staticmethod
+    def _mac(keys: dict[str, bytes], kind: str, body: str) -> bytes:
+        return hmac.new(keys[kind], body.encode(), hashlib.sha256).digest()
 
-    def seal(self, kind: str, claims: dict[str, Any], ttl: int | None, signer: int = 0) -> str:
-        if ttl is not None:
-            claims = {**claims, "exp": int(time.time()) + ttl}
+    def seal(self, kind: str, claims: dict[str, Any], exp: int | None) -> str:
+        if exp is not None:
+            claims = {**claims, "exp": exp}
         body = _b64encode(json.dumps(claims, separators=(",", ":")).encode())
-        return f"{body}.{_b64encode(self._mac(signer, kind, body))}"
+        return f"{body}.{_b64encode(self._mac(self._keys[0], kind, body))}"
 
-    def open(self, kind: str, token: str) -> tuple[dict[str, Any], int] | None:
-        """The claims and the signer of a valid, unexpired token; None otherwise."""
+    def open(self, kind: str, token: str) -> dict[str, Any] | None:
+        """The claims of a valid, unexpired token; None otherwise."""
         body, _, mac = token.partition(".")
         try:
             mac_bytes = _b64decode(mac)
         except ValueError:
             return None
-        signers = [
-            i
-            for i in range(len(self._keys))
-            if hmac.compare_digest(self._mac(i, kind, body), mac_bytes)
-        ]
-        if not signers:
+        # Check every key, without stopping at a match.
+        matches = [hmac.compare_digest(self._mac(k, kind, body), mac_bytes) for k in self._keys]
+        if not any(matches):
             return None
         claims = json.loads(_b64decode(body))
         if "exp" in claims and claims["exp"] < time.time():
             return None
-        return claims, signers[0]
+        return claims
 
-    def derive(self, kind: str, value: str, signer: int) -> str:
-        """A secret that only the holder of the signer's key can compute from ``value``."""
-        return _b64encode(self._mac(signer, kind, value))
+    def derive(self, kind: str, value: str) -> str:
+        """A value that only the holder of the first signing key can compute from ``value``."""
+        return _b64encode(self._mac(self._keys[0], kind, value))
 
 
-class SignedAuthorizationCode(AuthorizationCode):
-    signer: int
+class SingleUse:
+    """Remembers used IDs until they expire. In memory: Cloud Run runs at most one
+    instance, and what a restart forgets is short-lived and bound by other checks."""
+
+    def __init__(self) -> None:
+        self._used: dict[str, float] = {}
+
+    def claim(self, key: str, expires_at: float) -> bool:
+        """True the first time ``key`` is claimed."""
+        now = time.time()
+        self._used = {k: exp for k, exp in self._used.items() if exp > now}
+        if key in self._used:
+            return False
+        self._used[key] = expires_at
+        return True
+
+
+class GoogleLoginError(Exception):
+    """The Google sign-in did not give a usable ID token. The message is safe to log."""
+
+
+@dataclass(frozen=True)
+class GoogleLogin:
+    """Google as the identity provider of the consent step (OpenID Connect code flow)."""
+
+    client_id: str
+    client_secret: str = field(repr=False)
+    redirect_uri: str
+    transport: httpx2.AsyncBaseTransport | None = None
+
+    def authorization_url(self, state: str, nonce: str, code_verifier: str) -> str:
+        challenge = _b64encode(hashlib.sha256(code_verifier.encode()).digest())
+        query = {
+            "client_id": self.client_id,
+            "redirect_uri": self.redirect_uri,
+            "response_type": "code",
+            "scope": "openid email",
+            "state": state,
+            "nonce": nonce,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+        }
+        return f"{GOOGLE_AUTHORIZATION_ENDPOINT}?{urlencode(query)}"
+
+    async def identify(self, code: str, code_verifier: str, nonce: str) -> dict[str, Any]:
+        """The claims of the ID token that ``code`` gives, once checked."""
+        form = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "code_verifier": code_verifier,
+            "redirect_uri": self.redirect_uri,
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+        }
+        try:
+            async with httpx2.AsyncClient(
+                transport=self.transport, timeout=GOOGLE_TIMEOUT, follow_redirects=False
+            ) as http:
+                response = await http.post(GOOGLE_TOKEN_ENDPOINT, data=form)
+        except httpx2.HTTPError as e:
+            raise GoogleLoginError(
+                f"Google token endpoint unreachable ({type(e).__name__})"
+            ) from None
+        try:
+            body = response.json()
+        except ValueError:
+            body = {}
+        if response.status_code != 200 or not isinstance(body, dict):
+            error = body.get("error") if isinstance(body, dict) else None
+            if not (isinstance(error, str) and _GOOGLE_ERROR.fullmatch(error)):
+                error = "unexpected response"
+            raise GoogleLoginError(f"Google token endpoint: HTTP {response.status_code} {error}")
+        id_token = body.get("id_token")
+        if not isinstance(id_token, str):
+            raise GoogleLoginError("Google gave no ID token")
+        return self.checked_claims(id_token, nonce)
+
+    def checked_claims(self, id_token: str, nonce: str) -> dict[str, Any]:
+        """OpenID Connect Core 3.1.3.7. The token comes straight from Google's token
+        endpoint over TLS, in exchange for the client secret, so TLS stands in for the
+        signature (step 6); the claims are checked all the same."""
+        try:
+            claims = json.loads(_b64decode(id_token.split(".")[1]))
+        except (IndexError, ValueError):
+            raise GoogleLoginError("malformed ID token") from None
+        if not isinstance(claims, dict):
+            raise GoogleLoginError("malformed ID token")
+        if claims.get("iss") not in GOOGLE_ISSUERS:
+            raise GoogleLoginError("ID token from another issuer")
+        aud = claims.get("aud")
+        if aud != self.client_id and not (isinstance(aud, list) and self.client_id in aud):
+            raise GoogleLoginError("ID token for another client")
+        if claims.get("azp", self.client_id) != self.client_id:
+            raise GoogleLoginError("ID token for another client")
+        exp = claims.get("exp")
+        if not isinstance(exp, int | float) or exp < time.time():
+            raise GoogleLoginError("expired ID token")
+        if not hmac.compare_digest(str(claims.get("nonce", "")), nonce):
+            raise GoogleLoginError("ID token with another nonce")
+        if not isinstance(claims.get("sub"), str) or not claims["sub"]:
+            raise GoogleLoginError("ID token without sub")
+        return claims
+
+
+# `subject` (from the SDK) is the approver's Google sub; `approved_at` is when the grant was
+# approved, which bounds its lifetime.
+
+
+class GrantCode(AuthorizationCode):
+    subject: str
     jti: str
+    approved_at: int
 
 
-class SignedRefreshToken(RefreshToken):
-    signer: int
-
-
-class FailedAttempts:
-    """Refuses further attempts after too many failures within a sliding window.
-
-    In memory: Cloud Run runs at most one instance, and a restart only resets the count.
-    """
-
-    def __init__(self, limit: int = MAX_FAILED_APPROVALS, window: int = FAILED_APPROVAL_WINDOW):
-        self.limit = limit
-        self.window = window
-        self._times: deque[float] = deque()
-
-    def _prune(self) -> None:
-        while self._times and self._times[0] < time.monotonic() - self.window:
-            self._times.popleft()
-
-    def blocked(self) -> bool:
-        self._prune()
-        return len(self._times) >= self.limit
-
-    def record(self) -> None:
-        self._times.append(time.monotonic())
-
-
-def _redirect_uri_matcher(patterns: tuple[str, ...]) -> re.Pattern[str]:
-    """Exact URIs; ``*`` stands for one non-empty path segment."""
-    alternatives = (re.escape(p).replace(r"\*", r"[^/?#]+") for p in patterns)
-    return re.compile("|".join(f"(?:{a})" for a in alternatives))
+class GrantRefreshToken(RefreshToken):
+    subject: str
+    approved_at: int
 
 
 class AuthorizationServer:
-    """The OAuth provider (``OAuthAuthorizationServerProvider``) for /mcp. Approving a
-    grant takes one of the API's write tokens, and every grant carries ``scopes``, the
-    scopes of a write token.
-    """
+    """The OAuth provider (``OAuthAuthorizationServerProvider``) for /mcp, and its token
+    verifier."""
 
-    def __init__(
-        self, settings: OAuthSettings, write_tokens: tuple[bytes, ...], scopes: tuple[str, ...]
-    ):
+    def __init__(self, settings: OAuthSettings, google_transport=None):
         self.settings = settings
-        self.scopes = scopes
-        self._write_tokens = write_tokens
-        self._signed = SignedTokens(write_tokens)
-        self._redirect_uris = _redirect_uri_matcher(settings.redirect_uris)
-        self._used_codes: dict[str, float] = {}
-        self.failed_approvals = FailedAttempts()
-
-    # --- clients (RFC 7591) --------------------------------------------------------
-
-    async def register_client(self, client_info: OAuthClientInformationFull) -> None:
-        uris = [str(u) for u in client_info.redirect_uris or []]
-        if not uris or not all(self._redirect_uris.fullmatch(u) for u in uris):
-            raise RegistrationError(
-                "invalid_redirect_uri",
-                "redirect_uris must match: " + ", ".join(self.settings.redirect_uris),
-            )
-        if client_info.token_endpoint_auth_method not in TOKEN_AUTH_METHODS:
-            raise RegistrationError(
-                "invalid_client_metadata",
-                "token_endpoint_auth_method must be one of " + ", ".join(TOKEN_AUTH_METHODS),
-            )
-        registered = client_info.model_dump(
-            mode="json",
-            include={
-                "redirect_uris",
-                "token_endpoint_auth_method",
-                "grant_types",
-                "response_types",
-                "scope",
-                "client_name",
-            },
-            exclude_none=True,
+        self._signed = SignedTokens(settings.signing_keys)
+        self._google = GoogleLogin(
+            settings.google_client_id,
+            settings.google_client_secret,
+            settings.google_redirect_uri,
+            google_transport,
         )
-        # The registration handler answers with this object: replace the random client_id
-        # (and secret) it minted with ones that need no storage.
-        client_info.client_id = self._signed.seal("client", registered, ttl=None)
-        if client_info.client_secret is not None:
-            client_info.client_secret = self._signed.derive(
-                "client_secret", client_info.client_id, signer=0
-            )
+        self._used_codes = SingleUse()
+        self._used_flows = SingleUse()
+        self.client = OAuthClientInformationFull(
+            client_id=CLIENT_ID,
+            client_secret=settings.client_secret,
+            client_secret_expires_at=0,
+            client_name="ChatGPT",
+            redirect_uris=[AnyUrl(u) for u in settings.redirect_uris],
+            token_endpoint_auth_method=TOKEN_AUTH_METHOD,
+            grant_types=["authorization_code", "refresh_token"],
+            response_types=["code"],
+            scope=" ".join(SCOPES),
+        )
+
+    # --- the one client ---------------------------------------------------------------
 
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
-        opened = self._signed.open("client", client_id)
-        if opened is None:
-            return None
-        registered, signer = opened
-        # Registered under an allowlist that may have been narrowed since.
-        if not all(self._redirect_uris.fullmatch(u) for u in registered["redirect_uris"]):
-            return None
-        secret = None
-        if registered.get("token_endpoint_auth_method") != "none":
-            secret = self._signed.derive("client_secret", client_id, signer)
-        return OAuthClientInformationFull(
-            **registered, client_id=client_id, client_secret=secret, client_secret_expires_at=0
-        )
+        return self.client if client_id == CLIENT_ID else None
+
+    async def register_client(self, client_info: OAuthClientInformationFull) -> None:
+        raise NotImplementedError("dynamic client registration is disabled")
+
+    def _allowed(self, sub: str) -> bool:
+        return sub in self.settings.allowed_subs
 
     # --- authorization ---------------------------------------------------------------
 
@@ -283,148 +405,243 @@ class AuthorizationServer:
         if resource not in ("", self.settings.resource_url, self.settings.public_url):
             raise AuthorizeError("invalid_target", "unknown resource")
         request = {
-            "client_id": client.client_id,
-            "client_name": client.client_name,
             "state": params.state,
-            "scopes": params.scopes,
+            "scopes": _granted(params.scopes),
             "code_challenge": params.code_challenge,
             "redirect_uri": str(params.redirect_uri),
             "redirect_uri_provided_explicitly": params.redirect_uri_provided_explicitly,
         }
-        sealed = self._signed.seal("approval", request, ttl=APPROVAL_TTL)
-        return f"{self.settings.public_url}{APPROVAL_PATH}?{urlencode({'request': sealed})}"
+        sealed = self._signed.seal("request", request, exp=int(time.time()) + FLOW_TTL)
+        return f"{self.settings.public_url}{CONSENT_PATH}?{urlencode({'request': sealed})}"
 
-    def approve(self, request: dict[str, Any], write_token: str) -> str | None:
-        """The redirect back to the client, with a code, when ``write_token`` is one of
-        the write tokens; None otherwise. ``request`` is an opened approval request."""
-        # Compare against every token, without stopping at a match.
-        matches = [hmac.compare_digest(write_token.encode(), t) for t in self._write_tokens]
-        if not any(matches):
-            return None
+    async def _consent(self, request: Request) -> Response:
+        """GET: the consent page. POST (its form): on to Google."""
+        posted = request.method == "POST"
+        params = await request.form() if posted else request.query_params
+        sealed = str(params.get("request", ""))
+        authorization = self._signed.open("request", sealed)
+        if authorization is None:
+            return _page(_EXPIRED, 400)
+        if not posted:
+            csrf = secrets.token_urlsafe(32)
+            page = _page(_consent_form(sealed, authorization, self._signed.derive("csrf", csrf)))
+            _set_flow_cookie(page, csrf)
+            return page
+        # CSRF: the form's token must match this browser's cookie, which a cross-site form
+        # post does not carry (SameSite=Lax).
+        cookie = request.cookies.get(FLOW_COOKIE, "")
+        expected = self._signed.derive("csrf", cookie)
+        if not cookie or not hmac.compare_digest(expected, str(params.get("csrf", ""))):
+            return _page(_RESTART, 403)
+        # The browser keeps `binding` in its cookie; Google's round trip carries only a
+        # MAC of it, and the PKCE verifier and nonce are derived from it.
+        binding = secrets.token_urlsafe(32)
+        state = self._signed.seal(
+            "state",
+            {"request": authorization, "binding": self._signed.derive("binding", binding)},
+            exp=int(time.time()) + FLOW_TTL,
+        )
+        url = self._google.authorization_url(
+            state,
+            nonce=self._signed.derive("nonce", binding),
+            code_verifier=self._signed.derive("pkce", binding),
+        )
+        response = RedirectResponse(url, status_code=303, headers=_NO_STORE)
+        _set_flow_cookie(response, binding)
+        return response
+
+    async def _google_callback(self, request: Request) -> Response:
+        params = request.query_params
+        state = self._signed.open("state", str(params.get("state", "")))
+        if state is None:
+            log.warning("OAuth: refused Google callback: invalid or expired state")
+            return _page(_EXPIRED, 400)
+        binding = request.cookies.get(FLOW_COOKIE, "")
+        if not binding or not hmac.compare_digest(
+            self._signed.derive("binding", binding), state["binding"]
+        ):
+            log.warning("OAuth: refused Google callback: not from the browser that consented")
+            return _page(_RESTART, 400)
+        if not self._used_flows.claim(state["binding"], state["exp"]):
+            log.warning("OAuth: refused Google callback: used twice")
+            return _page(_RESTART, 400)
+        authorization = state["request"]
+        if "error" in params:
+            # The person cancelled at Google: tell the client (RFC 6749 4.1.2.1), with iss.
+            log.info("OAuth: Google sign-in cancelled")
+            return _done(
+                construct_redirect_uri(
+                    authorization["redirect_uri"],
+                    error="access_denied",
+                    state=authorization["state"],
+                    iss=self.settings.public_url,
+                )
+            )
+        try:
+            identity = await self._google.identify(
+                str(params.get("code", "")),
+                code_verifier=self._signed.derive("pkce", binding),
+                nonce=self._signed.derive("nonce", binding),
+            )
+        except GoogleLoginError as e:
+            log.warning(f"OAuth: Google sign-in failed: {e}")
+            return _done(_page(_GOOGLE_FAILED, 502))
+        sub = identity["sub"]
+        if not self._allowed(sub):
+            log.warning("OAuth: refused a Google account that is not on the allowlist")
+            return _done(_page(_not_allowed(sub, identity.get("email")), 403))
+        now = int(time.time())
         code = self._signed.seal(
             "code",
             {
-                "client_id": request["client_id"],
-                "scopes": sorted({*(request["scopes"] or []), *self.scopes}),
-                "code_challenge": request["code_challenge"],
-                "redirect_uri": request["redirect_uri"],
-                "redirect_uri_provided_explicitly": request["redirect_uri_provided_explicitly"],
+                **{k: authorization[k] for k in _CODE_CLAIMS},
                 "jti": secrets.token_urlsafe(16),
+                "sub": sub,
+                "approved_at": now,
             },
-            ttl=CODE_TTL,
-            signer=matches.index(True),
+            exp=now + CODE_TTL,
         )
-        return construct_redirect_uri(
-            request["redirect_uri"],
-            code=code,
-            state=request["state"],
-            iss=self.settings.public_url,
+        log.info(f"OAuth: approved a grant ({' '.join(authorization['scopes'])})")
+        return _done(
+            construct_redirect_uri(
+                authorization["redirect_uri"],
+                code=code,
+                state=authorization["state"],
+                iss=self.settings.public_url,
+            )
         )
 
     async def load_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code: str
-    ) -> SignedAuthorizationCode | None:
-        opened = self._signed.open("code", authorization_code)
-        if opened is None:
+    ) -> GrantCode | None:
+        claims = self._signed.open("code", authorization_code)
+        if claims is None:
             return None
-        claims, signer = opened
-        return SignedAuthorizationCode(
+        return GrantCode(
             code=authorization_code,
             scopes=claims["scopes"],
             expires_at=claims["exp"],
-            client_id=claims["client_id"],
+            client_id=CLIENT_ID,
             code_challenge=claims["code_challenge"],
             redirect_uri=claims["redirect_uri"],
             redirect_uri_provided_explicitly=claims["redirect_uri_provided_explicitly"],
             resource=self.settings.resource_url,
-            signer=signer,
+            subject=claims["sub"],
             jti=claims["jti"],
+            approved_at=claims["approved_at"],
         )
 
     # --- tokens ----------------------------------------------------------------------
 
-    def _issue(self, client: OAuthClientInformationFull, scopes: list[str], signer: int):
-        claims = {"client_id": client.client_id, "scopes": scopes}
+    def _issue(
+        self, *, grant_scopes: list[str], access_scopes: list[str], sub: str, approved_at: int
+    ) -> OAuthToken:
+        """An access token for ``access_scopes`` (within the grant's), and a refresh token
+        for the whole grant (RFC 6749 6) if the grant includes offline_access."""
+        access_scopes = _granted(access_scopes)
+        now = int(time.time())
+        grant_ends = approved_at + GRANT_LIFETIME
+        claims = {"sub": sub, "approved_at": approved_at}
+        access_exp = min(now + ACCESS_TOKEN_TTL, grant_ends)
         access = self._signed.seal(
-            "access", {**claims, "aud": self.settings.resource_url}, ACCESS_TOKEN_TTL, signer
+            "access",
+            {**claims, "scopes": access_scopes, "aud": self.settings.resource_url},
+            exp=access_exp,
         )
         refresh = None
-        if "refresh_token" in client.grant_types:
-            refresh = self._signed.seal("refresh", claims, REFRESH_TOKEN_TTL, signer)
+        if OFFLINE_ACCESS in grant_scopes:
+            refresh = self._signed.seal(
+                "refresh",
+                {**claims, "scopes": grant_scopes},
+                exp=min(now + REFRESH_TOKEN_TTL, grant_ends),
+            )
         return OAuthToken(
             access_token=access,
-            expires_in=ACCESS_TOKEN_TTL,
-            scope=" ".join(scopes),
+            expires_in=access_exp - now,
+            scope=" ".join(access_scopes),
             refresh_token=refresh,
         )
 
     async def exchange_authorization_code(
-        self, client: OAuthClientInformationFull, authorization_code: SignedAuthorizationCode
+        self, client: OAuthClientInformationFull, authorization_code: GrantCode
     ) -> OAuthToken:
-        # Called once the client and its PKCE verifier are checked. Codes are single use,
-        # best effort: a restart forgets the used ones, but a code lives only CODE_TTL
-        # seconds and needs the verifier as well.
-        now = time.time()
-        self._used_codes = {jti: exp for jti, exp in self._used_codes.items() if exp > now}
-        if authorization_code.jti in self._used_codes:
+        # Called once the client secret and the PKCE verifier are checked. Codes are
+        # single use, best effort: a restart forgets the used ones, but a code lives only
+        # CODE_TTL seconds and needs the verifier and the client secret as well.
+        if not self._used_codes.claim(authorization_code.jti, authorization_code.expires_at):
             raise TokenError("invalid_grant", "authorization code already used")
-        self._used_codes[authorization_code.jti] = authorization_code.expires_at
-        return self._issue(client, authorization_code.scopes, authorization_code.signer)
+        if not self._allowed(authorization_code.subject):
+            raise TokenError("invalid_grant", "the approver is no longer allowed")
+        log.info("OAuth: exchanged an authorization code")
+        return self._issue(
+            grant_scopes=authorization_code.scopes,
+            access_scopes=authorization_code.scopes,
+            sub=authorization_code.subject,
+            approved_at=authorization_code.approved_at,
+        )
 
     async def load_refresh_token(
         self, client: OAuthClientInformationFull, refresh_token: str
-    ) -> SignedRefreshToken | None:
-        opened = self._signed.open("refresh", refresh_token)
-        if opened is None:
+    ) -> GrantRefreshToken | None:
+        claims = self._signed.open("refresh", refresh_token)
+        if claims is None or not self._allowed(claims["sub"]):
             return None
-        claims, signer = opened
-        return SignedRefreshToken(
+        return GrantRefreshToken(
             token=refresh_token,
-            client_id=claims["client_id"],
+            client_id=CLIENT_ID,
             scopes=claims["scopes"],
             expires_at=claims["exp"],
             resource=self.settings.resource_url,
-            signer=signer,
+            subject=claims["sub"],
+            approved_at=claims["approved_at"],
         )
 
     async def exchange_refresh_token(
         self,
         client: OAuthClientInformationFull,
-        refresh_token: SignedRefreshToken,
+        refresh_token: GrantRefreshToken,
         scopes: list[str],
     ) -> OAuthToken:
-        return self._issue(client, scopes, refresh_token.signer)
+        # The SDK has checked that `scopes` are within the grant's.
+        age = int(time.time()) - refresh_token.approved_at
+        log.info(f"OAuth: refreshed a grant approved {age // 3600}h ago")
+        return self._issue(
+            grant_scopes=refresh_token.scopes,
+            access_scopes=scopes,
+            sub=refresh_token.subject,
+            approved_at=refresh_token.approved_at,
+        )
 
     async def load_access_token(self, token: str) -> AccessToken | None:
-        opened = self._signed.open("access", token)
-        if opened is None:
+        claims = self._signed.open("access", token)
+        if claims is None or not self._allowed(claims["sub"]):
             return None
-        claims, _ = opened
         return AccessToken(
             token=token,
-            client_id=claims["client_id"],
+            client_id=CLIENT_ID,
             scopes=claims["scopes"],
             expires_at=claims["exp"],
             resource=claims["aud"],
+            subject=claims["sub"],
         )
+
+    verify_token = load_access_token  # TokenVerifier: /mcp takes these access tokens only
 
     # --- routes ----------------------------------------------------------------------
 
     def routes(self) -> list[Route]:
-        """Metadata (RFC 8414), /authorize, /token, /register and the approval page."""
+        """Metadata (RFC 8414), /authorize, /token, the consent page and Google's callback."""
         issuer = self.settings.issuer_url
-        registration = ClientRegistrationOptions(
-            enabled=True,
-            valid_scopes=[*self.scopes, OFFLINE_ACCESS],
-            default_scopes=[*self.scopes, OFFLINE_ACCESS],
-        )
+        registration = ClientRegistrationOptions(enabled=False, valid_scopes=list(SCOPES))
         revocation = RevocationOptions(enabled=False)  # nothing to revoke without storage
         metadata = build_metadata(issuer, None, registration, revocation)
-        # The SDK advertises only the secret-based methods; ChatGPT registers public clients.
-        metadata.token_endpoint_auth_methods_supported = list(TOKEN_AUTH_METHODS)
+        metadata.scopes_supported = list(SCOPES)
+        metadata.token_endpoint_auth_methods_supported = [TOKEN_AUTH_METHOD]
         metadata.authorization_response_iss_parameter_supported = True
         sdk_routes = [
-            r
+            Route(r.path, _WithIss(r.app, self.settings.public_url), methods=r.methods)
+            if r.path == AUTHORIZE_PATH
+            else r
             for r in create_auth_routes(self, issuer, None, registration, revocation)
             if r.path != METADATA_PATH
         ]
@@ -435,50 +652,112 @@ class AuthorizationServer:
                 methods=["GET", "OPTIONS"],
             ),
             *sdk_routes,
-            Route(APPROVAL_PATH, self._approval_page, methods=["GET", "POST"]),
+            Route(CONSENT_PATH, self._consent, methods=["GET", "POST"]),
+            Route(GOOGLE_CALLBACK_PATH, self._google_callback, methods=["GET"]),
         ]
 
-    async def _approval_page(self, request: Request) -> Response:
-        # No CSRF token: approving takes the write token itself, which the page never has.
-        posted = request.method == "POST"
-        if posted and self.failed_approvals.blocked():
-            return _page(_TOO_MANY, 429)
-        params = await request.form() if posted else request.query_params
-        sealed = str(params.get("request", ""))
-        opened = self._signed.open("approval", sealed)
-        if opened is None:
-            return _page(_EXPIRED, 400)
-        approval_request, _ = opened
-        if not posted:
-            return _page(_form(sealed, approval_request, error=None))
-        redirect = self.approve(approval_request, str(params.get("token", "")))
-        if redirect is None:
-            self.failed_approvals.record()
-            return _page(_form(sealed, approval_request, error="That is not a write token."), 401)
-        return RedirectResponse(redirect, status_code=303, headers={"Cache-Control": "no-store"})
+
+_CODE_CLAIMS = ("scopes", "code_challenge", "redirect_uri", "redirect_uri_provided_explicitly")
+_NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache", "Referrer-Policy": "no-referrer"}
+
+
+class _WithIss:
+    """The SDK's /authorize, with ``iss`` added to the error responses it redirects to the
+    client: RFC 9207 wants it in every authorization response, errors included. (A class:
+    Starlette would take a plain function for a request handler, not an ASGI app.)"""
+
+    def __init__(self, app: ASGIApp, issuer: str):
+        self.app = app
+        self.issuer = issuer
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        async def send_with_iss(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = [
+                    (k, _add_iss(v.decode(), self.issuer).encode() if k == b"location" else v)
+                    for k, v in message.get("headers", [])
+                ]
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_with_iss)
+
+
+def _add_iss(location: str, issuer: str) -> str:
+    query = parse_qs(urlparse(location).query)
+    if "error" not in query or "iss" in query:
+        return location
+    return construct_redirect_uri(location, iss=issuer)
+
+
+def _granted(requested: list[str] | None) -> list[str]:
+    """The scopes to grant for a request: all of them when none are asked for. ``write``
+    implies ``read``, which /mcp requires of every token. (The SDK has already refused
+    scopes the client is not registered for.)"""
+    scopes = set(requested or DEFAULT_SCOPES)
+    if WRITE in scopes:
+        scopes.add(READ)
+    return [s for s in SCOPES if s in scopes]
+
+
+def _set_flow_cookie(response: Response, value: str) -> None:
+    response.set_cookie(
+        FLOW_COOKIE,
+        value,
+        max_age=FLOW_TTL,
+        path="/",
+        secure=True,
+        httponly=True,
+        samesite="lax",
+    )
+
+
+def _done(response: Response | str) -> Response:
+    """The end of a flow: redirect to the client (or show a page) and drop the cookie."""
+    if isinstance(response, str):
+        response = RedirectResponse(response, status_code=303, headers=_NO_STORE)
+    response.delete_cookie(FLOW_COOKIE, path="/", secure=True, httponly=True, samesite="lax")
+    return response
 
 
 _EXPIRED = "<p>This authorization request is invalid or has expired. Start again from the app.</p>"
-_TOO_MANY = "<p>Too many wrong tokens. Try again in a few minutes.</p>"
+_RESTART = (
+    "<p>This page was not opened from the consent page of this browser, or was used "
+    "already. Start again from the app.</p>"
+)
+_GOOGLE_FAILED = "<p>Signing in with Google failed. Start again from the app.</p>"
+
+_SCOPE_TEXT = {
+    READ: "see the VM, its sessions and their screens",
+    WRITE: "start and stop the VM, open sessions and send prompts to Claude Code",
+    OFFLINE_ACCESS: (
+        f"stay connected without asking again, for up to {GRANT_LIFETIME // 86400} days"
+    ),
+}
 
 
-def _form(sealed: str, request: dict[str, Any], error: str | None) -> str:
-    client = html.escape(request.get("client_name") or "An application")
+def _consent_form(sealed: str, request: dict[str, Any], csrf: str) -> str:
     redirect_uri = html.escape(request["redirect_uri"])
-    problem = f'<p class="error">{html.escape(error)}</p>' if error else ""
+    scopes = "".join(f"<li>{html.escape(_SCOPE_TEXT[s])}</li>" for s in request["scopes"])
     return f"""
-<p><b>{client}</b> asks for full access to this cloud-coder worker: start and stop the
-VM, open sessions and send prompts to Claude Code. It will receive the grant at
-<code>{redirect_uri}</code>.</p>
-<p><b>Allow only if you started this connection yourself</b> (for example from ChatGPT)
-just now. Anyone can send you a link to this page.</p>
-<p>Paste a write token of the cloud-coder API to allow it.</p>
-{problem}
+<p><b>ChatGPT</b> asks for access to this cloud-coder worker. It may:</p>
+<ul>{scopes}</ul>
+<p>It will receive the grant at <code>{redirect_uri}</code>.</p>
+<p><b>Continue only if you started this connection yourself</b> (from ChatGPT) just now.
+Then sign in with a Google account that is allowed to approve.</p>
 <form method="post">
   <input type="hidden" name="request" value="{html.escape(sealed)}">
-  <input type="password" name="token" autocomplete="off" required autofocus>
-  <button type="submit">Allow</button>
+  <input type="hidden" name="csrf" value="{html.escape(csrf)}">
+  <button type="submit">Continue with Google</button>
 </form>"""
+
+
+def _not_allowed(sub: str, email: Any) -> str:
+    who = f" ({html.escape(email)})" if isinstance(email, str) else ""
+    return f"""
+<p>This Google account{who} may not approve access to this cloud-coder worker.</p>
+<p>To allow it, add its subject ID to {ALLOWED_SUBS_ENV} and restart the API:</p>
+<p><code>{html.escape(sub)}</code></p>"""
 
 
 def _page(body: str, status: int = 200) -> HTMLResponse:
@@ -488,18 +767,16 @@ def _page(body: str, status: int = 200) -> HTMLResponse:
 <title>cloud-coder authorization</title>
 <style>
 body {{ font-family: system-ui, sans-serif; max-width: 32rem; margin: 2rem auto; padding: 0 1rem; }}
-input[type=password] {{ width: 100%; padding: .5rem; margin: .5rem 0; box-sizing: border-box; }}
-.error {{ color: #b00020; }}
+button {{ padding: .5rem 1rem; }}
 </style></head>
 <body><h1>cloud-coder</h1>{body}</body></html>"""
     return HTMLResponse(
         page,
         status_code=status,
         headers={
-            "Cache-Control": "no-store",
+            **_NO_STORE,
             "X-Frame-Options": "DENY",
             "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; "
             "frame-ancestors 'none'",
-            "Referrer-Policy": "no-referrer",
         },
     )

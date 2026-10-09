@@ -60,3 +60,27 @@ variable "public_url" {
   type        = string
   default     = null
 }
+
+variable "google_oauth_client_id" {
+  description = <<-EOT
+    Client ID of the Google OAuth client (web application) that signs in whoever approves
+    an OAuth grant, with the redirect URI <public URL>/authorize/google/callback. Its secret
+    goes into the Secret cloud-coder-api-google-client-secret. Required with image_tag.
+  EOT
+  type        = string
+  default     = null
+}
+
+variable "oauth_allowed_subs" {
+  description = <<-EOT
+    Google account subject IDs (the ID token's `sub`, not e-mail addresses) that may approve
+    OAuth grants for /mcp. Empty: nobody can approve; the refusal page shows an account's ID.
+  EOT
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for s in var.oauth_allowed_subs : can(regex("^[0-9]+$", s))])
+    error_message = "oauth_allowed_subs must be Google subject IDs (digits)."
+  }
+}
