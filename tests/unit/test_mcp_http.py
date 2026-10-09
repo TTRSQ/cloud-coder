@@ -598,6 +598,12 @@ def test_code_is_single_use_at_google(client, google):
     assert exchange(client, code).status_code == 400
 
 
+def test_token_takes_only_a_small_form(client, google):
+    assert client.post(oauth.TOKEN_PATH, json={"grant_type": "refresh_token"}).status_code == 400
+    assert refresh(client, "r" * oauth.MAX_TOKEN_REQUEST).status_code == 400
+    assert google.token_requests == []
+
+
 def test_google_unreachable_is_503(client, google):
     google.unreachable = True
     response = refresh(client, "r")

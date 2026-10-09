@@ -143,11 +143,12 @@ MCP クライアントには `mcp_url` を使います (`url` とは別の、Clo
 
 この版から API は自前の token を出さず、Google の token を中継・確認します。Secret `cloud-coder-api-oauth-client-secret` / `-google-client-secret` は使わなくなり、Terraform から外れました (`terraform apply` で削除されます)。
 
-1. Google Cloud Console で、既存の Google の OAuth client の Authorized redirect URIs を `<公開 URL>/mcp/oauth/callback` に変える (前の `<公開 URL>/authorize/google/callback` は消す)。
-2. Google の client secret を手元に用意する (Console で表示できなければ新しく作る。前の構成の Secret `cloud-coder-api-google-client-secret` にも入っている: `gcloud secrets versions access latest --secret cloud-coder-api-google-client-secret --project $PROJECT`)。
+1. Google Cloud Console で、既存の Google の OAuth client の Authorized redirect URIs に `<公開 URL>/mcp/oauth/callback` を**追加**する (前の `<公開 URL>/authorize/google/callback` は手順 6 まで残す。ロールバックに使う)。
+2. **手順 3 の `terraform apply` で Secret が削除されるので、その前に** Google の client secret を手元に用意する (Console で表示できなければ新しく作る。前の構成の Secret `cloud-coder-api-google-client-secret` にも入っている: `gcloud secrets versions access latest --secret cloud-coder-api-google-client-secret --project $PROJECT`)。
 3. 初回の構築の手順 5 (新しいイメージ、`image_tag` を変えて `terraform apply`)。
 4. ChatGPT のアプリを作り直す (Client ID / secret は Google の client のもの)。前の接続 (client ID `cloud-coder`) は使えなくなる。
 5. 60 分以上何もせずに置き、再接続せずに `status` を呼べることを確かめる ([docs/mcp-oauth.md](../docs/mcp-oauth.md#実機での確認手順))。
+6. 確かめられたら、Google の client から前の redirect URI `<公開 URL>/authorize/google/callback` を消す。
 
 ## 止める・取り消す
 
@@ -167,7 +168,7 @@ MCP クライアントには `mcp_url` を使います (`url` とは別の、Clo
 
 ## ロールバック
 
-新しい revision で接続できない場合は、旧 revision にトラフィックを戻します。旧 revision は削除された Secret を参照するので、戻すには旧版のチェックアウトで `terraform apply` し直して Secret を作り、値 (自前の client secret、Google の client secret) を入れ直し、Google の client の redirect URI も `<公開 URL>/authorize/google/callback` に戻します。ChatGPT のアプリも旧構成 (client ID `cloud-coder`) で作り直します。
+新しい revision で接続できない場合は、旧 revision にトラフィックを戻します。旧 revision は削除された Secret を参照するので、戻すには旧版のチェックアウトで `terraform apply` し直して Secret を作り、値 (自前の client secret、Google の client secret) を入れ直します。ChatGPT のアプリも旧構成 (client ID `cloud-coder`) で作り直します。Google の client の前の redirect URI は、移行の手順 6 までは残っています。
 
 ## セキュリティ
 

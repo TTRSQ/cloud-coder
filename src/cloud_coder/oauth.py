@@ -69,6 +69,7 @@ GOOGLE_TOKENINFO_ENDPOINT = "https://oauth2.googleapis.com/tokeninfo"
 GOOGLE_EMAIL_SCOPE = "https://www.googleapis.com/auth/userinfo.email"  # tokeninfo's `email`
 GOOGLE_TIMEOUT = 10
 
+MAX_TOKEN_REQUEST = 16 * 1024  # bytes
 FLOW_TTL = 600  # from the authorization request to the callback
 TOKENINFO_CACHE_TTL = 60  # a token Google revokes still passes this long
 FLOW_COOKIE_PREFIX = "__Secure-cloud-coder-oauth-"
@@ -286,6 +287,11 @@ class AuthorizationRelay:
     async def _token(self, request: Request) -> Response:
         """Forward an authorization_code or refresh_token grant to Google with fixed
         parameters, and return Google's answer as is."""
+        content_type = request.headers.get("content-type", "").split(";")[0].strip().lower()
+        if content_type != "application/x-www-form-urlencoded":
+            return _refused("token", "content type")
+        if int(request.headers.get("content-length") or 0) > MAX_TOKEN_REQUEST:
+            return _refused("token", "body too large")
         form = await request.form()
         grant_type = form.get("grant_type")
         if form.get("client_id") != self.settings.google_client_id or not form.get("client_secret"):
