@@ -5,14 +5,12 @@ no tool takes a project, zone or instance, and none runs arbitrary commands. Too
 return quickly: starting or stopping the VM is only requested, and the caller polls;
 every call is bounded by a deadline. Claude Code's work takes far longer than an LLM
 client's turn, so the instructions and results tell the client to hand control back to
-the user once work has started, not to wait for it, and re-reads of a session found
-BUSY moments ago are answered without reaching the VM.
+the user once work has started, not to wait for it.
 The server does not depend on a transport: `cloud-coder mcp` serves it over stdio, and
 the HTTP API serves it at /mcp (Streamable HTTP) behind OAuth.
 """
 
 import logging
-import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -89,52 +87,6 @@ PROMPT_NOT_RESENT = "Do not resend this prompt; tell the user and end your turn"
 # (unpublished for ChatGPT): this keeps a stuck gcloud or ssh from outlasting it by far,
 # while leaving room for the slow steps of a normal call (VM start, SSH to a new VM).
 CALL_SECONDS = 120
-# A session (or status) found BUSY is not read again from the VM within this window.
-REREAD_SECONDS = 60
-
-
-class BusyReads:
-    """When `status` or `read_session` last found Claude Code BUSY, per target, so that a
-    client polling for BUSY to end is answered without reaching the VM."""
-
-    def __init__(self, window: float = REREAD_SECONDS):
-        self.window = window
-        self._seen: dict[str, float] = {}
-        self._lock = threading.Lock()
-
-    def seconds_since(self, target: str) -> float | None:
-        """Seconds since ``target`` was found BUSY, when that is within the window."""
-        with self._lock:
-            seen = self._seen.get(target)
-        if seen is None:
-            return None
-        elapsed = time.monotonic() - seen
-        return elapsed if elapsed < self.window else None
-
-    def record(self, target: str, busy: bool) -> None:
-        with self._lock:
-            if busy:
-                self._seen[target] = time.monotonic()
-            else:
-                self._seen.pop(target, None)
-
-    def clear(self) -> None:
-        """A write tool may have changed what the targets would show."""
-        with self._lock:
-            self._seen.clear()
-
-    def not_reread(self, elapsed: float) -> dict:
-        return {
-            "rechecked": False,
-            "seconds_since_check": round(elapsed),
-            "note": (
-                f"Not read again: Claude Code was BUSY {elapsed:.0f} s ago, and its work "
-                "takes minutes to hours. Stop polling: report the progress to the user and "
-                "end your turn. A fresh read is possible "
-                f"{self.window - elapsed:.0f} s from now, when the user asks."
-            ),
-        }
-
 
 READ_ONLY = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 STARTS = ToolAnnotations(destructive_hint=False, idempotent_hint=True, open_world_hint=False)
@@ -186,15 +138,6 @@ def build_server(
     server = MCPServer(
         "cloud-coder", instructions=INSTRUCTIONS, auth=auth, token_verifier=token_verifier
     )
-    busy_reads = BusyReads()
-
-    @contextmanager
-    def write_call(name: str) -> Iterator[None]:
-        """`tool_call` for the tools that are not read-only: what they change makes earlier
-        BUSY reads stale."""
-        with tool_call(name):
-            busy_reads.clear()
-            yield
 
     def started(result: dict) -> dict:
         if result.get("prompt") == "queued":
@@ -208,12 +151,8 @@ def build_server(
         """State of the VM and, when it runs, its sessions and auto-stop. Call it when the
         user asks; never poll it to wait for a BUSY Claude Code."""
         with tool_call("status"):
-            elapsed = busy_reads.seconds_since("status")
-            if elapsed is not None:
-                return busy_reads.not_reread(elapsed)
             st = connect.status(cfg)
             busy = any(s.get("claude_state") == BUSY for s in st.get("sessions", []))
-            busy_reads.record("status", busy)
             return {**st, "note": BUSY_NOTE} if busy else st
 
     @server.tool(annotations=STARTS)
@@ -221,7 +160,7 @@ def build_server(
         """Start the VM if it is not running and return without waiting. When it runs,
         also install or update the cloud-coder agent on it, in the background (the first
         install takes several minutes). Call again after a while until `ready` is true."""
-        with write_call("up"):
+        with tool_call("up"):
             return asdict(guards.up_now(cfg))
 
     @server.tool(annotations=ACTS)
@@ -262,7 +201,7 @@ def build_server(
         conversation; `conversation` in the result is `new` or `continued`. Requires a
         ready VM (see `up`). With a prompt, Claude Code works on it for minutes to hours:
         tell the user it has started and end your turn instead of waiting."""
-        with write_call("start_session"):
+        with tool_call("start_session"):
             if prompt is not None:
                 guards.checked_prompt(prompt)
             guards.require_ready(cfg)
@@ -283,7 +222,7 @@ def build_server(
         answer to a permission prompt or a question (do not resend it then); if Claude Code
         is not running it is started (or resumed) with this instruction. Claude Code works
         on it for minutes to hours: tell the user and end your turn."""
-        with write_call("send_prompt"):
+        with tool_call("send_prompt"):
             guards.checked_prompt(text)
             guards.require_ready(cfg)
             return started(
@@ -301,18 +240,9 @@ def build_server(
         Claude Code's state. Does not start the VM. Call it when the user asks for
         progress or the result; never poll it to wait for a BUSY Claude Code."""
         with tool_call("read_session"):
-            target = f"session {session}"
-            elapsed = busy_reads.seconds_since(target)
-            if elapsed is not None:
-                return {
-                    "session": session,
-                    "claude_state": BUSY,
-                    **busy_reads.not_reread(elapsed),
-                }
             guards.require_running(cfg)
             screen = connect.read_session(cfg, session, lines)
             busy = screen.get("claude_state") == BUSY
-            busy_reads.record(target, busy)
             return {**screen, "note": BUSY_NOTE} if busy else screen
 
     @server.tool(annotations=READ_ONLY)
@@ -333,7 +263,7 @@ def build_server(
         nothing closed, while the worktree has uncommitted or unpushed work or ignored
         files other than regenerable caches: tell the user what blocks it. A session
         that is already closed is reported as unknown. Requires a ready VM (see `up`)."""
-        with write_call("close_session"):
+        with tool_call("close_session"):
             guards.require_ready(cfg)
             return connect.close_session(cfg, session)
 
@@ -341,7 +271,7 @@ def build_server(
     def stop() -> dict:
         """Stop the VM now (its disk is kept) and return without waiting. Interrupts
         any running work; the VM also stops by itself once every session is idle."""
-        with write_call("stop"):
+        with tool_call("stop"):
             return {"vm": gce.stop(cfg, wait=False)}
 
     return server

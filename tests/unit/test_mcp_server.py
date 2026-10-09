@@ -1,7 +1,6 @@
 import json
 import logging
 import subprocess
-import time
 
 import anyio
 import pytest
@@ -273,66 +272,43 @@ def screen(state):
     return {"session": "cc-a-1", "claude_state": state, "output": "working..."}
 
 
-def test_a_busy_session_is_read_again_only_after_a_while(monkeypatch):
+def test_a_busy_session_is_read_from_the_vm_on_every_call(monkeypatch):
     monkeypatch.setattr(gce, "describe", lambda cfg: gce.Vm(gce.RUNNING))
+    states = iter(["BUSY", "BUSY", "READY"])
     reads = []
     monkeypatch.setattr(
-        connect, "read_session", lambda cfg, s, n: reads.append(s) or screen("BUSY")
+        connect, "read_session", lambda cfg, s, n: reads.append(s) or screen(next(states))
     )
-    first, second, other = calls(
-        ("read_session", {"session": "cc-a-1"}),
-        ("read_session", {"session": "cc-a-1"}),
-        ("read_session", {"session": "cc-b-1"}),
+    first, second, third = (
+        result_json(r)
+        for r in calls(
+            ("read_session", {"session": "cc-a-1"}),
+            ("read_session", {"session": "cc-a-1"}),
+            ("read_session", {"session": "cc-a-1"}),
+        )
     )
-    assert result_json(first)["note"] == mcp_server.BUSY_NOTE
-    assert result_json(first)["output"] == "working..."
-    again = result_json(second)
-    assert again["rechecked"] is False and again["claude_state"] == "BUSY"
-    assert "output" not in again and "Stop polling" in again["note"]
-    assert result_json(other)["output"] == "working..."
-    assert reads == ["cc-a-1", "cc-b-1"]
+    assert reads == ["cc-a-1"] * 3
+    for busy in (first, second):
+        assert busy["note"] == mcp_server.BUSY_NOTE and busy["output"] == "working..."
+    assert third["claude_state"] == "READY" and "note" not in third
 
 
-def test_a_session_that_is_not_busy_is_always_read(monkeypatch):
-    monkeypatch.setattr(gce, "describe", lambda cfg: gce.Vm(gce.RUNNING))
-    reads = []
-    monkeypatch.setattr(
-        connect, "read_session", lambda cfg, s, n: reads.append(s) or screen("READY")
-    )
-    results = calls(
-        ("read_session", {"session": "cc-a-1"}), ("read_session", {"session": "cc-a-1"})
-    )
-    assert all("note" not in result_json(r) for r in results)
-    assert len(reads) == 2
-
-
-def test_a_busy_status_is_read_again_only_after_a_while_or_a_write(monkeypatch):
+def test_a_busy_status_is_read_from_the_vm_on_every_call(monkeypatch):
+    states = iter(["BUSY", "BUSY", "READY"])
     reads = []
 
     def fake_status(cfg):
         reads.append(1)
-        return {"vm": "running", "sessions": [{"name": "cc-a-1", "claude_state": "BUSY"}]}
+        return {"vm": "running", "sessions": [{"name": "cc-a-1", "claude_state": next(states)}]}
 
     monkeypatch.setattr(connect, "status", fake_status)
-    monkeypatch.setattr(gce, "stop", lambda cfg, wait: gce.STOPPING)
-    first, second, _, third = calls(
-        ("status", None), ("status", None), ("stop", None), ("status", None)
+    first, second, third = (
+        result_json(r) for r in calls(("status", None), ("status", None), ("status", None))
     )
-    assert result_json(first)["note"] == mcp_server.BUSY_NOTE
-    assert result_json(second)["rechecked"] is False
-    assert result_json(third)["sessions"]
-    assert len(reads) == 2
-
-
-def test_busy_reads_expire():
-    busy = mcp_server.BusyReads(window=0.05)
-    busy.record("t", busy=True)
-    assert busy.seconds_since("t") is not None
-    time.sleep(0.06)
-    assert busy.seconds_since("t") is None
-    busy.record("t", busy=True)
-    busy.record("t", busy=False)
-    assert busy.seconds_since("t") is None
+    assert len(reads) == 3
+    for busy in (first, second):
+        assert busy["note"] == mcp_server.BUSY_NOTE and busy["sessions"]
+    assert third["sessions"][0]["claude_state"] == "READY" and "note" not in third
 
 
 def test_each_call_is_logged_and_bounded_by_a_deadline(monkeypatch, caplog):
