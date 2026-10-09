@@ -217,11 +217,10 @@ claude mcp add cloud-coder -- cloud-coder mcp
 - server は tool の呼び出しごとに、tool 名・成否・所要時間を stderr のログに出します (例: `cloud-coder: MCP tool read_session: ok in 6.4s`)。
 - `start_session` / `send_prompt` は VM が ready でなければ起動を要求したうえでエラーを返します (`up` で ready を待ってから再実行)。
 - MCP server は ssh-agent を VM に転送しません (`connect` は転送します)。private repository は HTTPS + `gh auth setup-git` で clone してください ([GitHub の認証](#github-の認証))。
-- `resource_usage` は SSH で決まったコマンド (`/proc/stat` を 1 秒あけて 2 回、`nproc`、`/proc/loadavg`、`/proc/meminfo`、`df`) を実行し、その出力を手元で集計します。VM の agent・tmux・Claude Code は使わないので、agent が古くても入っていなくても動きます。
-  - CPU の `utilization_percent` は 2 回の `/proc/stat` の差から、idle と iowait 以外の時間 (steal を含む) の割合として出します。`load_average` は 1 / 5 / 15 分の値です。
-  - メモリの `used_gib` は `MemTotal - MemAvailable` です (`free` の used と同じ考え方。page cache など解放できる分は含まない)。tmpfs (`/dev/shm` など) に置いたファイルはメモリの使用量に入ります。
+- `resource_usage` は SSH で `/proc` と `df` を読みます。VM の agent・tmux・Claude Code は使わないので、agent が古くても入っていなくても動きます。
+  - CPU の `utilization_percent` は 1 秒間のうち idle と iowait 以外の時間 (steal を含む) の割合です。`load_average` は 1 / 5 / 15 分の値です。
+  - メモリの `used_gib` は `MemTotal - MemAvailable` です (page cache など解放できる分は含まない)。tmpfs (`/dev/shm` など) に置いたファイルはメモリの使用量に入ります。
   - ディスクは tmpfs・devtmpfs・squashfs・overlay (Docker)・efivarfs を除いたローカルのファイルシステムごとに返します。`used_percent` は `df` の Use% と同じく `used / (used + available)` です (root 用の予約領域は含まない)。
-  - Cloud Monitoring は使いません。この VM はサービスアカウントなしで作るので Ops Agent が指標を送れず、エージェントなしで取れるのは CPU 使用率 (と e2 のメモリ) だけで、それも 60 秒ごとの値が最大 240 秒遅れて見えます。
 - server は transport に依存しない作りです (`cloud_coder.mcp_server.build_server`)。`cloud-coder mcp` は stdio で、`cloud-coder api` は `/mcp` (Streamable HTTP) で同じ tool を提供します ([HTTP API](#http-api))。
 
 ### HTTP API

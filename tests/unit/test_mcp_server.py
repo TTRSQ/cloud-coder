@@ -7,7 +7,7 @@ import anyio
 import pytest
 from mcp import Client
 
-from cloud_coder import connect, gce, mcp_server
+from cloud_coder import connect, gce, mcp_server, ssh
 from cloud_coder.config import Config
 
 CFG = Config(project="p")
@@ -186,9 +186,10 @@ def test_read_session_does_not_start_the_vm(monkeypatch):
     assert call("read_session", {"session": "cc-a-1", "lines": 0}).is_error
 
 
-def test_resource_usage_does_not_start_the_vm(monkeypatch):
+def test_resource_usage_does_not_start_or_reach_a_stopped_vm(monkeypatch):
     monkeypatch.setattr(gce, "describe", lambda cfg: gce.Vm(gce.STOPPED))
     monkeypatch.setattr(connect, "up", lambda *a, **kw: pytest.fail("started the VM"))
+    monkeypatch.setattr(ssh, "run", lambda *a, **kw: pytest.fail("reached the VM"))
     assert result_json(call("resource_usage")) == {
         "instance": "cloud-coder",
         "zone": "asia-northeast1-b",

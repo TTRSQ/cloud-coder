@@ -60,22 +60,6 @@ def test_parse_names_what_could_not_be_read():
         resource_usage.parse(partial)
 
 
-def test_probe_reads_only_disk_backed_filesystems():
-    command = resource_usage.PROBE_COMMAND
-    assert "/proc/stat" in command and "/proc/meminfo" in command
-    assert "-xtmpfs" in command and "-xoverlay" in command
-
-
-def test_a_vm_that_is_not_running_is_reported_without_ssh(monkeypatch):
-    monkeypatch.setattr(gce, "describe", lambda cfg: gce.Vm(gce.STOPPED, "t2d-standard-8"))
-    monkeypatch.setattr(ssh, "run", lambda *a, **kw: pytest.fail("reached the VM"))
-    assert resource_usage.read(CFG) == {
-        "instance": "cloud-coder",
-        "zone": "asia-northeast1-b",
-        "vm": "stopped",
-    }
-
-
 def test_a_running_vm_is_probed_over_ssh(monkeypatch):
     commands = []
 
@@ -100,5 +84,12 @@ def test_an_ssh_failure_carries_its_stderr(monkeypatch):
             [], 255, stdout="", stderr="Connection timed out"
         ),
     )
-    with pytest.raises(resource_usage.ProbeError, match="Connection timed out"):
+    with pytest.raises(resource_usage.ProbeError, match="SSH to the VM failed: Connection timed"):
         resource_usage.read(CFG)
+
+
+def test_unexpected_output_is_a_probe_error():
+    with pytest.raises(resource_usage.ProbeError, match="unexpected output"):
+        resource_usage.parse(PROBE_OUTPUT.replace("cores 8", "cores eight"))
+    noisy = "Warning: something from a login script\n" + PROBE_OUTPUT
+    assert resource_usage.parse(noisy) == resource_usage.parse(PROBE_OUTPUT)

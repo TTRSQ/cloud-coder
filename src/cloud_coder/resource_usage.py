@@ -3,6 +3,8 @@
 The probe is a fixed shell command that needs only the kernel and coreutils, not the VM
 agent, tmux or Claude Code, so it works on any running VM whatever agent version it
 has. It never starts the VM: a VM that is not running is reported as such.
+Cloud Monitoring is not used: the VM has no service account, so the Ops Agent cannot
+send memory and disk metrics, and the CPU metric it has without one lags by minutes.
 """
 
 import shlex
@@ -13,17 +15,20 @@ from cloud_coder.config import Config
 
 # CPU utilization is measured over this many seconds between two reads of /proc/stat.
 CPU_SAMPLE_SECONDS = 1
+MEMINFO_KEYS = ("MemTotal", "MemAvailable", "SwapTotal", "SwapFree")
 # Filesystems that are not on a disk: memory-backed (counted in memory) or images.
 NOT_ON_DISK = ("tmpfs", "devtmpfs", "squashfs", "overlay", "efivarfs")
 
 PROBE_COMMAND = " ; ".join(
     [
+        # Untranslated output (ssh forwards LANG and LC_*) for the parser to find.
+        "export LC_ALL=C",
         "head -n1 /proc/stat",
         f"sleep {CPU_SAMPLE_SECONDS}",
         "head -n1 /proc/stat",
         'echo "cores $(nproc)"',
         'echo "loadavg $(cat /proc/loadavg)"',
-        "grep -E '^(MemTotal|MemAvailable|SwapTotal|SwapFree):' /proc/meminfo",
+        f"grep -E '^({'|'.join(MEMINFO_KEYS)}):' /proc/meminfo",
         shlex.join(["df", "-P", "-B1", "-l", *(f"-x{t}" for t in NOT_ON_DISK)]),
     ]
 )
@@ -53,7 +58,15 @@ def _cpu_busy_and_total(line: str) -> tuple[int, int]:
 
 
 def parse(stdout: str) -> dict:
-    """The usage that ``PROBE_COMMAND`` printed; ProbeError when a part is missing."""
+    """The usage that ``PROBE_COMMAND`` printed; ProbeError when a part is missing or
+    unreadable."""
+    try:
+        return _parse(stdout)
+    except (ValueError, IndexError) as e:
+        raise ProbeError(f"unexpected output on the VM: {e}") from e
+
+
+def _parse(stdout: str) -> dict:
     cpu_lines: list[str] = []
     fields: dict[str, list[str]] = {}
     meminfo: dict[str, int] = {}
@@ -82,7 +95,7 @@ def parse(stdout: str) -> dict:
             fields[key] = rest.split()
         elif line.startswith("Filesystem"):
             in_df = True
-        elif ":" in line:
+        elif line.startswith(tuple(f"{k}:" for k in MEMINFO_KEYS)):
             key, _, rest = line.partition(":")
             meminfo[key] = int(rest.split()[0]) * 1024
 
@@ -131,6 +144,10 @@ def read(cfg: Config) -> dict:
         return out
     out["machine_type"] = vm.machine_type
     result: subprocess.CompletedProcess = ssh.run(cfg, PROBE_COMMAND)
+    if result.returncode != 0 and not result.stdout.strip():
+        raise ProbeError(
+            f"SSH to the VM failed: {result.stderr.strip()[-300:] or result.returncode}"
+        )
     try:
         return {**out, **parse(result.stdout)}
     except ProbeError as e:
