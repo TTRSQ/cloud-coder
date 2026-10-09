@@ -96,7 +96,7 @@ C (Auth0 などの外部 AS) は #31 で不採用 (利用者 1 人・クライ�
 | redirect URI の完全一致、不正な組み合わせでは redirect しない | RFC 9700 4.1.3 / 4.11.2、MCP "Open Redirection" | 登録 URI との完全一致 (ワイルドカード廃止、#30)。不一致・未知の client は 400 で redirect しない (テストで確認) |
 | open redirector を作らない | RFC 9700 2.1、OWASP OAuth2 Cheat Sheet https://cheatsheetseries.owasp.org/cheatsheets/OAuth2_Cheat_Sheet.html | Google の callback の戻り先は署名した認可要求の中の値だけ (SDK が登録 URI と照合済み)。Google への転送先は固定の URL |
 | mix-up 対策: 認可応答に `iss` (RFC 9207) | RFC 9207 https://www.rfc-editor.org/rfc/rfc9207.html、OpenAI https://developers.openai.com/plugins/build/auth | 成功・エラー (access_denied) の両方の応答に `iss` を付ける |
-| public client の refresh token はローテーションか sender-constrained | MCP "Token Theft"、RFC 9700 2.2.2 / 4.14 | 事前登録の confidential client。refresh には client secret が要る (RFC 9700 4.14: confidential client の refresh token はその client しか使えない)。**意図した逸脱**: ローテーション (使用済み refresh token の失効) はしない。状態を持たない設計を保つため。個別取り消しと合わせて follow-up issue にする |
+| public client の refresh token はローテーションか sender-constrained | MCP "Token Theft"、RFC 9700 2.2.2 / 4.14 | 事前登録の confidential client。refresh には client secret が要る (RFC 9700 4.14: confidential client の refresh token はその client しか使えない)。**意図した逸脱**: ローテーション (使用済み refresh token の失効) はしない。状態を持たない設計を保つため。個別取り消しと合わせて #39 で追う |
 | refresh token は使われないと失効させる | RFC 9700 4.14 | 最後の発行から 14 日で失効 (`REFRESH_TOKEN_TTL`) |
 | 絶対期限 | Auth0 "Maximum lifetime" https://auth0.com/docs/secure/tokens/refresh-tokens/configure-refresh-token-expiration、#29 | 承認から 30 日 (`GRANT_LIFETIME`)。access token の期限もこれを超えない |
 | 最小権限の scope、要求された scope を尊重 | MCP "Scope Minimization" https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices | 付与 = 要求 ∩ {read, write, offline_access}、要求が無ければ read + write。refresh では広げられない (#29) |
@@ -120,7 +120,7 @@ C (Auth0 などの外部 AS) は #31 で不採用 (利用者 1 人・クライ�
 | --- | --- | --- |
 | #27 | Closes | `/mcp` は自前の access token だけ。read / write token と Secret を廃止 |
 | #28 | Closes | Google ログイン + `sub` の allowlist で承認。署名鍵を専用の Secret に。write token・global lockout を廃止 |
-| #29 | Closes (必須部分) | grant の絶対期限 (30 日)、要求 scope の尊重。任意部分 (Firestore によるローテーション・個別取り消し・`/revoke`) は follow-up issue |
+| #29 | Closes (必須部分) | grant の絶対期限 (30 日)、要求 scope の尊重。任意部分 (Firestore によるローテーション・個別取り消し・`/revoke`) は #39 |
 | #30 | Closes | redirect URI は `connector_platform_oauth_redirect` の 1 本 (完全一致) |
 | #31 | Refs | 受入条件のうち、デプロイと ChatGPT のつなぎ直しが残る |
 | #33 | Refs | 実機での 60〜90 分無操作と翌日の確認が残る (下の手順) |
