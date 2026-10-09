@@ -393,9 +393,23 @@ def test_full_flow_gives_tokens_that_work_on_mcp(client, google, vm_calls):
     assert vm_calls == ["stop"]
 
 
-def test_no_scope_requested_gives_read_and_write(client, google):
+def test_no_scope_requested_gives_every_scope(client, google):
     tokens = grant(client, google, scope=None)
-    assert tokens["scope"] == "read write"
+    assert tokens["scope"] == "read write offline_access" and tokens["refresh_token"]
+
+
+def test_no_refresh_token_without_offline_access(client, google):
+    tokens = grant(client, google, scope="read write")
+    assert tokens["scope"] == "read write" and "refresh_token" not in tokens
+
+
+def test_narrowed_refresh_keeps_the_grant(client, google):
+    """RFC 6749 6: a new refresh token has the scope of the one presented."""
+    tokens = grant(client, google)
+    narrowed = refresh(client, tokens["refresh_token"], scope="read").json()
+    assert narrowed["scope"] == "read"
+    widened = refresh(client, narrowed["refresh_token"], scope="read write").json()
+    assert widened["scope"] == "read write"
 
 
 def test_read_scope_alone_cannot_call_write_tools(client, google, vm_calls):
@@ -442,15 +456,19 @@ def test_unknown_client_is_refused_without_redirecting(client):
 
 def test_plain_pkce_is_refused(client):
     response = authorize(client, code_challenge_method="plain")
-    assert "location" not in response.headers or "error=" in response.headers["location"]
-    assert response.status_code in (302, 400)
-    assert "/authorize/consent" not in response.headers.get("location", "")
+    assert response.status_code == 302
+    location = urlparse(response.headers["location"])
+    assert f"{location.scheme}://{location.netloc}{location.path}" == CHATGPT
+    reply = parse_qs(location.query)
+    assert reply["error"] == ["invalid_request"] and reply["state"] == ["st"]
+    assert reply["iss"] == [BASE]  # RFC 9207: in error responses too
 
 
 def test_other_resource_is_refused(client):
     response = authorize(client, resource="https://other.example/mcp")
     assert response.status_code == 302
-    assert parse_qs(urlparse(response.headers["location"]).query)["error"] == ["invalid_target"]
+    reply = parse_qs(urlparse(response.headers["location"]).query)
+    assert reply["error"] == ["invalid_target"] and reply["iss"] == [BASE]
 
 
 def test_base_url_is_accepted_as_the_resource(client):
@@ -738,7 +756,7 @@ def test_forged_access_token_is_401(client, google):
 
 def test_token_for_another_resource_is_401(client):
     signed = oauth.SignedTokens((SIGNING_KEY,))
-    claims = {"scopes": ["read"], "sub": ALLOWED_SUB, "auth_time": int(time.time())}
+    claims = {"scopes": ["read"], "sub": ALLOWED_SUB, "approved_at": int(time.time())}
     exp = int(time.time()) + 60
     token = signed.seal("access", {**claims, "aud": "https://other.example/mcp"}, exp)
     assert rpc(client, token, "tools/list").status_code == 401

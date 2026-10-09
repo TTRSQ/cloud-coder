@@ -149,12 +149,17 @@ MCP クライアントには `mcp_url` を使います (`url` とは別の、Clo
 
 ```bash
 cd infra
+# 1. 旧 Secret を Terraform の管理から外す (消さない)
 for k in read_tokens write_tokens; do
   terraform state rm "google_secret_manager_secret_iam_member.api[\"$k\"]" "google_secret_manager_secret.api[\"$k\"]"
 done
-# 手順 3〜5 (Google の OAuth client、新しい Secret の値、イメージと apply)
-# ChatGPT のアプリを作り直す (client ID / secret を入力する。旧接続はすべて無効になる)
-# 動作を確かめてから古い Secret を消す
+# 2. 新しい Secret の入れ物だけを先に作る (image_tag は設定済みなので、全体の apply は
+#    Secret の値を入れてから。値の無い Secret を参照する revision は起動しない)
+terraform apply -target=google_secret_manager_secret.api -target=google_secret_manager_secret_iam_member.api
+# 3. 初回の構築の手順 3 (Google の OAuth client と terraform.tfvars) と手順 4 (Secret の値)
+# 4. 初回の構築の手順 5 (新しいイメージ、image_tag を変えて terraform apply)
+# 5. ChatGPT のアプリを作り直す (client ID / secret を入力する。旧接続はすべて無効になる)
+# 6. 動作を確かめてから古い Secret を消す
 gcloud secrets delete cloud-coder-api-read-tokens --project $PROJECT
 gcloud secrets delete cloud-coder-api-write-tokens --project $PROJECT
 ```

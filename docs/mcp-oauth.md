@@ -46,7 +46,7 @@ sequenceDiagram
 - **client**: `client_id=cloud-coder`、client secret は Secret `cloud-coder-api-oauth-client-secret`、`token_endpoint_auth_method=client_secret_post`、redirect URI は `https://chatgpt.com/connector_platform_oauth_redirect` だけ。ChatGPT のアプリ作成画面で client ID と secret を入力する (OpenAI の文書の "predefined OAuth client")。
 - **承認**: 同意画面で「Continue with Google」→ Google でログイン → ID token の `sub` が allowlist (`CLOUD_CODER_OAUTH_ALLOWED_SUBS`) にあれば code を出す。
 - **token**: 何も保存しない。認可要求・Google の `state`・code・access token・refresh token は、claims に HMAC-SHA256 を付けた自己完結の値。鍵は Secret `cloud-coder-api-oauth-signing-keys` (カンマ区切り、先頭で署名・全部で検証) から種類ごとに HKDF で導出する。
-- **grant の寿命**: access token 1 時間、refresh token は使われないと 14 日で失効、grant 全体は承認から 30 日 (`auth_time` を引き継ぎ、どれだけ refresh しても延びない)。その後は ChatGPT で接続し直す。
+- **grant の寿命**: access token 1 時間、refresh token は使われないと 14 日で失効、grant 全体は承認から 30 日 (承認時刻 `approved_at` を引き継ぎ、どれだけ refresh しても延びない)。その後は ChatGPT で接続し直す。
 - **取り消し**: `sub` を allowlist から外すと、その人の grant (code・access・refresh) がすぐ無効になる。署名鍵を全部入れ替えると全 grant が無効になる。client secret を入れ替えると ChatGPT の refresh も code の交換もできなくなる。
 - `/mcp` は、この AS が出した `aud=<公開 URL>/mcp` の access token だけを受け付ける。静的な Bearer token (旧 read / write token) と Google の token は受け付けない。
 
@@ -95,11 +95,11 @@ C (Auth0 などの外部 AS) は #31 で不採用 (利用者 1 人・クライ�
 | PKCE S256 必須 | RFC 9700 2.1.1 https://www.rfc-editor.org/rfc/rfc9700.html、MCP "Authorization Code Protection" | ChatGPT との間は SDK が S256 を強制。Google との間もこちらが S256 の verifier を持つ |
 | redirect URI の完全一致、不正な組み合わせでは redirect しない | RFC 9700 4.1.3 / 4.11.2、MCP "Open Redirection" | 登録 URI との完全一致 (ワイルドカード廃止、#30)。不一致・未知の client は 400 で redirect しない (テストで確認) |
 | open redirector を作らない | RFC 9700 2.1、OWASP OAuth2 Cheat Sheet https://cheatsheetseries.owasp.org/cheatsheets/OAuth2_Cheat_Sheet.html | Google の callback の戻り先は署名した認可要求の中の値だけ (SDK が登録 URI と照合済み)。Google への転送先は固定の URL |
-| mix-up 対策: 認可応答に `iss` (RFC 9207) | RFC 9207 https://www.rfc-editor.org/rfc/rfc9207.html、OpenAI https://developers.openai.com/plugins/build/auth | 成功・エラー (access_denied) の両方の応答に `iss` を付ける |
+| mix-up 対策: 認可応答に `iss` (RFC 9207) | RFC 9207 https://www.rfc-editor.org/rfc/rfc9207.html、OpenAI https://developers.openai.com/plugins/build/auth | 成功・エラーのすべての認可応答に `iss` を付ける。MCP SDK の `/authorize` がクライアントに返すエラー (invalid_request・invalid_scope・invalid_target) には `iss` が無いので、その redirect に足す |
 | public client の refresh token はローテーションか sender-constrained | MCP "Token Theft"、RFC 9700 2.2.2 / 4.14 | 事前登録の confidential client。refresh には client secret が要る (RFC 9700 4.14: confidential client の refresh token はその client しか使えない)。**意図した逸脱**: ローテーション (使用済み refresh token の失効) はしない。状態を持たない設計を保つため。個別取り消しと合わせて #39 で追う |
 | refresh token は使われないと失効させる | RFC 9700 4.14 | 最後の発行から 14 日で失効 (`REFRESH_TOKEN_TTL`) |
 | 絶対期限 | Auth0 "Maximum lifetime" https://auth0.com/docs/secure/tokens/refresh-tokens/configure-refresh-token-expiration、#29 | 承認から 30 日 (`GRANT_LIFETIME`)。access token の期限もこれを超えない |
-| 最小権限の scope、要求された scope を尊重 | MCP "Scope Minimization" https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices | 付与 = 要求 ∩ {read, write, offline_access}、要求が無ければ read + write。refresh では広げられない (#29) |
+| 最小権限の scope、要求された scope を尊重 | MCP "Scope Minimization" https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices、RFC 6749 6 https://www.rfc-editor.org/rfc/rfc6749#section-6 | 付与 = 要求 ∩ {read, write, offline_access}。refresh token は `offline_access` を含む grant にだけ出す。refresh では広げられず、狭めた refresh でも新しい refresh token は元の grant の scope のまま (RFC 6749 6)。**#29 からの逸脱**: 要求が無いときの既定は read + write ではなく 3 つすべて。既定で refresh token が出ないと、scope を送らないクライアントが 1 時間ごとに切れる (#33) ため。ChatGPT は 3 つを明示して要求する (上の観測) |
 | proxy の confused deputy: client ごとの同意、同意画面に client 名・scope・redirect URI、CSRF、frame 禁止 | MCP Security Best Practices "Confused Deputy Problem" | client は 1 つだけで DCR なし (前提条件そのものが無い)。それでも同意画面を毎回出し、client・scope・受け取り先を表示、CSRF token、`frame-ancestors 'none'` と `X-Frame-Options: DENY` |
 | state の Cookie は同意の**後**、upstream へ redirect する直前に置く。1 回限り・短命 | 同上 "OAuth State Parameter Validation" | 同意画面の GET で置く Cookie は CSRF token の種だけ。同意の POST で新しい値に置き換え、Google の `state` にはその MAC を入れる。callback で照合して消し、さらにメモリ上で 1 回限り。10 分 |
 | Cookie は `__Host-`、`Secure`、`HttpOnly`、`SameSite=Lax`、署名 | 同上、OWASP Session Management https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html | `__Host-cloud-coder-oauth`、`Path=/`、`Domain` なし、`Max-Age=600`。値は乱数で、検証は署名鍵による MAC |

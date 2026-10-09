@@ -30,7 +30,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urlencode, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx2
 from mcp.server.auth.handlers.metadata import MetadataHandler
@@ -50,6 +50,7 @@ from pydantic import AnyHttpUrl, AnyUrl, ConfigDict, TypeAdapter
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 from starlette.routing import Route
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from cloud_coder.config import ConfigError
 from cloud_coder.guards import READ, WRITE
@@ -71,10 +72,11 @@ CHATGPT_REDIRECT_URI = "https://chatgpt.com/connector_platform_oauth_redirect"
 TOKEN_AUTH_METHOD = "client_secret_post"
 OFFLINE_ACCESS = "offline_access"
 SCOPES = (READ, WRITE, OFFLINE_ACCESS)
-DEFAULT_SCOPES = (READ, WRITE)
+DEFAULT_SCOPES = SCOPES  # when the client asks for none
 MIN_SECRET_LENGTH = 32
 
 MCP_PATH = "/mcp"
+AUTHORIZE_PATH = "/authorize"
 METADATA_PATH = "/.well-known/oauth-authorization-server"
 CONSENT_PATH = "/authorize/consent"
 GOOGLE_CALLBACK_PATH = "/authorize/google/callback"
@@ -339,15 +341,19 @@ class GoogleLogin:
         return claims
 
 
+# `subject` (from the SDK) is the approver's Google sub; `approved_at` is when the grant was
+# approved, which bounds its lifetime.
+
+
 class GrantCode(AuthorizationCode):
+    subject: str
     jti: str
-    sub: str
-    auth_time: int
+    approved_at: int
 
 
 class GrantRefreshToken(RefreshToken):
-    sub: str
-    auth_time: int
+    subject: str
+    approved_at: int
 
 
 class AuthorizationServer:
@@ -492,7 +498,7 @@ class AuthorizationServer:
                 **{k: authorization[k] for k in _CODE_CLAIMS},
                 "jti": secrets.token_urlsafe(16),
                 "sub": sub,
-                "auth_time": now,
+                "approved_at": now,
             },
             exp=now + CODE_TTL,
         )
@@ -521,22 +527,34 @@ class AuthorizationServer:
             redirect_uri=claims["redirect_uri"],
             redirect_uri_provided_explicitly=claims["redirect_uri_provided_explicitly"],
             resource=self.settings.resource_url,
+            subject=claims["sub"],
             jti=claims["jti"],
-            sub=claims["sub"],
-            auth_time=claims["auth_time"],
+            approved_at=claims["approved_at"],
         )
 
     # --- tokens ----------------------------------------------------------------------
 
-    def _issue(self, scopes: list[str], sub: str, auth_time: int) -> OAuthToken:
+    def _issue(
+        self, granted: list[str], scopes: list[str], sub: str, approved_at: int
+    ) -> OAuthToken:
+        """An access token for ``scopes``, and a refresh token for the whole grant
+        (``granted``, RFC 6749 6) if it includes offline_access."""
         now = int(time.time())
-        grant_ends = auth_time + GRANT_LIFETIME
-        claims = {"scopes": scopes, "sub": sub, "auth_time": auth_time}
+        grant_ends = approved_at + GRANT_LIFETIME
+        claims = {"sub": sub, "approved_at": approved_at}
         access_exp = min(now + ACCESS_TOKEN_TTL, grant_ends)
         access = self._signed.seal(
-            "access", {**claims, "aud": self.settings.resource_url}, exp=access_exp
+            "access",
+            {**claims, "scopes": scopes, "aud": self.settings.resource_url},
+            exp=access_exp,
         )
-        refresh = self._signed.seal("refresh", claims, exp=min(now + REFRESH_TOKEN_TTL, grant_ends))
+        refresh = None
+        if OFFLINE_ACCESS in granted:
+            refresh = self._signed.seal(
+                "refresh",
+                {**claims, "scopes": granted},
+                exp=min(now + REFRESH_TOKEN_TTL, grant_ends),
+            )
         return OAuthToken(
             access_token=access,
             expires_in=access_exp - now,
@@ -552,12 +570,11 @@ class AuthorizationServer:
         # CODE_TTL seconds and needs the verifier and the client secret as well.
         if not self._used_codes.claim(authorization_code.jti, authorization_code.expires_at):
             raise TokenError("invalid_grant", "authorization code already used")
-        if not self._allowed(authorization_code.sub):
+        if not self._allowed(authorization_code.subject):
             raise TokenError("invalid_grant", "the approver is no longer allowed")
         log.info("OAuth: exchanged an authorization code")
-        return self._issue(
-            authorization_code.scopes, authorization_code.sub, authorization_code.auth_time
-        )
+        code = authorization_code
+        return self._issue(code.scopes, code.scopes, code.subject, code.approved_at)
 
     async def load_refresh_token(
         self, client: OAuthClientInformationFull, refresh_token: str
@@ -571,8 +588,8 @@ class AuthorizationServer:
             scopes=claims["scopes"],
             expires_at=claims["exp"],
             resource=self.settings.resource_url,
-            sub=claims["sub"],
-            auth_time=claims["auth_time"],
+            subject=claims["sub"],
+            approved_at=claims["approved_at"],
         )
 
     async def exchange_refresh_token(
@@ -582,9 +599,10 @@ class AuthorizationServer:
         scopes: list[str],
     ) -> OAuthToken:
         # The SDK has checked that `scopes` are within the grant's.
-        age = int(time.time()) - refresh_token.auth_time
+        age = int(time.time()) - refresh_token.approved_at
         log.info(f"OAuth: refreshed a grant approved {age // 3600}h ago")
-        return self._issue(scopes, refresh_token.sub, refresh_token.auth_time)
+        token = refresh_token
+        return self._issue(token.scopes, scopes, token.subject, token.approved_at)
 
     async def load_access_token(self, token: str) -> AccessToken | None:
         claims = self._signed.open("access", token)
@@ -596,6 +614,7 @@ class AuthorizationServer:
             scopes=claims["scopes"],
             expires_at=claims["exp"],
             resource=claims["aud"],
+            subject=claims["sub"],
         )
 
     verify_token = load_access_token  # TokenVerifier: /mcp takes these access tokens only
@@ -612,7 +631,9 @@ class AuthorizationServer:
         metadata.token_endpoint_auth_methods_supported = [TOKEN_AUTH_METHOD]
         metadata.authorization_response_iss_parameter_supported = True
         sdk_routes = [
-            r
+            Route(r.path, _WithIss(r.app, self.settings.public_url), methods=r.methods)
+            if r.path == AUTHORIZE_PATH
+            else r
             for r in create_auth_routes(self, issuer, None, registration, revocation)
             if r.path != METADATA_PATH
         ]
@@ -630,6 +651,35 @@ class AuthorizationServer:
 
 _CODE_CLAIMS = ("scopes", "code_challenge", "redirect_uri", "redirect_uri_provided_explicitly")
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache", "Referrer-Policy": "no-referrer"}
+
+
+class _WithIss:
+    """The SDK's /authorize, with ``iss`` added to the error responses it redirects to the
+    client: RFC 9207 wants it in every authorization response, errors included. (A class:
+    Starlette would take a plain function for a request handler, not an ASGI app.)"""
+
+    def __init__(self, app: ASGIApp, issuer: str):
+        self.app = app
+        self.issuer = issuer
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        async def send_with_iss(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = [
+                    (k, _add_iss(v.decode(), self.issuer).encode() if k == b"location" else v)
+                    for k, v in message.get("headers", [])
+                ]
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_with_iss)
+
+
+def _add_iss(location: str, issuer: str) -> str:
+    query = parse_qs(urlparse(location).query)
+    if "error" not in query or "iss" in query:
+        return location
+    return construct_redirect_uri(location, iss=issuer)
 
 
 def _set_flow_cookie(response: Response, value: str) -> None:
