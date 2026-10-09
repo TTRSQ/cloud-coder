@@ -252,7 +252,7 @@ cloud-coder が起動する Claude Code は、すべて Remote Control 付き (`
 
 - 対象の VM は `config.yaml` (と `cloud-coder mcp` に付けたオプション) で決まります。`gcp.project` が無いと server は起動せず、エラーになります。
 - 典型的な流れは `up` (ready になるまで間をおいて呼び直す) → `start_session` (`repo` と `prompt`) → 開始したことをユーザーに報告してターンを終える → 後でユーザーが進み具合や結果を尋ねたら `read_session` / `status` で確認する → 必要なら `send_prompt` で追加の指示、です。作業が終われば VM は自動停止するので、`stop` を呼ぶ必要は普段ありません。
-- Claude Code の作業は数分〜数時間かかります。server は LLM に、作業を始めたらターンを終え、`BUSY` が終わるのをポーリングで待たないよう指示します (`start_session` / `send_prompt` の応答の `next`、`BUSY` のときの応答の `note`)。`BUSY` と分かってから 60 秒以内に同じ `status` / `read_session` を呼ぶと、VM に問い合わせずに `rechecked: false` だけが返ります ([README の MCP server](README.md#mcp-server))。
+- Claude Code の作業は数分〜数時間かかります。server は LLM に、作業を始めたらターンを終え、`BUSY` が終わるのをポーリングで待たないよう指示します (`start_session` / `send_prompt` の応答の `next`、`BUSY` のときの応答の `note`)。`status` / `read_session` は呼ぶたびに VM に問い合わせ、最新の状態と画面を返します ([README の MCP server](README.md#mcp-server))。
 - `up` は agent のインストール・更新を VM 上で始めてすぐに返り、終わるまでは `ready: false` (`agent_installing: true`) を返します。初回は数分かかります。失敗すると、次の `up` がエラーを返すと同時にインストールをやり直します (失敗したときのログは VM の `~/cloud-coder-install.log.prev`)。CLI の `up` / `connect` は、VM 上で動いているインストールの終了を待ってから続けます。
 - `read_session` は tmux の画面の文字列をそのまま返します。Claude Code の応答のほか、権限の確認や trust 画面など入力を待っている表示もそのまま読めます。
 - `send_prompt` は Claude Code が `BUSY` でも送れます。Claude Code のキューに入り、次の区切りで取り込まれます (応答の `prompt` が `queued`)。ダイアログの表示中はエラーになります (CLI の `-p` と同じ)。
