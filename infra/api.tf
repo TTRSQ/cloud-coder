@@ -47,16 +47,12 @@ locals {
     "https://cloud-coder-api-${data.google_project.this.number}.${var.region}.run.app",
   )
   secrets = {
-    ssh_key              = "cloud-coder-api-ssh-key"
-    oauth_signing_keys   = "cloud-coder-api-oauth-signing-keys"
-    oauth_client_secret  = "cloud-coder-api-oauth-client-secret"
-    google_client_secret = "cloud-coder-api-google-client-secret"
+    ssh_key            = "cloud-coder-api-ssh-key"
+    oauth_signing_keys = "cloud-coder-api-oauth-signing-keys"
   }
   # Environment variables read from the secrets above.
   secret_env = {
-    CLOUD_CODER_OAUTH_SIGNING_KEYS   = "oauth_signing_keys"
-    CLOUD_CODER_OAUTH_CLIENT_SECRET  = "oauth_client_secret"
-    CLOUD_CODER_GOOGLE_CLIENT_SECRET = "google_client_secret"
+    CLOUD_CODER_OAUTH_SIGNING_KEYS = "oauth_signing_keys"
   }
   config_yaml = yamlencode(merge(
     {
@@ -170,7 +166,7 @@ resource "google_cloud_run_v2_service" "api" {
   lifecycle {
     precondition {
       condition     = var.google_oauth_client_id != null
-      error_message = "Set google_oauth_client_id (the Google OAuth client that signs in approvers; see README.md)."
+      error_message = "Set google_oauth_client_id (the Google OAuth client ChatGPT signs in with; see README.md)."
     }
   }
 

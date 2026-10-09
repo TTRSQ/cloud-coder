@@ -9,10 +9,6 @@ import unicodedata
 from cloud_coder import connect, gce
 from cloud_coder.config import Config
 
-# Scopes of the callers of MCP over HTTP; write implies read.
-READ = "read"
-WRITE = "write"
-
 
 class PromptRejected(ValueError):
     """The prompt could make Claude Code run a shell command."""

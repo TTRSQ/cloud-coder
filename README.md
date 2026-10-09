@@ -220,50 +220,44 @@ claude mcp add cloud-coder -- cloud-coder mcp
 
 ### HTTP API
 
-`cloud-coder api` は、MCP server を `<公開 URL>/mcp` (Streamable HTTP、stateless) で提供します。tool と制約は stdio の MCP server と同じです。stdio で起動できないクライアント (ChatGPT) から、VM の起動・タスクの投入・結果の確認を行えます。`/mcp` は、`cloud-coder api` 自身が兼ねる OAuth 2.1 authorization server の access token だけで守られます。設計と根拠は [docs/mcp-oauth.md](docs/mcp-oauth.md) にあります。
+`cloud-coder api` は、MCP server を `<公開 URL>/mcp` (Streamable HTTP、stateless) で提供します。tool と制約は stdio の MCP server と同じです。stdio で起動できないクライアント (ChatGPT) から、VM の起動・タスクの投入・結果の確認を行えます。`/mcp` は Google の OAuth の access token で守られ、`cloud-coder api` は Google への OAuth の中継 (認可・コールバック・トークンの 3 つ) を兼ねます。Trillion OS の目標 MCP と同じ構成です。設計と根拠は [docs/mcp-oauth.md](docs/mcp-oauth.md) にあります。
 
 ```bash
-export CLOUD_CODER_PUBLIC_URL=http://localhost:8787   # Google の client にも <この URL>/authorize/google/callback を登録する
+export CLOUD_CODER_PUBLIC_URL=http://localhost:8787   # Google の client に <この URL>/mcp/oauth/callback を登録する
 export CLOUD_CODER_OAUTH_SIGNING_KEYS="$(openssl rand -base64 32)"
-export CLOUD_CODER_OAUTH_CLIENT_SECRET="$(openssl rand -base64 32)"
 export CLOUD_CODER_GOOGLE_CLIENT_ID=<Google の OAuth client ID>
-export CLOUD_CODER_GOOGLE_CLIENT_SECRET=<その secret>
-export CLOUD_CODER_OAUTH_ALLOWED_SUBS=<承認できる Google アカウントの sub>
+export CLOUD_CODER_OAUTH_ALLOWED_SUBS=<使ってよい Google アカウントの sub>
 cloud-coder api                       # 127.0.0.1:8787 で待ち受ける (--host / --port で変更)
 ```
 
 | 環境変数 | 内容 |
 | --- | --- |
 | `CLOUD_CODER_PUBLIC_URL` | クライアントが API に届く URL (https、path なし。手元だけで使うなら `http://localhost:<port>` も可)。OAuth の issuer と resource (`<公開 URL>/mcp`) はこの URL で決まります。Cloud Run では Terraform が設定します ([infra/README.md](infra/README.md)) |
-| `CLOUD_CODER_OAUTH_SIGNING_KEYS` | token の署名鍵 (32 文字以上、カンマ区切りで複数可)。先頭の鍵で署名し、すべての鍵で検証します |
-| `CLOUD_CODER_OAUTH_CLIENT_SECRET` | 事前登録した client (`client_id` は `cloud-coder`) の secret (32 文字以上)。ChatGPT のアプリ作成画面に入力します |
-| `CLOUD_CODER_GOOGLE_CLIENT_ID` / `CLOUD_CODER_GOOGLE_CLIENT_SECRET` | 承認者のログインに使う Google の OAuth client (Web アプリケーション、承認済みのリダイレクト URI は `<公開 URL>/authorize/google/callback`) |
-| `CLOUD_CODER_OAUTH_ALLOWED_SUBS` | 承認できる Google アカウントの `sub` (ID token の subject。メールアドレスではない) をカンマ区切りで。空なら誰も承認できません。allowlist にないアカウントでログインすると、拒否の画面にそのアカウントの `sub` が出ます |
-| `CLOUD_CODER_OAUTH_REDIRECT_URIS` | client の redirect URI (完全一致、カンマ区切り)。既定は ChatGPT の `https://chatgpt.com/connector_platform_oauth_redirect` だけです。MCP Inspector などで試すときに置き換えます (Terraform は設定しません) |
+| `CLOUD_CODER_OAUTH_SIGNING_KEYS` | Google へ渡す `state` の署名鍵 (32 文字以上、カンマ区切りで複数可)。先頭の鍵で署名し、すべての鍵で検証します |
+| `CLOUD_CODER_GOOGLE_CLIENT_ID` | Google の OAuth client (Web アプリケーション) の client ID。承認済みのリダイレクト URI は `<公開 URL>/mcp/oauth/callback` の 1 つ。ChatGPT がこの client の ID と secret で接続します。API は secret を持ちません |
+| `CLOUD_CODER_OAUTH_ALLOWED_SUBS` | `/mcp` を使ってよい Google アカウントの `sub` (メールアドレスではない) をカンマ区切りで。空なら誰も使えません。allowlist にないアカウントの token を断ると、ログにその `sub` が出ます |
 
-- 同意画面の Cookie (`__Host-`) は `Secure` 属性付きです。`http://localhost` で試すときは、localhost の Secure Cookie を受け付けるブラウザ (Chrome、Firefox) を使ってください。
-- 必須の変数が無いか、鍵と secret が短いと、server は起動しません。値は起動時に一度だけ読みます。変えたら `cloud-coder api` を再起動してください。
+- 必須の変数が無いか、署名鍵が短いと、server は起動しません。値は起動時に一度だけ読みます。変えたら `cloud-coder api` を再起動してください。
+- 認可の途中で置く Cookie は `Secure` 属性付きです。`http://localhost` で試すときは、localhost の Secure Cookie を受け付けるブラウザ (Chrome、Firefox) を使ってください。
 - `GET /healthz` は token なしで `200 {"ok": true}` を返し、VM には触れません (Cloud Run 上では予約パスのため届きません)。
 
-OAuth の流れ: クライアントは `/.well-known/oauth-protected-resource/mcp` と `/.well-known/oauth-authorization-server` を読み、利用者のブラウザを `/authorize` に送ります。client は事前登録の 1 つだけで、Dynamic Client Registration (`/register`) はありません。
+OAuth の流れ: クライアントは `/.well-known/oauth-protected-resource/mcp` と `/.well-known/oauth-authorization-server` を読み、利用者のブラウザを `/mcp/oauth/authorize` に送ります。
 
-1. 同意画面 (`/authorize/consent`) が、client、付与する scope、受け取り先の URL を表示します。**Continue with Google** で Google のログインに進みます。
-2. Google から戻ると (`/authorize/google/callback`)、ID token の `sub` が allowlist にあれば承認コードを出し、クライアントの redirect URI に `code`・`state`・`iss` を付けて戻します。allowlist に無ければ 403 です。
-3. クライアントは code を `/token` で、PKCE (S256 必須) の verifier と client secret (`client_secret_post`) と引き換えに、access token (1 時間) と refresh token に交換します。refresh にも client secret が要ります。
+1. `/mcp/oauth/authorize` は、client ID が Google の client、redirect URI が `https://chatgpt.com/connector_platform_oauth_redirect`、PKCE が S256、scope が `openid` `email` の範囲であることを確かめ、Google の認可画面へ送ります。そのとき redirect URI を `/mcp/oauth/callback` に、`state` を署名した値に差し替え、`access_type=offline&prompt=consent` を付けます (Google に refresh token を出させるため)。
+2. Google から戻ると (`/mcp/oauth/callback`)、`state` の署名・期限 (10 分)・同じブラウザの Cookie を確かめ、ChatGPT に `code`・元の `state`・`iss` (この server、RFC 9207) を付けて戻します。
+3. ChatGPT は `/mcp/oauth/token` に code (PKCE の verifier と client secret 付き) や refresh token を送ります。API は `authorization_code` と `refresh_token` だけを、決まったパラメータで Google の token endpoint へ転送し、Google の応答をそのまま返します。
 
-- **scope**: `read` (`status` と `read_session`)、`write` (すべての tool。`read` も付く)、`offline_access` (refresh token を出す)。付与するのは要求された scope だけで、要求が無ければ 3 つすべてです (ChatGPT は 3 つを要求します)。`read` だけの token で書き込みの tool を呼ぶと tool のエラーになり、`offline_access` が無い grant には refresh token が出ません。
-- **寿命**: access token は 1 時間。refresh token は使われないと 14 日で切れます。grant 全体は承認から 30 日で終わり (refresh しても延びません)、その後はクライアントで接続し直します。
-- **取り消し**: `sub` を `CLOUD_CODER_OAUTH_ALLOWED_SUBS` から外すと、その人が承認した grant がすぐに使えなくなります。署名鍵をすべて入れ替えると全 grant が、client secret を入れ替えると client の refresh と code の交換が止まります。個別の grant の取り消しや `/revoke` はありません。手順は [infra/README.md](infra/README.md#止める取り消す)。
-- サーバは何も保存しません。認可要求、Google の `state`、承認コード、access / refresh token は、中身 (scope、承認者の `sub`、承認時刻、期限、access token は `aud` = `<公開 URL>/mcp`) に HMAC-SHA256 の署名を付けた自己完結の値です。Cloud Run の再起動後も有効です。承認コードは 5 分で失効し、1 回しか使えません (インスタンスの再起動を挟んだ場合を除く。交換には PKCE と client secret も要ります)。
-- `/mcp` は、この server が出した access token だけを `Authorization: Bearer` ヘッダで受け付けます (query string では受け付けません)。静的な token や Google の token は受け付けません。
-- token、承認コード、secret、`state` の値はログに出しません。ログに出るのは `OAuth: approved a grant`・`OAuth: refreshed a grant approved Nh ago` のような事象の区分だけです。ただし Cloud Run のアクセスログには `/authorize`・同意画面・Google の callback の query string (認可要求、Google の `state` と 1 回限りの code) が出ます。
+- **`/mcp`**: Google の access token を `Authorization: Bearer` ヘッダで受け付けます (query string では受け付けません)。Google の tokeninfo で、Google の client 宛て (`aud`)・期限内・`sub` が allowlist にあることを確かめます。結果は最長 60 秒使い回します。通った token ではすべての tool を呼べます (読み取り専用の接続はありません)。Google に届かないときは 401 ではなく 500 を返します (ChatGPT を再ログインに送らないため)。
+- **寿命**: access token (約 1 時間) と refresh token は Google が出し、ChatGPT が自分で更新します。refresh token の寿命は Google が決めます。
+- **取り消し**: `sub` を `CLOUD_CODER_OAUTH_ALLOWED_SUBS` から外すと、その人の token はすぐに (キャッシュの 60 秒以内に) 通らなくなります。すべての接続を止めるには、Google の client を無効にするか secret を作り直します。手順は [infra/README.md](infra/README.md#止める取り消す)。
+- サーバは何も保存しません。code・secret・token は Google への転送と確認にだけ使います。ログに出るのは `OAuth: Google granted tokens (refresh_token)` のような事象の区分だけで、値は出ません。ただし Cloud Run のアクセスログには `/mcp/oauth/authorize` と `/mcp/oauth/callback` の query string (`state` と 1 回限りの Google の code) が出ます。
 
 セキュリティ:
 
 - 既定では `127.0.0.1` にだけ bind します。token は平文で送られるので、他の端末から使う場合も `--host 0.0.0.0` で直接公開せず、TLS を終端する reverse proxy やトンネルの内側に置いてください。
-- Cloud Run に置いてインターネットから使う構成は [infra/README.md](infra/README.md) にあります (Terraform と `Dockerfile`)。その endpoint は公開され、allowlist の Google アカウントが承認した OAuth grant だけで守られます。
-- access token を持つ相手は VM を起動・停止し、任意の repository を clone して Claude Code にプロンプトを渡せます。Claude Code はプロンプト次第で VM 上のコマンドを実行するため、`write` の grant、client secret、署名鍵は VM のシェルと同等の権限として扱ってください。
-- 同意画面は、誰かが送ってきたリンクからも開けます。自分で接続を始めた直後に開いたページでだけ Continue を押してください (client secret を持たない他人の ChatGPT は、承認されても code を token に交換できません)。
+- Cloud Run に置いてインターネットから使う構成は [infra/README.md](infra/README.md) にあります (Terraform と `Dockerfile`)。その endpoint は公開され、allowlist の Google アカウントの token だけで守られます。
+- access token を持つ相手は VM を起動・停止し、任意の repository を clone して Claude Code にプロンプトを渡せます。Claude Code はプロンプト次第で VM 上のコマンドを実行するため、Google の client secret と ChatGPT の接続は VM のシェルと同等の権限として扱ってください。
+- 認可の URL は、誰かが送ってきたリンクからも開けます。その code を token に換えるには Google の client secret が要るので、secret は ChatGPT のアプリに入れる人だけが持ってください。
 - 別の端末の Claude Code やスクリプトからは、HTTP API ではなく手元の stdio の MCP server (`cloud-coder mcp`。gcloud の認証と IAP で VM に届きます) を使ってください。
 - 操作対象の VM、プロンプトの検査、ssh-agent を転送しないことは stdio の MCP server と同じです (上の「MCP server」の注意を参照)。
 
