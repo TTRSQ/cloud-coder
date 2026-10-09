@@ -206,7 +206,7 @@ claude mcp add cloud-coder -- cloud-coder mcp
 | `start_session` | `repo?`, `new?`, `session?`, `prompt?` | `connect --detach` と同じ。repository の clone、tmux、Claude Code の起動 (または resume) を行い、セッション名と `accepted: true`、次の行動の指示 `next` を返す。`prompt` があって `session` が無ければ `repo` に新しいセッションと会話を作り、続きにするのは `session` を指定したときだけ ([プロンプトを渡す](#プロンプトを渡す))。応答の `created` / `conversation` で新規か継続かが分かる |
 | `send_prompt` | `session`, `text` | `connect --session <session> -p <text> --detach` と同じ。Claude Code が `BUSY` なら Claude Code のキューに入り、次の区切りで取り込まれる (`prompt: queued`)。`READY` / `IDLE` なら `prompt: sent`。ダイアログの表示中は拒否する ([プロンプトを渡す](#プロンプトを渡す))。応答は `start_session` と同じく `accepted` と `next` を含む |
 | `read_session` | `session`, `lines?` (1〜2000、既定 200) | セッションの Claude Code の画面 (tmux pane、scrollback 含む) の最後の `lines` 行と状態。VM は起動しない |
-| `close_session` | `session` | `close <session>` と同じ ([セッションを閉じる](how-to-use.md#複数のセッションを並行して使う))。tmux session を Claude Code ごと終了し (`BUSY` でも)、worktree と push 済みの branch を削除して、登録から外す。未コミット・未 push の変更や、キャッシュ以外の ignored のファイルがあれば何も変えずにエラーを返す。`--dry-run` と `--discard-ignored` は CLI だけ。VM が ready でなければ起動を要求してエラーを返す |
+| `close_session` | `session` | `close <session>` と同じ ([セッションを閉じる](how-to-use.md#複数のセッションを並行して使う))。tmux session を Claude Code ごと終了し (`BUSY` でも)、worktree と push 済みの branch を削除して、登録から外す。未コミット・未 push の変更や、キャッシュ以外の ignored のファイルがあれば何も変えずにエラーを返す。`--dry-run` と `--discard-ignored` は CLI だけ |
 | `stop` | なし | VM の停止を要求して待たずに返す (`status` で `stopped` を確認) |
 
 - 操作対象の VM は起動時の設定 (`config.yaml` と `cloud-coder mcp` に付けたオプション) だけで決まります。tool は project / zone / instance を引数に取らず、任意のコマンドを実行する tool もありません。`!` で始まるプロンプト (Claude Code の shell モード) と、改行・タブ以外の制御文字を含むプロンプトは拒否します。

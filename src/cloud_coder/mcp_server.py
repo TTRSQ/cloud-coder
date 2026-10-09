@@ -56,11 +56,8 @@ refused, do not resend it; tell the user.
   Code waits for an answer to a permission prompt or a question. `read_session`
   returns the session's recent screen text: Claude Code's answer, its progress, or a
   question it is waiting on.
-- `close_session` ends a session the user is done with: Claude Code in it is ended
-  (even while BUSY), and its worktree and branch are removed. Call it only when the
-  user asks. It is refused, and nothing is closed, while the worktree holds work that
-  exists only on the VM (uncommitted or unpushed changes, ignored files other than
-  caches); tell the user what blocks it instead of retrying.
+- `close_session` ends a session for good, even while Claude Code is BUSY; call it only
+  when the user asks. When it is refused, tell the user what blocks it; do not retry.
 - `stop` stops the VM at once, interrupting any work; normally let it stop itself.
 """
 
