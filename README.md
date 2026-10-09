@@ -206,15 +206,16 @@ claude mcp add cloud-coder -- cloud-coder mcp
 | `start_session` | `repo?`, `new?`, `session?`, `prompt?` | `connect --detach` と同じ。repository の clone、tmux、Claude Code の起動 (または resume) を行い、セッション名と `accepted: true`、次の行動の指示 `next` を返す。`prompt` があって `session` が無ければ `repo` に新しいセッションと会話を作り、続きにするのは `session` を指定したときだけ ([プロンプトを渡す](#プロンプトを渡す))。応答の `created` / `conversation` で新規か継続かが分かる |
 | `send_prompt` | `session`, `text` | `connect --session <session> -p <text> --detach` と同じ。Claude Code が `BUSY` なら Claude Code のキューに入り、次の区切りで取り込まれる (`prompt: queued`)。`READY` / `IDLE` なら `prompt: sent`。ダイアログの表示中は拒否する ([プロンプトを渡す](#プロンプトを渡す))。応答は `start_session` と同じく `accepted` と `next` を含む |
 | `read_session` | `session`, `lines?` (1〜2000、既定 200) | セッションの Claude Code の画面 (tmux pane、scrollback 含む) の最後の `lines` 行と状態。VM は起動しない |
+| `close_session` | `session` | `close <session>` と同じ ([セッションを閉じる](how-to-use.md#複数のセッションを並行して使う))。tmux session を Claude Code ごと終了し (`BUSY` でも)、worktree と push 済みの branch を削除して、登録から外す。未コミット・未 push の変更や、キャッシュ以外の ignored のファイルがあれば何も変えずにエラーを返す。`--dry-run` と `--discard-ignored` は CLI だけ |
 | `stop` | なし | VM の停止を要求して待たずに返す (`status` で `stopped` を確認) |
 
 - 操作対象の VM は起動時の設定 (`config.yaml` と `cloud-coder mcp` に付けたオプション) だけで決まります。tool は project / zone / instance を引数に取らず、任意のコマンドを実行する tool もありません。`!` で始まるプロンプト (Claude Code の shell モード) と、改行・タブ以外の制御文字を含むプロンプトは拒否します。
 - `cloud-coder mcp --machine-type` などの VM 作成用のオプションは、VM を新しく作るときにだけ使われます。既存 VM の machine type は CLI で変えてください ([マシンスペックを変える](how-to-use.md#マシンスペックを変える))。
 - tool は長く待ちません。VM の起動・停止と agent のインストールは要求・開始だけ行い、呼び出し側が `up` / `status` で確認します。どの tool の呼び出しも 2 分 (120 秒) で打ち切り、エラーを返します。gcloud や SSH が応答しなくなっても、呼び出しがいつまでも返らないことはありません。打ち切られても VM 上の処理は続いていることがあるので、再実行の前に `status` で確かめてください。大きな repository の初回 clone のように時間のかかる `start_session` は、CLI の `connect` で済ませておくと確実です。
 - Claude Code の作業は数分〜数時間かかり、LLM の 1 ターンには収まりません。server の instructions と tool の説明は、作業を始めたらユーザーに報告してターンを終え、`BUSY` が終わるのを `status` / `read_session` のポーリングで待たないよう LLM に指示します。`start_session` / `send_prompt` の応答の `next`、`BUSY` のときの `status` / `read_session` の応答の `note` も同じ指示です。`send_prompt` は `BUSY` でも Claude Code のキューに入れるので、`BUSY` が終わるのを待つ必要はありません。拒否された `send_prompt` (ダイアログの表示中など) のエラーには、再送しないよう書き添えます。
-- `status` / `read_session` で `BUSY` と分かってから 60 秒以内に同じもの (`status`、または同じセッションの `read_session`) を呼ぶと、VM に問い合わせずに `rechecked: false` と前回の確認からの秒数、ポーリングをやめるよう求める `note` だけを返します。60 秒以内に続けて確認したい場合は、時間をおいてから呼び直してください。書き込みの tool (`up` / `start_session` / `send_prompt` / `stop`) を呼ぶと、この記録は消えます。記録は server のプロセスのメモリにだけあります。
+- `status` / `read_session` で `BUSY` と分かってから 60 秒以内に同じもの (`status`、または同じセッションの `read_session`) を呼ぶと、VM に問い合わせずに `rechecked: false` と前回の確認からの秒数、ポーリングをやめるよう求める `note` だけを返します。60 秒以内に続けて確認したい場合は、時間をおいてから呼び直してください。書き込みの tool (`up` / `start_session` / `send_prompt` / `close_session` / `stop`) を呼ぶと、この記録は消えます。記録は server のプロセスのメモリにだけあります。
 - server は tool の呼び出しごとに、tool 名・成否・所要時間を stderr のログに出します (例: `cloud-coder: MCP tool read_session: ok in 6.4s`)。
-- `start_session` / `send_prompt` は VM が ready でなければ起動を要求したうえでエラーを返します (`up` で ready を待ってから再実行)。
+- `start_session` / `send_prompt` / `close_session` は VM が ready でなければ起動を要求したうえでエラーを返します (`up` で ready を待ってから再実行)。
 - MCP server は ssh-agent を VM に転送しません (`connect` は転送します)。private repository は HTTPS + `gh auth setup-git` で clone してください ([GitHub の認証](#github-の認証))。
 - server は transport に依存しない作りです (`cloud_coder.mcp_server.build_server`)。`cloud-coder mcp` は stdio で、`cloud-coder api` は `/mcp` (Streamable HTTP) で同じ tool を提供します ([HTTP API](#http-api))。
 
