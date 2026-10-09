@@ -1,8 +1,9 @@
 """HTTP API: the MCP server at /mcp (Streamable HTTP), behind OAuth.
 
-/mcp takes only the access tokens of the API's own OAuth authorization server (see
-oauth.py), with read-only tools for the read scope and every tool for the write scope. The
-server is built for one target VM, fixed by the configuration it is created with.
+/mcp takes Google access tokens issued to the API's Google OAuth client, for an account on
+the allowlist; the OAuth endpoints relay to Google (see oauth.py). Every tool is open to
+such a token. The server is built for one target VM, fixed by the configuration it is
+created with.
 `cloud-coder api` serves it with uvicorn.
 """
 
@@ -20,8 +21,7 @@ from starlette.routing import Mount, Route
 
 from cloud_coder import mcp_server
 from cloud_coder.config import Config
-from cloud_coder.guards import READ
-from cloud_coder.oauth import AuthorizationServer, OAuthSettings
+from cloud_coder.oauth import SCOPES, AuthorizationRelay, OAuthSettings
 
 
 def build_app(
@@ -32,14 +32,16 @@ def build_app(
     async def healthz(request: Request) -> JSONResponse:
         return JSONResponse({"ok": True})
 
-    server = AuthorizationServer(oauth, google_transport)
+    relay = AuthorizationRelay(oauth, google_transport)
+    # The protected resource metadata names the scopes to ask for; ChatGPT asks for those.
+    # The audience of a token is the Google OAuth client, which the verifier checks.
     auth = AuthSettings(
         issuer_url=oauth.issuer_url,
         resource_server_url=AnyHttpUrl(oauth.resource_url),
-        required_scopes=[READ],
-        validate_token_resource=True,
+        required_scopes=list(SCOPES),
+        validate_token_resource=False,
     )
-    mcp = mcp_server.build_server(cfg, auth=auth, token_verifier=server)
+    mcp = mcp_server.build_server(cfg, auth=auth, token_verifier=relay)
     # Stateless: Cloud Run may stop the instance between requests. No DNS rebinding
     # protection: it guards servers on localhost, and this one is public behind OAuth.
     mcp_app = mcp.streamable_http_app(
@@ -50,7 +52,7 @@ def build_app(
     return Starlette(
         routes=[
             Route("/healthz", healthz, methods=["GET"]),
-            *server.routes(),
+            *relay.routes(),
             Mount("/", app=mcp_app),
         ],
         lifespan=lambda app: mcp.session_manager.run(),

@@ -63,9 +63,9 @@ variable "public_url" {
 
 variable "google_oauth_client_id" {
   description = <<-EOT
-    Client ID of the Google OAuth client (web application) that signs in whoever approves
-    an OAuth grant, with the redirect URI <public URL>/authorize/google/callback. Its secret
-    goes into the Secret cloud-coder-api-google-client-secret. Required with image_tag.
+    Client ID of the Google OAuth client (web application) that ChatGPT signs in with
+    through /mcp/oauth/*, with the one redirect URI <public URL>/mcp/oauth/callback. ChatGPT
+    holds its secret; the API does not. Required with image_tag.
   EOT
   type        = string
   default     = null
@@ -73,8 +73,8 @@ variable "google_oauth_client_id" {
 
 variable "oauth_allowed_subs" {
   description = <<-EOT
-    Google account subject IDs (the ID token's `sub`, not e-mail addresses) that may approve
-    OAuth grants for /mcp. Empty: nobody can approve; the refusal page shows an account's ID.
+    Google account subject IDs (`sub`, not e-mail addresses) whose tokens /mcp accepts.
+    Empty: nobody; the API's log shows the ID of each account it refuses.
   EOT
   type        = list(string)
   default     = []

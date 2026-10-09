@@ -8,7 +8,7 @@ client's turn, so the instructions and results tell the client to hand control b
 the user once work has started, not to wait for it, and re-reads of a session found
 BUSY moments ago are answered without reaching the VM.
 The server does not depend on a transport: `cloud-coder mcp` serves it over stdio, and
-the HTTP API serves it at /mcp (Streamable HTTP) behind bearer tokens and OAuth.
+the HTTP API serves it at /mcp (Streamable HTTP) behind OAuth.
 """
 
 import logging
@@ -19,7 +19,6 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from typing import Annotated
 
-from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import MCPServer
@@ -177,9 +176,8 @@ def tool_call(name: str) -> Iterator[None]:
 def build_server(
     cfg: Config, *, auth: AuthSettings | None = None, token_verifier: TokenVerifier | None = None
 ) -> MCPServer:
-    """``auth`` and ``token_verifier`` protect the HTTP transports: then tools that are not
-    read-only need a token with the write scope. stdio has no tokens and allows every tool.
-    """
+    """``auth`` and ``token_verifier`` protect the HTTP transports; a token that passes may
+    call every tool. stdio has no tokens."""
     server = MCPServer(
         "cloud-coder", instructions=INSTRUCTIONS, auth=auth, token_verifier=token_verifier
     )
@@ -187,15 +185,9 @@ def build_server(
 
     @contextmanager
     def write_call(name: str) -> Iterator[None]:
-        """`tool_call` for the tools that are not read-only: over HTTP they need a token
-        with the write scope, and what they change makes earlier BUSY reads stale."""
+        """`tool_call` for the tools that are not read-only: what they change makes earlier
+        BUSY reads stale."""
         with tool_call(name):
-            if auth is not None:
-                token = get_access_token()
-                if token is None or guards.WRITE not in token.scopes:
-                    raise ToolError(
-                        "this token may call only the read-only tools (status, read_session)"
-                    )
             busy_reads.clear()
             yield
 
