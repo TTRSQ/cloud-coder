@@ -428,7 +428,16 @@ def test_read_scope_alone_cannot_call_write_tools(client, google, vm_calls):
 
 def test_unknown_scope_is_refused(client):
     response = authorize(client, scope="read admin")
-    assert parse_qs(urlparse(response.headers["location"]).query)["error"] == ["invalid_scope"]
+    reply = parse_qs(urlparse(response.headers["location"]).query)
+    assert reply["error"] == ["invalid_scope"] and reply["iss"] == [BASE]
+
+
+def test_write_implies_read(client, google, vm_calls):
+    tokens = grant(client, google, scope="write write offline_access")
+    assert tokens["scope"] == "read write offline_access"
+    narrowed = refresh(client, tokens["refresh_token"], scope="write").json()
+    assert narrowed["scope"] == "read write"
+    assert not call_tool(client, narrowed["access_token"], "stop")["isError"]
 
 
 # --- the authorization request -----------------------------------------------------

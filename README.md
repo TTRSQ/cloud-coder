@@ -251,7 +251,7 @@ OAuth の流れ: クライアントは `/.well-known/oauth-protected-resource/mc
 2. Google から戻ると (`/authorize/google/callback`)、ID token の `sub` が allowlist にあれば承認コードを出し、クライアントの redirect URI に `code`・`state`・`iss` を付けて戻します。allowlist に無ければ 403 です。
 3. クライアントは code を `/token` で、PKCE (S256 必須) の verifier と client secret (`client_secret_post`) と引き換えに、access token (1 時間) と refresh token に交換します。refresh にも client secret が要ります。
 
-- **scope**: `read` (`status` と `read_session`)、`write` (すべての tool)、`offline_access` (refresh token を出す)。付与するのは要求された scope だけで、要求が無ければ 3 つすべてです (ChatGPT は 3 つを要求します)。`read` だけの token で書き込みの tool を呼ぶと tool のエラーになり、`offline_access` が無い grant には refresh token が出ません。
+- **scope**: `read` (`status` と `read_session`)、`write` (すべての tool。`read` も付く)、`offline_access` (refresh token を出す)。付与するのは要求された scope だけで、要求が無ければ 3 つすべてです (ChatGPT は 3 つを要求します)。`read` だけの token で書き込みの tool を呼ぶと tool のエラーになり、`offline_access` が無い grant には refresh token が出ません。
 - **寿命**: access token は 1 時間。refresh token は使われないと 14 日で切れます。grant 全体は承認から 30 日で終わり (refresh しても延びません)、その後はクライアントで接続し直します。
 - **取り消し**: `sub` を `CLOUD_CODER_OAUTH_ALLOWED_SUBS` から外すと、その人が承認した grant がすぐに使えなくなります。署名鍵をすべて入れ替えると全 grant が、client secret を入れ替えると client の refresh と code の交換が止まります。個別の grant の取り消しや `/revoke` はありません。手順は [infra/README.md](infra/README.md#止める取り消す)。
 - サーバは何も保存しません。認可要求、Google の `state`、承認コード、access / refresh token は、中身 (scope、承認者の `sub`、承認時刻、期限、access token は `aud` = `<公開 URL>/mcp`) に HMAC-SHA256 の署名を付けた自己完結の値です。Cloud Run の再起動後も有効です。承認コードは 5 分で失効し、1 回しか使えません (インスタンスの再起動を挟んだ場合を除く。交換には PKCE と client secret も要ります)。

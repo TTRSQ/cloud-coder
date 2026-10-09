@@ -406,8 +406,7 @@ class AuthorizationServer:
             raise AuthorizeError("invalid_target", "unknown resource")
         request = {
             "state": params.state,
-            # The SDK has refused scopes the client is not registered for.
-            "scopes": params.scopes or list(DEFAULT_SCOPES),
+            "scopes": _granted(params.scopes),
             "code_challenge": params.code_challenge,
             "redirect_uri": str(params.redirect_uri),
             "redirect_uri_provided_explicitly": params.redirect_uri_provided_explicitly,
@@ -535,30 +534,31 @@ class AuthorizationServer:
     # --- tokens ----------------------------------------------------------------------
 
     def _issue(
-        self, granted: list[str], scopes: list[str], sub: str, approved_at: int
+        self, *, grant_scopes: list[str], access_scopes: list[str], sub: str, approved_at: int
     ) -> OAuthToken:
-        """An access token for ``scopes``, and a refresh token for the whole grant
-        (``granted``, RFC 6749 6) if it includes offline_access."""
+        """An access token for ``access_scopes`` (within the grant's), and a refresh token
+        for the whole grant (RFC 6749 6) if the grant includes offline_access."""
+        access_scopes = _granted(access_scopes)
         now = int(time.time())
         grant_ends = approved_at + GRANT_LIFETIME
         claims = {"sub": sub, "approved_at": approved_at}
         access_exp = min(now + ACCESS_TOKEN_TTL, grant_ends)
         access = self._signed.seal(
             "access",
-            {**claims, "scopes": scopes, "aud": self.settings.resource_url},
+            {**claims, "scopes": access_scopes, "aud": self.settings.resource_url},
             exp=access_exp,
         )
         refresh = None
-        if OFFLINE_ACCESS in granted:
+        if OFFLINE_ACCESS in grant_scopes:
             refresh = self._signed.seal(
                 "refresh",
-                {**claims, "scopes": granted},
+                {**claims, "scopes": grant_scopes},
                 exp=min(now + REFRESH_TOKEN_TTL, grant_ends),
             )
         return OAuthToken(
             access_token=access,
             expires_in=access_exp - now,
-            scope=" ".join(scopes),
+            scope=" ".join(access_scopes),
             refresh_token=refresh,
         )
 
@@ -573,8 +573,12 @@ class AuthorizationServer:
         if not self._allowed(authorization_code.subject):
             raise TokenError("invalid_grant", "the approver is no longer allowed")
         log.info("OAuth: exchanged an authorization code")
-        code = authorization_code
-        return self._issue(code.scopes, code.scopes, code.subject, code.approved_at)
+        return self._issue(
+            grant_scopes=authorization_code.scopes,
+            access_scopes=authorization_code.scopes,
+            sub=authorization_code.subject,
+            approved_at=authorization_code.approved_at,
+        )
 
     async def load_refresh_token(
         self, client: OAuthClientInformationFull, refresh_token: str
@@ -601,8 +605,12 @@ class AuthorizationServer:
         # The SDK has checked that `scopes` are within the grant's.
         age = int(time.time()) - refresh_token.approved_at
         log.info(f"OAuth: refreshed a grant approved {age // 3600}h ago")
-        token = refresh_token
-        return self._issue(token.scopes, scopes, token.subject, token.approved_at)
+        return self._issue(
+            grant_scopes=refresh_token.scopes,
+            access_scopes=scopes,
+            sub=refresh_token.subject,
+            approved_at=refresh_token.approved_at,
+        )
 
     async def load_access_token(self, token: str) -> AccessToken | None:
         claims = self._signed.open("access", token)
@@ -680,6 +688,16 @@ def _add_iss(location: str, issuer: str) -> str:
     if "error" not in query or "iss" in query:
         return location
     return construct_redirect_uri(location, iss=issuer)
+
+
+def _granted(requested: list[str] | None) -> list[str]:
+    """The scopes to grant for a request: all of them when none are asked for. ``write``
+    implies ``read``, which /mcp requires of every token. (The SDK has already refused
+    scopes the client is not registered for.)"""
+    scopes = set(requested or DEFAULT_SCOPES)
+    if WRITE in scopes:
+        scopes.add(READ)
+    return [s for s in SCOPES if s in scopes]
 
 
 def _set_flow_cookie(response: Response, value: str) -> None:
