@@ -206,6 +206,7 @@ claude mcp add cloud-coder -- cloud-coder mcp
 | `start_session` | `repo?`, `new?`, `session?`, `prompt?` | `connect --detach` と同じ。repository の clone、tmux、Claude Code の起動 (または resume) を行い、セッション名と `accepted: true`、次の行動の指示 `next` を返す。`prompt` があって `session` が無ければ `repo` に新しいセッションと会話を作り、続きにするのは `session` を指定したときだけ ([プロンプトを渡す](#プロンプトを渡す))。応答の `created` / `conversation` で新規か継続かが分かる |
 | `send_prompt` | `session`, `text` | `connect --session <session> -p <text> --detach` と同じ。Claude Code が `BUSY` なら Claude Code のキューに入り、次の区切りで取り込まれる (`prompt: queued`)。`READY` / `IDLE` なら `prompt: sent`。ダイアログの表示中は拒否する ([プロンプトを渡す](#プロンプトを渡す))。応答は `start_session` と同じく `accepted` と `next` を含む |
 | `read_session` | `session`, `lines?` (1〜2000、既定 200) | セッションの Claude Code の画面 (tmux pane、scrollback 含む) の最後の `lines` 行と状態。VM は起動しない |
+| `resource_usage` | なし | VM の CPU (1 秒間の使用率、load average、コア数)・メモリ (使用量、available、合計)・ディスク (ファイルシステムごとの使用量) の今の値。VM は起動せず、止まっていれば VM の状態だけを返す (下の注意を参照) |
 | `close_session` | `session` | `close <session>` と同じ ([セッションを閉じる](how-to-use.md#複数のセッションを並行して使う))。tmux session を Claude Code ごと終了し (`BUSY` でも)、worktree と push 済みの branch を削除して、登録から外す。未コミット・未 push の変更や、キャッシュ以外の ignored のファイルがあれば何も変えずにエラーを返す。`--dry-run` と `--discard-ignored` は CLI だけ |
 | `stop` | なし | VM の停止を要求して待たずに返す (`status` で `stopped` を確認) |
 
@@ -217,6 +218,10 @@ claude mcp add cloud-coder -- cloud-coder mcp
 - server は tool の呼び出しごとに、tool 名・成否・所要時間を stderr のログに出します (例: `cloud-coder: MCP tool read_session: ok in 6.4s`)。
 - `start_session` / `send_prompt` / `close_session` は VM が ready でなければ起動を要求したうえでエラーを返します (`up` で ready を待ってから再実行)。
 - MCP server は ssh-agent を VM に転送しません (`connect` は転送します)。private repository は HTTPS + `gh auth setup-git` で clone してください ([GitHub の認証](#github-の認証))。
+- `resource_usage` は SSH で `/proc` と `df` を読みます。VM の agent・tmux・Claude Code は使わないので、agent が古くても入っていなくても動きます。
+  - CPU の `utilization_percent` は 1 秒間のうち idle と iowait 以外の時間 (steal を含む) の割合です。`load_average` は 1 / 5 / 15 分の値です。
+  - メモリの `used_gib` は `MemTotal - MemAvailable` です (page cache など解放できる分は含まない)。tmpfs (`/dev/shm` など) に置いたファイルはメモリの使用量に入ります。
+  - ディスクは tmpfs・devtmpfs・squashfs・overlay (Docker)・efivarfs を除いたローカルのファイルシステムごとに返します。`used_percent` は `df` の Use% と同じく `used / (used + available)` です (root 用の予約領域は含まない)。
 - server は transport に依存しない作りです (`cloud_coder.mcp_server.build_server`)。`cloud-coder mcp` は stdio で、`cloud-coder api` は `/mcp` (Streamable HTTP) で同じ tool を提供します ([HTTP API](#http-api))。
 
 ### HTTP API

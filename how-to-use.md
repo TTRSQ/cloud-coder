@@ -274,7 +274,7 @@ npx @modelcontextprotocol/inspector --cli cloud-coder mcp \
   --method tools/call --tool-name read_session --tool-arg session=cc-REPO-1 --tool-arg lines=50
 ```
 
-- `status` と `read_session` は VM を起動しません。`up` / `start_session` / `send_prompt` / `close_session` は VM を起動し、`stop` は止めます。
+- `status` と `read_session` と `resource_usage` は VM を起動しません。`up` / `start_session` / `send_prompt` / `close_session` は VM を起動し、`stop` は止めます。
 - tool がエラーを返すと、Inspector は終了コード 0 以外で終わります (例: VM が止まっているときの `read_session`)。
 - `cloud-coder mcp` にオプションを付けるときは、server のコマンドの後に `--` を置き、Inspector のオプションをその後ろに書きます (Inspector CLI では `--` より前が server のコマンドです。`--config` は Inspector 自身のオプションとも重なります)。
 
