@@ -384,8 +384,9 @@ def send_prompt_to_running(pane_id: str, claude_pid: int, prompt: str) -> None:
     """Type a prompt into a running Claude Code and submit it, whether it waits for input
     or works (BUSY): working, Claude Code holds the prompt in its own queue and takes it
     in at its next step, in the same conversation. Returns once Claude Code's
-    UserPromptSubmit hook reports a prompt holding the text, that is once Claude Code has
-    the prompt, not once it has done it. Raises LaunchError otherwise."""
+    UserPromptSubmit hook reports a prompt of the same text (session_state.received_since),
+    that is once Claude Code has the prompt, not once it has done it. Raises LaunchError
+    otherwise."""
     paths.PROMPT_DIR.mkdir(parents=True, exist_ok=True)
     # One prompt at a time per Claude Code: interleaved pastes would merge into one prompt.
     with state_lock(paths.PROMPT_DIR / f"claude-{claude_pid}.lock"):

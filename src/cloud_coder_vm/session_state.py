@@ -47,7 +47,7 @@ class SessionState:
     updated_at: float = 0.0
     open_dialogs: list[str] = field(default_factory=list)
     prompts_submitted: int = 0  # UserPromptSubmit events
-    recent_prompts: list[str] = field(default_factory=list)  # their prompts, newest last
+    recent_prompt_digests: list[str] = field(default_factory=list)  # prompt_digest()s, newest last
 
 
 def next_state(current: str | None, payload: dict, last_event: str | None = None) -> str | None:
@@ -89,26 +89,27 @@ def next_state(current: str | None, payload: dict, last_event: str | None = None
     return current
 
 
+def prompt_digest(prompt: str) -> str:
+    """Digest of a prompt without whitespace and without the tags Claude Code wraps a long
+    paste in: Claude Code turns tabs into spaces, drops trailing spaces and adds those tags."""
+    typed = "".join(_PASTE_TAG.sub("", prompt).split())
+    return hashlib.sha256(typed.encode()).hexdigest()[:16]
+
+
 def record_prompt(state: SessionState, prompt: str) -> None:
     state.prompts_submitted += 1
-    state.recent_prompts = [*state.recent_prompts, prompt][-RECENT_PROMPTS:]
-
-
-def _as_typed(prompt: str) -> str:
-    """A prompt without whitespace and without the tags Claude Code wraps a long paste in:
-    Claude Code turns tabs into spaces, drops trailing spaces and adds those tags."""
-    return "".join(_PASTE_TAG.sub("", prompt).split())
+    digests = [*state.recent_prompt_digests, prompt_digest(prompt)]
+    state.recent_prompt_digests = digests[-RECENT_PROMPTS:]
 
 
 def received_since(before: SessionState, after: SessionState, prompt: str) -> bool:
     """Whether a prompt submitted after ``before`` is ``prompt``, up to what Claude Code
-    changes (see _as_typed). The whole text must match: a short prompt may well occur
+    changes (see prompt_digest). The whole text must match: a short prompt may well occur
     inside another one, such as a background task's notification."""
     new = after.prompts_submitted - before.prompts_submitted
     if new <= 0:
         return False
-    wanted = _as_typed(prompt)
-    return any(_as_typed(p) == wanted for p in after.recent_prompts[-new:])
+    return prompt_digest(prompt) in after.recent_prompt_digests[-new:]
 
 
 def dialog_id(payload: dict) -> str:
@@ -175,9 +176,7 @@ def load_all(directory: Path) -> list[SessionState]:
 
 def save(directory: Path, state: SessionState) -> None:
     state.updated_at = time.time()
-    # private: it holds the latest prompts
-    text = json.dumps(asdict(state), indent=2) + "\n"
-    write_atomic(directory / f"{state.key}.json", text, mode=0o600)
+    write_atomic(directory / f"{state.key}.json", json.dumps(asdict(state), indent=2) + "\n")
 
 
 def remove(directory: Path, key: str) -> None:

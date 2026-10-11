@@ -143,7 +143,9 @@ def test_a_prompt_is_received_only_by_a_newer_submission_of_the_same_text():
 
     before = SessionState(key="k", session_id="S", state=BUSY)
     record_prompt(before, "go")
-    after = SessionState(**{**before.__dict__, "recent_prompts": list(before.recent_prompts)})
+    after = SessionState(
+        **{**before.__dict__, "recent_prompt_digests": list(before.recent_prompt_digests)}
+    )
     assert not received_since(before, after, "go")  # the earlier "go" is not this one
     record_prompt(after, "<task-notification>done</task-notification>")
     assert not received_since(before, after, "go")
@@ -153,5 +155,5 @@ def test_a_prompt_is_received_only_by_a_newer_submission_of_the_same_text():
     assert not received_since(before, after, "status")  # only part of another prompt
     for i in range(10):
         record_prompt(after, f"p{i}")
-    assert len(after.recent_prompts) == 8 and after.prompts_submitted == 14
+    assert len(after.recent_prompt_digests) == 8 and after.prompts_submitted == 14
     assert received_since(before, after, "p9") and not received_since(before, after, "go on")
