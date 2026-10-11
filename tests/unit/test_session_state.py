@@ -138,7 +138,7 @@ def test_other_events_keep_dialogs(payload):
     assert next_dialogs(["x"], payload) == ["x"]
 
 
-def test_a_prompt_is_received_only_by_a_newer_submission_holding_it():
+def test_a_prompt_is_received_only_by_a_newer_submission_of_the_same_text():
     from cloud_coder_vm.session_state import SessionState, received_since, record_prompt
 
     before = SessionState(key="k", session_id="S", state=BUSY)
@@ -149,7 +149,9 @@ def test_a_prompt_is_received_only_by_a_newer_submission_holding_it():
     assert not received_since(before, after, "go")
     record_prompt(after, '<pasted_content id="1">\n\tgo  on\n</pasted_content>')
     assert received_since(before, after, "\tgo  on  \n")
+    record_prompt(after, "<task-notification><status>completed</status></task-notification>")
+    assert not received_since(before, after, "status")  # only part of another prompt
     for i in range(10):
         record_prompt(after, f"p{i}")
-    assert len(after.recent_prompts) == 4 and after.prompts_submitted == 13
+    assert len(after.recent_prompts) == 8 and after.prompts_submitted == 14
     assert received_since(before, after, "p9") and not received_since(before, after, "go on")

@@ -552,7 +552,9 @@ def test_a_prompt_rewritten_by_claude_code_is_confirmed(claude):
     tags (seen with 2.1.296)."""
     claude.event(BUSY_EVENT)
     claude.as_submitted = lambda text: (
-        '\n\n<pasted_content id="f916">\n' + text.replace("\t", "    ") + "\n</pasted_content>\n"
+        '\n\n<pasted_content id="f916">\n'
+        + text.replace("\t", "    ")
+        + '\n</pasted_content id="f916">'
     )
     claude.send("line 1  \n\tline 2\n" * 40)
     assert len(claude.submitted) == 1
@@ -679,7 +681,10 @@ def test_unconfirmed_prompt_is_not_reported_as_submitted(claude):
 def test_another_prompt_does_not_confirm_a_lost_one(claude):
     """A background task's notification fires UserPromptSubmit too (seen with 2.1.296)."""
     claude.event(BUSY_EVENT)
-    notification = "<task-notification>\n<status>completed</status>\n</task-notification>"
+    notification = (
+        "<task-notification>\n<status>completed</status>\n"
+        '<summary>Background command "go" completed</summary>\n</task-notification>'
+    )
     claude.on_enter = lambda: claude.event(
         {"hook_event_name": "UserPromptSubmit", "prompt": notification}
     )

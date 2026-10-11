@@ -9,6 +9,7 @@ shares the record of the one in %N of cloud-coder's. That only errs towards busy
 
 import hashlib
 import json
+import re
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -28,7 +29,8 @@ DIALOG_CLOSED = ("PostToolUse", "PostToolUseFailure", "ElicitationResult")
 # How many of the latest submitted prompts a record keeps, to confirm that a typed prompt
 # was received. Prompts Claude Code makes itself (a background task's notification) fire
 # UserPromptSubmit too, so a count alone could confirm a prompt that was lost.
-RECENT_PROMPTS = 4
+RECENT_PROMPTS = 8
+_PASTE_TAG = re.compile(r"</?pasted_content\b[^>]*>")
 
 
 @dataclass
@@ -92,15 +94,21 @@ def record_prompt(state: SessionState, prompt: str) -> None:
     state.recent_prompts = [*state.recent_prompts, prompt][-RECENT_PROMPTS:]
 
 
+def _as_typed(prompt: str) -> str:
+    """A prompt without whitespace and without the tags Claude Code wraps a long paste in:
+    Claude Code turns tabs into spaces, drops trailing spaces and adds those tags."""
+    return "".join(_PASTE_TAG.sub("", prompt).split())
+
+
 def received_since(before: SessionState, after: SessionState, prompt: str) -> bool:
-    """Whether a prompt submitted after ``before`` holds ``prompt``. Claude Code may change
-    whitespace (tabs, trailing spaces) and wraps a long paste in tags, so the text is
-    compared without whitespace and may be part of the submitted prompt."""
+    """Whether a prompt submitted after ``before`` is ``prompt``, up to what Claude Code
+    changes (see _as_typed). The whole text must match: a short prompt may well occur
+    inside another one, such as a background task's notification."""
     new = after.prompts_submitted - before.prompts_submitted
     if new <= 0:
         return False
-    wanted = "".join(prompt.split())
-    return any(wanted in "".join(p.split()) for p in after.recent_prompts[-new:])
+    wanted = _as_typed(prompt)
+    return any(_as_typed(p) == wanted for p in after.recent_prompts[-new:])
 
 
 def dialog_id(payload: dict) -> str:
