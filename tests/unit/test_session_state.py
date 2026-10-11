@@ -136,3 +136,20 @@ def test_end_of_all_work_closes_every_dialog(payload):
 )
 def test_other_events_keep_dialogs(payload):
     assert next_dialogs(["x"], payload) == ["x"]
+
+
+def test_a_prompt_is_received_only_by_a_newer_submission_holding_it():
+    from cloud_coder_vm.session_state import SessionState, received_since, record_prompt
+
+    before = SessionState(key="k", session_id="S", state=BUSY)
+    record_prompt(before, "go")
+    after = SessionState(**{**before.__dict__, "recent_prompts": list(before.recent_prompts)})
+    assert not received_since(before, after, "go")  # the earlier "go" is not this one
+    record_prompt(after, "<task-notification>done</task-notification>")
+    assert not received_since(before, after, "go")
+    record_prompt(after, '<pasted_content id="1">\n\tgo  on\n</pasted_content>')
+    assert received_since(before, after, "\tgo  on  \n")
+    for i in range(10):
+        record_prompt(after, f"p{i}")
+    assert len(after.recent_prompts) == 4 and after.prompts_submitted == 13
+    assert received_since(before, after, "p9") and not received_since(before, after, "go on")

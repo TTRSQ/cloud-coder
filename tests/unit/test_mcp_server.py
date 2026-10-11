@@ -90,12 +90,12 @@ def test_send_prompt_launches_the_session_without_agent_forwarding(monkeypatch):
 
     def fake_launch(cfg, repo, **kw):
         seen.update(kw, repo=repo)
-        return {"session": kw["session"], "prompt": "sent"}
+        return {"session": kw["session"], "prompt": "submitted"}
 
     monkeypatch.setattr(connect, "launch", fake_launch)
     assert result_json(call("send_prompt", {"session": "cc-a-1", "text": "go"})) == {
         "session": "cc-a-1",
-        "prompt": "sent",
+        "prompt": "submitted",
         "accepted": True,
         "next": mcp_server.STARTED_NEXT,
     }
@@ -138,7 +138,7 @@ def test_start_session_tells_the_client_to_end_its_turn(monkeypatch):
         connect,
         "launch",
         lambda cfg, repo, **kw: (
-            {"session": "cc-r-1"} | ({"prompt": "sent"} if kw["prompt"] else {})
+            {"session": "cc-r-1"} | ({"prompt": "submitted"} if kw["prompt"] else {})
         ),
     )
     started = result_json(call("start_session", {"repo": "r", "prompt": "make a PR"}))
@@ -163,17 +163,23 @@ def test_agent_errors_reach_the_client(monkeypatch):
     assert "Do not resend" in result.content[0].text
 
 
-def test_prompt_queued_by_a_busy_claude_is_reported_as_queued(monkeypatch):
+def test_a_submitted_prompt_is_not_reported_as_done(monkeypatch):
+    """Claude Code has the prompt (queued by Claude Code itself while BUSY), which says
+    nothing about when it is done: there is no cloud-coder queue to report (issue #45)."""
     monkeypatch.setattr(connect, "up", lambda cfg, wait: connect.UpResult("running", True, False))
     monkeypatch.setattr(
-        connect, "launch", lambda cfg, repo, **kw: {"session": kw["session"], "prompt": "queued"}
+        connect,
+        "launch",
+        lambda cfg, repo, **kw: {"session": kw["session"], "prompt": "submitted"},
     )
     for name, args in [
         ("send_prompt", {"session": "cc-a-1", "text": "also do X"}),
         ("start_session", {"session": "cc-a-1", "prompt": "also do X"}),
     ]:
         result = result_json(call(name, args))
-        assert result["prompt"] == "queued" and result["next"] == mcp_server.QUEUED_NEXT
+        assert result["prompt"] == "submitted" and result["next"] == mcp_server.STARTED_NEXT
+        assert "has not done it yet" in result["next"]
+    assert "queued" not in mcp_server.INSTRUCTIONS
 
 
 def test_read_session_does_not_start_the_vm(monkeypatch):

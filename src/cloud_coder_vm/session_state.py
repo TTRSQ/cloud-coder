@@ -25,6 +25,11 @@ IDLE = "IDLE"
 DIALOG_SHOWN = ("PermissionRequest", "Elicitation")
 DIALOG_CLOSED = ("PostToolUse", "PostToolUseFailure", "ElicitationResult")
 
+# How many of the latest submitted prompts a record keeps, to confirm that a typed prompt
+# was received. Prompts Claude Code makes itself (a background task's notification) fire
+# UserPromptSubmit too, so a count alone could confirm a prompt that was lost.
+RECENT_PROMPTS = 4
+
 
 @dataclass
 class SessionState:
@@ -39,7 +44,8 @@ class SessionState:
     last_event: str | None = None
     updated_at: float = 0.0
     open_dialogs: list[str] = field(default_factory=list)
-    prompts_submitted: int = 0  # UserPromptSubmit events: a typed prompt was received
+    prompts_submitted: int = 0  # UserPromptSubmit events
+    recent_prompts: list[str] = field(default_factory=list)  # their prompts, newest last
 
 
 def next_state(current: str | None, payload: dict, last_event: str | None = None) -> str | None:
@@ -79,6 +85,22 @@ def next_state(current: str | None, payload: dict, last_event: str | None = None
     if event == "SessionEnd":
         return None
     return current
+
+
+def record_prompt(state: SessionState, prompt: str) -> None:
+    state.prompts_submitted += 1
+    state.recent_prompts = [*state.recent_prompts, prompt][-RECENT_PROMPTS:]
+
+
+def received_since(before: SessionState, after: SessionState, prompt: str) -> bool:
+    """Whether a prompt submitted after ``before`` holds ``prompt``. Claude Code may change
+    whitespace (tabs, trailing spaces) and wraps a long paste in tags, so the text is
+    compared without whitespace and may be part of the submitted prompt."""
+    new = after.prompts_submitted - before.prompts_submitted
+    if new <= 0:
+        return False
+    wanted = "".join(prompt.split())
+    return any(wanted in "".join(p.split()) for p in after.recent_prompts[-new:])
 
 
 def dialog_id(payload: dict) -> str:
@@ -145,7 +167,9 @@ def load_all(directory: Path) -> list[SessionState]:
 
 def save(directory: Path, state: SessionState) -> None:
     state.updated_at = time.time()
-    write_atomic(directory / f"{state.key}.json", json.dumps(asdict(state), indent=2) + "\n")
+    # private: it holds the latest prompts
+    text = json.dumps(asdict(state), indent=2) + "\n"
+    write_atomic(directory / f"{state.key}.json", text, mode=0o600)
 
 
 def remove(directory: Path, key: str) -> None:

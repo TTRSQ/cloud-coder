@@ -129,16 +129,18 @@ def test_dialog_events_track_dialogs_without_touching_the_state(tmp_path):
     assert session_state.load(tmp_path / "s", "pane-4").open_dialogs == []
 
 
-def test_prompts_are_counted_and_a_stop_closes_dialogs(tmp_path):
+def test_prompts_are_recorded_and_a_stop_closes_dialogs(tmp_path):
     (tmp_path / "s").mkdir()
-    run(tmp_path, {"hook_event_name": "UserPromptSubmit", "session_id": "A"})
+    run(tmp_path, {"hook_event_name": "UserPromptSubmit", "session_id": "A", "prompt": "p1"})
     run(tmp_path, {"hook_event_name": "PermissionRequest", "session_id": "A", "tool_name": "X"})
-    run(tmp_path, {"hook_event_name": "UserPromptSubmit", "session_id": "A"})  # queued
+    # submitted while BUSY: Claude Code queues it and fires the hook at once
+    run(tmp_path, {"hook_event_name": "UserPromptSubmit", "session_id": "A", "prompt": "p2"})
     st = session_state.load(tmp_path / "s", "pane-4")
-    assert (st.prompts_submitted, len(st.open_dialogs)) == (2, 1)
+    assert (st.prompts_submitted, st.recent_prompts, len(st.open_dialogs)) == (2, ["p1", "p2"], 1)
     run(
         tmp_path,
         {"hook_event_name": "Stop", "session_id": "A", "background_tasks": [], "session_crons": []},
     )
     st = session_state.load(tmp_path / "s", "pane-4")
     assert (st.state, st.open_dialogs, st.prompts_submitted) == ("READY", [], 2)
+    assert (tmp_path / "s/pane-4.json").stat().st_mode & 0o777 == 0o600  # holds prompts

@@ -148,13 +148,15 @@ def test_cli_reports_agent_errors_on_stderr(monkeypatch, capsys):
     monkeypatch.setattr(cli, "resolve_config", lambda args: Config(project="p"))
 
     def fail(*a, **kw):
-        raise connect.AgentError("Claude Code in this session is BUSY; prompt not sent")
+        raise connect.AgentError(
+            "Claude Code in this session has not reported its state yet; prompt not sent"
+        )
 
     monkeypatch.setattr(connect, "connect", fail)
     assert cli.main(["connect", "a", "-p", "x", "--detach"]) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "error: Claude Code in this session is BUSY" in captured.err
+    assert "error: Claude Code in this session has not reported" in captured.err
 
 
 def test_uncaptured_remote_output_goes_to_stderr_not_stdout(monkeypatch):

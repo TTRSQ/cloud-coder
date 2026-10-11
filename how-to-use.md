@@ -180,10 +180,10 @@ cloud-coder connect --session cc-REPO-2 -p "..." --detach   # その会話の続
 
 `--session` で指定したセッションの会話に渡します。Claude Code が既に動いていれば、その入力欄に貼り付けて Enter を送ります。
 
-- Claude Code が作業中 (`BUSY`) でも送れます。Claude Code が自分のキューに入れ、作業を止めずに次の区切り (tool の実行が終わったところ) で同じ会話に取り込みます。出力の `prompt` は、入力待ちだったときは `sent`、作業中だったときは `queued` です。終わるのを待ってから送り直す必要はありません。
-- 権限の確認や Claude Code からの質問 (ダイアログ) が出ている間と、まだ状態を報告していないときは何も入力せず、`... prompt not sent` のエラーで終了します。attach してダイアログに答えてから送り直してください。ダイアログを `Esc` や `No` で断った後は、画面にダイアログが無くても、Claude Code が作業を終える (ターンが終わる) までは拒否されます。止まったままなら、attach してプロンプトを送り、そのターンが終わってから送り直してください。
+- Claude Code が作業中 (`BUSY`) でも送れます。入力待ちのときと同じように入力して送信し、作業中なら Claude Code 自身がキューに入れ、作業を止めずに次の区切り (tool の実行が終わったところ) で同じ会話に取り込みます。終わるのを待ってから送り直す必要はありません。
+- 出力の `prompt` が `submitted` なら、Claude Code がプロンプトを受け取ったことを hook で確認できています。実行が終わったという意味ではありません。結果は後で `status` や `read` で確認してください。
+- 権限の確認や Claude Code からの質問 (ダイアログ) が出ている間、入力欄に文字列があるとき (attach して打ちかけている、前のプロンプトが残っている)、入力欄が画面に無いとき (メニューやシェルモード)、まだ状態を報告していないときは何も入力せず、`... prompt not sent` のエラーで終了します。attach してダイアログに答えるか、入力欄を空にしてから送り直してください。ダイアログを `Esc` や `No` で断った後は、画面にダイアログが無くても、Claude Code が作業を終える (ターンが終わる) までは拒否されます。止まったままなら、attach してプロンプトを送り、そのターンが終わってから送り直してください。
 - Claude Code が受け取ったことを hook で確認できなかったときは `... prompt not confirmed` のエラーになります。入力欄に残っているか失われているので、画面を見てから送り直してください。
-- attach して入力欄に打ちかけている文字列があると、送ったプロンプトとつながって送られます。
 - Claude Code が止まっていたセッション (VM 停止後など) では、Claude Code を起動 / resume するときの最初のプロンプトとして渡します。
 
 ## 複数のセッションを並行して使う
@@ -255,7 +255,7 @@ cloud-coder が起動する Claude Code は、すべて Remote Control 付き (`
 - Claude Code の作業は数分〜数時間かかります。server は LLM に、作業を始めたらターンを終え、`BUSY` が終わるのをポーリングで待たないよう指示します (`start_session` / `send_prompt` の応答の `next`、`BUSY` のときの応答の `note`)。`status` / `read_session` は呼ぶたびに VM に問い合わせ、最新の状態と画面を返します ([README の MCP server](README.md#mcp-server))。
 - `up` は agent のインストール・更新を VM 上で始めてすぐに返り、終わるまでは `ready: false` (`agent_installing: true`) を返します。初回は数分かかります。失敗すると、次の `up` がエラーを返すと同時にインストールをやり直します (失敗したときのログは VM の `~/cloud-coder-install.log.prev`)。CLI の `up` / `connect` は、VM 上で動いているインストールの終了を待ってから続けます。
 - `read_session` は Claude Code の最後の応答 (`messages`、Claude Code の会話履歴から読む。既定は 1 個、`messages` 引数で最大 10 個まで古い順に) と、tmux の画面の文字列 (`output`) を返します。権限の確認や trust 画面など入力を待っている表示は画面で読めます。画面は今見えている範囲 (既定で 24 行) だけです。応答は `messages` で読みます ([README の最後の応答と画面](README.md#最後の応答と画面))。
-- `send_prompt` は Claude Code が `BUSY` でも送れます。Claude Code のキューに入り、次の区切りで取り込まれます (応答の `prompt` が `queued`)。ダイアログの表示中はエラーになります (CLI の `-p` と同じ)。
+- `send_prompt` は Claude Code が `BUSY` でも送れます。Claude Code 自身のキューに入り、次の区切りで取り込まれます。応答の `prompt: submitted` は Claude Code が受け取ったことを示し、実行が終わったことは示しません。ダイアログの表示中や入力欄に文字列があるときはエラーになります (CLI の `-p` と同じ)。
 - VM 上で行う初回の Claude Code のログイン (`/login`) と `gh auth login` は MCP からはできません。[初回セットアップ](#初回セットアップ)を CLI で済ませてから使ってください。
 
 ### MCP Inspector で tool を直接呼ぶ

@@ -91,7 +91,7 @@ def apply_event(
         record.last_event = event
         record.open_dialogs = session_state.next_dialogs(record.open_dialogs, payload)
         if event == "UserPromptSubmit":
-            record.prompts_submitted += 1
+            session_state.record_prompt(record, str(payload.get("prompt", "")))
         if claude_proc is not None:
             record.claude_pid = claude_proc.pid
             record.claude_starttime = claude_proc.starttime

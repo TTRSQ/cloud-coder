@@ -7,6 +7,7 @@ pulled or reset, and a pane where something other than Claude Code runs is never
 
 import grp
 import os
+import re
 import shlex
 import subprocess
 import time
@@ -25,7 +26,6 @@ from cloud_coder_vm import (
     workspace_trust,
 )
 from cloud_coder_vm.session_registry import LogicalSession
-from cloud_coder_vm.session_state import IDLE, READY
 from cloud_coder_vm.state_lock import state_lock, write_atomic
 from cloud_coder_vm.system_files import VmConfig
 from cloud_coder_vm.tmux_panes import DEFAULT_SOCKET, PANE_FORMAT, parse_list_panes, tmux_command
@@ -313,6 +313,32 @@ def write_prompt_file(session: LogicalSession, prompt: str) -> Path:
 # How long Claude Code has to confirm, through its UserPromptSubmit hook, a typed prompt.
 PROMPT_CONFIRM_SECONDS = 10.0
 
+# Claude Code's input box: the screen line the cursor is on starts with this sign. In
+# shell mode the sign is "!", and a dialog or a menu moves the cursor off such a line.
+INPUT_BOX_SIGN = "\u276f"
+_SGR = re.compile(r"\x1b\[[0-9;]*m")
+_DIM = re.compile(r"\x1b\[2m.*?(?:\x1b\[(?:0|22)?m|$)")  # a placeholder ("Try ...")
+
+
+def input_box_text(cursor_line: str) -> str | None:
+    """What Claude Code's input box holds, given the screen line the cursor is on with its
+    colours (``capture-pane -e``): "" when it is empty or shows a dimmed placeholder, None
+    when the cursor is not in the input box."""
+    if not _SGR.sub("", cursor_line).startswith(INPUT_BOX_SIGN):
+        return None
+    rest = cursor_line.split(INPUT_BOX_SIGN, 1)[1]
+    return _SGR.sub("", _DIM.sub("", rest)).strip()
+
+
+def _input_box(pane_id: str) -> str | None:
+    row = _check([*tmux_command(), "display-message", "-p", "-t", pane_id, "#{cursor_y}"]).strip()
+    if not row.isdigit():
+        return None
+    line = _check(
+        [*tmux_command(), "capture-pane", "-p", "-e", "-t", pane_id, "-S", row, "-E", row]
+    )
+    return input_box_text(line.rstrip("\n"))
+
 
 def _reported_state(pane_id: str, claude_pid: int) -> session_state.SessionState | None:
     return next(
@@ -327,7 +353,9 @@ def _reported_state(pane_id: str, claude_pid: int) -> session_state.SessionState
 
 def _typeable_state(pane_id: str, claude_pid: int) -> session_state.SessionState:
     """The state of a Claude Code that a prompt may be typed into: one that reported its
-    state and shows no dialog (Enter would answer the dialog, and the text would be lost)."""
+    state, shows no dialog (Enter would answer the dialog, and the text would be lost) and
+    has an empty input box (the prompt would join the text there). Whether it is BUSY does
+    not matter."""
     state = _reported_state(pane_id, claude_pid)
     if state is None:
         raise LaunchError(
@@ -338,15 +366,26 @@ def _typeable_state(pane_id: str, claude_pid: int) -> session_state.SessionState
             "Claude Code in this session shows a permission prompt or a question, or one "
             "was dismissed and Claude Code has not finished its work since; prompt not sent"
         )
+    box = _input_box(pane_id)
+    if box is None:
+        raise LaunchError(
+            "Claude Code in this session does not show its input box (a dialog, a menu or "
+            "shell mode may be open); prompt not sent"
+        )
+    if box:
+        raise LaunchError(
+            "Claude Code's input box in this session already holds text (someone is typing, "
+            "or an earlier prompt was not submitted); prompt not sent"
+        )
     return state
 
 
-def send_prompt_to_running(pane_id: str, claude_pid: int, prompt: str) -> str:
-    """Type a prompt into a running Claude Code and submit it. Returns ``"sent"`` when
-    Claude Code was waiting for input, ``"queued"`` when it was working (BUSY): Claude
-    Code then queues the prompt itself and takes it in at its next step, in the same
-    conversation, without interrupting the work. Raises LaunchError unless Claude Code
-    confirms, through its UserPromptSubmit hook, that it received the prompt."""
+def send_prompt_to_running(pane_id: str, claude_pid: int, prompt: str) -> None:
+    """Type a prompt into a running Claude Code and submit it, whether it waits for input
+    or works (BUSY): working, Claude Code holds the prompt in its own queue and takes it
+    in at its next step, in the same conversation. Returns once Claude Code's
+    UserPromptSubmit hook reports a prompt holding the text, that is once Claude Code has
+    the prompt, not once it has done it. Raises LaunchError otherwise."""
     paths.PROMPT_DIR.mkdir(parents=True, exist_ok=True)
     # One prompt at a time per Claude Code: interleaved pastes would merge into one prompt.
     with state_lock(paths.PROMPT_DIR / f"claude-{claude_pid}.lock"):
@@ -373,8 +412,8 @@ def send_prompt_to_running(pane_id: str, claude_pid: int, prompt: str) -> str:
         while time.monotonic() < deadline:
             time.sleep(0.2)
             now = _reported_state(pane_id, claude_pid)
-            if now is not None and now.prompts_submitted > before.prompts_submitted:
-                return "sent" if before.state in (READY, IDLE) else "queued"
+            if now is not None and session_state.received_since(before, now, prompt):
+                return
     raise LaunchError(
         "Claude Code in this session did not confirm receiving the prompt within "
         f"{PROMPT_CONFIRM_SECONDS:.0f} s; prompt not confirmed, and it may be left in the "
@@ -412,7 +451,8 @@ def ensure_claude(
                 "pane": pane.pane_id,
             }
             if prompt is not None:
-                result["prompt"] = send_prompt_to_running(pane.pane_id, proc.pid, prompt)
+                send_prompt_to_running(pane.pane_id, proc.pid, prompt)
+                result["prompt"] = "submitted"
             return result
         if (
             reuse_pane
