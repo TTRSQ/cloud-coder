@@ -21,6 +21,7 @@ from cloud_coder_vm import (
     process_table,
     session_registry,
     session_state,
+    transcript,
     workspace_trust,
 )
 from cloud_coder_vm.session_registry import LogicalSession
@@ -274,10 +275,6 @@ def ensure_tmux_session(session: LogicalSession) -> str:
     return "created"
 
 
-def transcript_exists(home: Path, claude_session_id: str) -> bool:
-    return any((home / ".claude/projects").glob(f"*/{claude_session_id}.jsonl"))
-
-
 def claude_command(
     home: Path, session: LogicalSession, resume: bool, prompt_file: Path | None = None
 ) -> str:
@@ -440,7 +437,7 @@ def ensure_claude(
                 *regroup_command("docker", set(os.getgroups()), _tmux_server_groups()),
             ]
         ).strip()
-    resume = transcript_exists(home, session.claude_session_id)
+    resume = transcript.find(home, session.claude_session_id) is not None
     prompt_file = write_prompt_file(session, prompt) if prompt is not None else None
     command = claude_command(home, session, resume, prompt_file)
     _check([*tmux_command(), "send-keys", "-t", free_pane, "-l", command])

@@ -53,8 +53,8 @@ refused, do not resend it; tell the user.
   it queues the instruction and takes it in at its next step, without stopping its
   work (`prompt` in the result is `queued`, else `sent`); it is refused while Claude
   Code waits for an answer to a permission prompt or a question. `read_session`
-  returns the session's recent screen text: Claude Code's answer, its progress, or a
-  question it is waiting on.
+  returns Claude Code's last response (`last_message`, from its transcript) and the
+  session's screen text (`output`): its progress, or a question it is waiting on.
 - `resource_usage` shows the VM's CPU, memory and disk usage now; it does not start
   the VM.
 - `close_session` ends a session for good, even while Claude Code is BUSY; call it only
@@ -236,9 +236,11 @@ def build_server(
             int, Field(ge=1, le=2000, description="how many of the last lines to return")
         ] = 200,
     ) -> dict:
-        """Recent text of the session's Claude Code screen (scrollback included) and
-        Claude Code's state. Does not start the VM. Call it when the user asks for
-        progress or the result; never poll it to wait for a BUSY Claude Code."""
+        """Claude Code's last response (`last_message`: its text and time, from Claude
+        Code's transcript; null before the first response), the recent text of the
+        session's screen (`output`) and Claude Code's state. Does not start the VM. Call it
+        when the user asks for progress or the result; never poll it to wait for a BUSY
+        Claude Code."""
         with tool_call("read_session"):
             guards.require_running(cfg)
             screen = connect.read_session(cfg, session, lines)

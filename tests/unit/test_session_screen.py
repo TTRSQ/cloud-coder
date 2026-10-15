@@ -1,3 +1,4 @@
+import json
 import subprocess
 
 import pytest
@@ -75,3 +76,33 @@ def test_session_without_tmux(home, monkeypatch):
         lambda args, **kw: subprocess.CompletedProcess(args, 1, "", "can't find session"),
     )
     assert session_screen.read(home, "cc-a-1", 5)["tmux"] == "absent"
+
+
+def test_cli_adds_the_last_message_from_the_transcript(home, monkeypatch, capsys):
+    from cloud_coder_vm import cli as vm_cli
+
+    monkeypatch.setattr(vm_cli.Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setattr(
+        session_screen.subprocess,
+        "run",
+        lambda args, **kw: subprocess.CompletedProcess(args, 1, "", "can't find session"),
+    )
+    assert vm_cli.main(["read-session", "--session", "cc-a-1"]) == 0
+    assert json.loads(capsys.readouterr().out)["last_message"] is None
+
+    path = home / ".claude/projects/-w-a/id.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "type": "assistant",
+                "timestamp": "2026-10-15T02:40:50.000Z",
+                "message": {"id": "m", "content": [{"type": "text", "text": "Done."}]},
+            }
+        )
+        + "\n"
+    )
+    assert vm_cli.main(["read-session", "--session", "cc-a-1"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["tmux"] == "absent"
+    assert out["last_message"] == {"text": "Done.", "timestamp": "2026-10-15T02:40:50.000Z"}
