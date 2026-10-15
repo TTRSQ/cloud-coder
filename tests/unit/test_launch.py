@@ -489,11 +489,12 @@ class FakeClaude:
                 self.input += pasted
             if self.on_paste:
                 self.on_paste()
-        elif "C-u" in args:
+        elif {"C-e", "C-k", "C-u"} & set(args):
             assert not {"Escape", "C-c", "C-d", "Up"} & set(args)
-            self.ops.append("clear")
-            if self.menu is None:
-                self.input = ""
+            if "C-u" in args:  # the last group of the clearing keys
+                self.ops.append("clear")
+                if self.menu is None:
+                    self.input = ""
         elif args[-1] == "Enter":
             self.ops.append("enter")
             if self.on_enter:

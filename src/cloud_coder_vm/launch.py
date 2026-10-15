@@ -323,7 +323,9 @@ _DIM = re.compile(r"\x1b\[(?:[0-9;]*;)?2(?:;[0-9;]*)?m.*?(?:\x1b\[(?:0|22)?m|$)"
 # turn), Ctrl+C (interrupts, or exits) or Up (takes queued prompts back): to the end of
 # the line, delete to the end of each line below, then to the start of each line above.
 # https://code.claude.com/docs/en/interactive-mode#text-editing
-CLEAR_INPUT_KEYS = ["C-e", *["C-k"] * 50, *["C-u"] * 50]
+# Each group goes in a send-keys of its own: Claude Code 2.1.300 left the box untouched
+# when all of them came in one.
+CLEAR_INPUT_KEYS = (["C-e"], ["C-k"] * 50, ["C-u"] * 50)
 
 
 def input_box_text(cursor_line: str) -> str | None:
@@ -348,7 +350,9 @@ def _clear_input(pane_id: str) -> None:
     """Empty Claude Code's input box (what someone left typed there is dropped) and check
     that the cursor is back in an empty input box: a menu someone opened (/help, Ctrl+R)
     fires no hook, and Enter would answer it instead of submitting the prompt."""
-    _check([*tmux_command(), "send-keys", "-t", pane_id, *CLEAR_INPUT_KEYS])
+    for keys in CLEAR_INPUT_KEYS:
+        _check([*tmux_command(), "send-keys", "-t", pane_id, *keys])
+        time.sleep(0.05)
     time.sleep(0.2)
     row = _check([*tmux_command(), "display-message", "-p", "-t", pane_id, "#{cursor_y}"]).strip()
     line = _check(
