@@ -440,6 +440,8 @@ class FakeClaude:
         self.on_paste = None
         self.on_enter = None
         self.cursor_line: str | None = None
+        self.in_copy_mode = False
+        self.paste_lost = False
         self.as_submitted = lambda text: text  # how Claude Code rewrites a pasted prompt
 
     def event(self, payload):
@@ -471,15 +473,17 @@ class FakeClaude:
 
     def check(self, args, cwd=None):
         if "display-message" in args:
-            assert args[-1] == "#{cursor_y}"
-            return "47\n"
+            assert args[-1] == "#{pane_in_mode} #{cursor_y}"
+            return f"{int(self.in_copy_mode)} 47\n"
         if "capture-pane" in args:
             assert "-e" in args and args[-4:] == ["-S", "47", "-E", "47"]
             return self.screen_line() + "\n"
         if "paste-buffer" in args:
             assert "-p" in args  # bracketed paste: newlines stay in the prompt
             self.ops.append("paste")
-            self.input += self.buffers.pop(args[args.index("-b") + 1])
+            pasted = self.buffers.pop(args[args.index("-b") + 1])
+            if not self.paste_lost:
+                self.input += pasted
             if self.on_paste:
                 self.on_paste()
         elif args[-1] == "Enter":
@@ -659,6 +663,7 @@ def test_a_dialog_denied_without_an_event_blocks_until_all_work_ends(claude):
     with pytest.raises(LaunchError, match="prompt not sent"):
         claude.send("go")
     claude.event(STOP)
+    claude.cursor_line = None
     claude.send("go")
     assert claude.submitted == ["go"]
 
@@ -667,6 +672,23 @@ def test_no_enter_when_a_dialog_opens_while_typing(claude):
     claude.event(BUSY_EVENT)
     claude.on_paste = lambda: claude.event({"hook_event_name": "PermissionRequest", **WRITE})
     with pytest.raises(LaunchError, match="prompt not submitted"):
+        claude.send("go")
+    assert claude.ops == ["paste"]
+
+
+def test_nothing_is_typed_while_the_pane_is_in_copy_mode(claude):
+    claude.event(BUSY_EVENT)
+    claude.in_copy_mode = True
+    with pytest.raises(LaunchError, match="copy mode.*; prompt not sent"):
+        claude.send("go")
+    assert claude.ops == []
+
+
+def test_no_enter_when_the_paste_did_not_arrive(claude):
+    """Enter on an empty input box would submit the dimmed suggestion shown there."""
+    claude.event(BUSY_EVENT)
+    claude.paste_lost = True
+    with pytest.raises(LaunchError, match="did not reach.*prompt not submitted"):
         claude.send("go")
     assert claude.ops == ["paste"]
 
@@ -698,6 +720,8 @@ def test_another_prompt_does_not_confirm_a_lost_one(claude):
         (INPUT_BOX, ""),
         (INPUT_BOX + PLACEHOLDER, ""),
         (INPUT_BOX + '\x1b[2mTry "fix typecheck errors"\x1b[0m', ""),
+        ("❯\xa0\x1b[2m進めて\x1b[0m", ""),  # a suggestion, seen with 2.1.300
+        (INPUT_BOX + "\x1b[2;3mTry x\x1b[0m", ""),  # dimmed and italic
         (INPUT_BOX + "half typed", "half typed"),
         ("\x1b[38;5;246m❯ \x1b[38;5;231mQ2: an earlier prompt\x1b[39m", "Q2: an earlier prompt"),
         (" \x1b[38;5;153m❯\x1b[39m 1. Yes", None),

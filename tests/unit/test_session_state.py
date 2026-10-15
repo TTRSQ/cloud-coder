@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from cloud_coder_vm.session_state import (
@@ -157,3 +159,17 @@ def test_a_prompt_is_received_only_by_a_newer_submission_of_the_same_text():
         record_prompt(after, f"p{i}")
     assert len(after.recent_prompt_digests) == 8 and after.prompts_submitted == 14
     assert received_since(before, after, "p9") and not received_since(before, after, "go on")
+
+
+def test_a_record_written_before_prompt_digests_confirms_the_next_prompt(tmp_path):
+    """A running Claude Code's record from an agent without recent_prompt_digests."""
+    from cloud_coder_vm import session_state
+
+    (tmp_path / "pane-3.json").write_text(
+        json.dumps({"key": "pane-3", "session_id": "s", "state": "BUSY", "prompts_submitted": 2})
+    )
+    before = session_state.load(tmp_path, "pane-3")
+    assert before.recent_prompt_digests == []
+    after = session_state.load(tmp_path, "pane-3")
+    session_state.record_prompt(after, "go")
+    assert session_state.received_since(before, after, "go")
