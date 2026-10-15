@@ -342,7 +342,9 @@ def fake_tmux(monkeypatch, *, claude_running: bool, transcript: bool):
     )
     monkeypatch.setattr(launch_mod, "_cmdline", lambda pid: ["claude", "--remote-control"])
     monkeypatch.setattr(launch_mod, "send_prompt_to_running", lambda *a: sent.append(a) or "queued")
-    monkeypatch.setattr(launch_mod, "transcript_exists", lambda home, sid: transcript)
+    monkeypatch.setattr(
+        launch_mod.transcript, "find", lambda home, sid: Path("t.jsonl") if transcript else None
+    )
     monkeypatch.setattr(launch_mod, "write_prompt_file", lambda s, p: Path("/run/p.txt"))
     return sent
 

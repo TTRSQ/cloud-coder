@@ -145,19 +145,10 @@ def connect(
     return launched
 
 
-def read_session(cfg: Config, session: str, lines: int = 200) -> dict:
-    """The last ``lines`` lines of the session's Claude Code pane, and its state."""
-    command = shlex.join(
-        [
-            "python3",
-            str(paths.AGENT_PYZ),
-            "read-session",
-            "--session",
-            session,
-            "--lines",
-            str(lines),
-        ]
-    )
+def read_session(cfg: Config, session: str) -> dict:
+    """Claude Code's last response (from its transcript), the visible text of the
+    session's Claude Code pane, and its state."""
+    command = shlex.join(["python3", str(paths.AGENT_PYZ), "read-session", "--session", session])
     return agent_result(ssh.run(cfg, command))
 
 

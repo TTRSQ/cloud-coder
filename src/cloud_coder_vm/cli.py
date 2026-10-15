@@ -21,6 +21,7 @@ from cloud_coder_vm import (
     session_registry,
     session_screen,
     system_files,
+    transcript,
 )
 from cloud_coder_vm.tmux_panes import tmux_command
 
@@ -101,12 +102,15 @@ def cmd_close_session(args) -> int:
 
 
 def cmd_read_session(args) -> int:
+    home = Path.home()
     try:
-        result = session_screen.read(Path.home(), args.session, args.lines)
+        screen = session_screen.read(home, args.session)
     except session_screen.ScreenError as e:
         print(json.dumps({"error": str(e)}))
         return 1
-    print(json.dumps(result))
+    session = session_registry.load(paths.registry_path(home)).get(args.session)
+    last = transcript.last_message(home, session.claude_session_id) if session else None
+    print(json.dumps({**screen, "last_message": last}))
     return 0
 
 
@@ -153,9 +157,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--prompt-b64", help="first prompt for Claude Code, base64 encoded (UTF-8)")
     p.set_defaults(func=cmd_launch)
 
-    p = sub.add_parser("read-session", help="print a session's Claude Code pane as JSON")
+    p = sub.add_parser(
+        "read-session", help="print a session's last Claude Code response and pane as JSON"
+    )
     p.add_argument("--session", required=True)
-    p.add_argument("--lines", type=int, default=200, help="lines to return, scrollback included")
+    # accepted and ignored: an MCP server or CLI from before its removal still passes it;
+    # remove once every client that installs this agent (Cloud Run, local CLI) is newer
+    p.add_argument("--lines", help=argparse.SUPPRESS)
     p.set_defaults(func=cmd_read_session)
 
     p = sub.add_parser(

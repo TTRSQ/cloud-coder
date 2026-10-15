@@ -27,10 +27,9 @@ def visible_text(captured: str) -> str:
     return "\n".join(line.rstrip() for line in captured.rstrip("\n").split("\n")).rstrip("\n")
 
 
-def read(home: Path, session_name: str, lines: int) -> dict:
-    """The last ``lines`` lines (scrollback included) of the session's Claude Code pane."""
-    if lines < 1:
-        raise ScreenError("lines must be at least 1")
+def read(home: Path, session_name: str) -> dict:
+    """The visible text of the session's Claude Code pane. Claude Code draws in the
+    alternate screen, which keeps no scrollback; its responses are in its transcript."""
     if session_name not in session_registry.load(paths.registry_path(home)):
         raise ScreenError(f"unknown session {session_name!r}")
     listed = subprocess.run(
@@ -50,7 +49,7 @@ def read(home: Path, session_name: str, lines: int) -> dict:
         }
     pane, claude_pid = claude_pane(panes)
     captured = subprocess.run(
-        [*tmux_command(), "capture-pane", "-p", "-J", "-S", f"-{lines}", "-t", pane.pane_id],
+        [*tmux_command(), "capture-pane", "-p", "-J", "-t", pane.pane_id],
         capture_output=True,
         text=True,
     )
@@ -67,12 +66,11 @@ def read(home: Path, session_name: str, lines: int) -> dict:
             ),
             None,
         )
-    output = visible_text(captured.stdout).split("\n")[-lines:]
     return {
         "session": session_name,
         "tmux": "running",
         "pane": pane.pane_id,
         "claude": "running" if claude_pid is not None else "not running",
         "claude_state": state,
-        "output": "\n".join(output),
+        "output": visible_text(captured.stdout),
     }

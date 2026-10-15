@@ -205,7 +205,7 @@ claude mcp add cloud-coder -- cloud-coder mcp
 | `up` | なし | VM が止まっていれば起動を要求して**待たずに**返す。動いていれば agent を確認し、必要なら VM 上でインストール・更新を始める (`agent_installing: true`。インストールは VM 上の切り離したプロセスで進み、ログは VM の `~/cloud-coder-install.log`)。`ready: true` になるまで間をおいて呼び直す |
 | `start_session` | `repo?`, `new?`, `session?`, `prompt?` | `connect --detach` と同じ。repository の clone、tmux、Claude Code の起動 (または resume) を行い、セッション名と `accepted: true`、次の行動の指示 `next` を返す。`prompt` があって `session` が無ければ `repo` に新しいセッションと会話を作り、続きにするのは `session` を指定したときだけ ([プロンプトを渡す](#プロンプトを渡す))。応答の `created` / `conversation` で新規か継続かが分かる |
 | `send_prompt` | `session`, `text` | `connect --session <session> -p <text> --detach` と同じ。Claude Code が `BUSY` なら Claude Code のキューに入り、次の区切りで取り込まれる (`prompt: queued`)。`READY` / `IDLE` なら `prompt: sent`。ダイアログの表示中は拒否する ([プロンプトを渡す](#プロンプトを渡す))。応答は `start_session` と同じく `accepted` と `next` を含む |
-| `read_session` | `session`, `lines?` (1〜2000、既定 200) | セッションの Claude Code の画面 (tmux pane、scrollback 含む) の最後の `lines` 行と状態。VM は起動しない |
+| `read_session` | `session` | セッションの Claude Code の最後の応答 (`last_message`) と、今の画面 (tmux pane) の文字列 (`output`) と状態。VM は起動しない ([最後の応答と画面](#最後の応答と画面)) |
 | `resource_usage` | なし | VM の CPU (1 秒間の使用率、load average、コア数)・メモリ (使用量、available、合計)・ディスク (ファイルシステムごとの使用量) の今の値。VM は起動せず、止まっていれば VM の状態だけを返す (下の注意を参照) |
 | `close_session` | `session` | `close <session>` と同じ ([セッションを閉じる](how-to-use.md#複数のセッションを並行して使う))。tmux session を Claude Code ごと終了し (`BUSY` でも)、worktree と push 済みの branch を削除して、登録から外す。未コミット・未 push の変更や、キャッシュ以外の ignored のファイルがあれば何も変えずにエラーを返す。`--dry-run` と `--discard-ignored` は CLI だけ |
 | `stop` | なし | VM の停止を要求して待たずに返す (`status` で `stopped` を確認) |
@@ -223,6 +223,15 @@ claude mcp add cloud-coder -- cloud-coder mcp
   - メモリの `used_gib` は `MemTotal - MemAvailable` です (page cache など解放できる分は含まない)。tmpfs (`/dev/shm` など) に置いたファイルはメモリの使用量に入ります。
   - ディスクは tmpfs・devtmpfs・squashfs・overlay (Docker)・efivarfs を除いたローカルのファイルシステムごとに返します。`used_percent` は `df` の Use% と同じく `used / (used + available)` です (root 用の予約領域は含まない)。
 - server は transport に依存しない作りです (`cloud_coder.mcp_server.build_server`)。`cloud-coder mcp` は stdio で、`cloud-coder api` は `/mcp` (Streamable HTTP) で同じ tool を提供します ([HTTP API](#http-api))。
+
+#### 最後の応答と画面
+
+`read_session` は Claude Code の最後の応答を、画面ではなく Claude Code 自身の会話履歴 (transcript) から読みます。
+
+- Claude Code は画面全体を描き直す表示 (tmux の alternate screen) で動くので、pane には scrollback が残りません。読めるのは今の画面 (detach 中の既定で 80×24) だけで、入力欄や subagent の一覧の分だけ応答が欠けます。
+- transcript は `~/.claude/projects/<作業ディレクトリ>/<session ID>.jsonl` です。cloud-coder は Claude Code を `--session-id` / `--resume` で起動し、`/clear` などで ID が変われば `SessionStart` の hook で登録を更新するので、登録の session ID でファイルが決まります。ファイルの場所は Claude Code の [hooks の docs](https://code.claude.com/docs/en/hooks) の `transcript_path` の例と同じです。中の形式は公開されていないので、想定外の行は読み飛ばします。
+- `last_message` は、最後の応答のうち文字列 (text) のあるもの (`text` と、書かれた時刻 `timestamp`) です。1 回の応答の text が複数あればつなげます。thinking と tool の呼び出し、subagent (`isSidechain`) の行は含めません。作業中 (`BUSY`) で tool を呼んでいるだけの間は、その前に書いた text が返ります。これは前のプロンプトへの応答のこともあります (`timestamp` で分かります)。まだ応答が無い (transcript が無い) ときは `null` です。tmux や Claude Code が動いていなくても読めます。
+- 今の画面 (`output`) も返します。権限の確認や質問のダイアログ、作業中の進み具合は transcript に無く、画面にしか出ないからです。
 
 ### HTTP API
 
