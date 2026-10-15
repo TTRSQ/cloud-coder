@@ -3,14 +3,10 @@ import subprocess
 
 import pytest
 
-from cloud_coder_vm import paths, session_screen
+from cloud_coder_vm import paths, session_status
 from cloud_coder_vm.session_registry import LogicalSession, save
-from cloud_coder_vm.session_state import SessionState
+from cloud_coder_vm.session_state import SessionState, dialog
 from cloud_coder_vm.tmux_panes import Pane
-
-
-def test_visible_text_drops_trailing_blank_rows_and_spaces():
-    assert session_screen.visible_text("> hi   \n● Done.\n\n\n\n") == "> hi\n● Done."
 
 
 @pytest.fixture
@@ -20,53 +16,62 @@ def home(tmp_path):
     return tmp_path
 
 
-def test_reads_the_claude_pane_and_its_state(monkeypatch):
+def test_reads_claude_code_s_state_and_dialogs_never_the_screen(monkeypatch):
     calls = []
 
     def fake_run(args, **kw):
         calls.append(args)
-        if "list-panes" in args:
-            return subprocess.CompletedProcess(args, 0, "cc-a-1\t%3\t100\tbash\n", "")
-        return subprocess.CompletedProcess(args, 0, "old\n> fix it\n● Done.\n\n\n", "")
+        return subprocess.CompletedProcess(args, 0, "cc-a-1\t%3\t100\tbash\n", "")
 
-    monkeypatch.setattr(session_screen.subprocess, "run", fake_run)
-    monkeypatch.setattr(
-        session_screen, "claude_pane", lambda panes: (Pane("cc-a-1", "%3", 100, "bash"), 200)
-    )
-    monkeypatch.setattr(
-        session_screen.session_state,
-        "load_all",
-        lambda d: [SessionState("pane-3", "s", "READY", tmux_pane="%3", claude_pid=200)],
-    )
-    out = session_screen.read("cc-a-1")
-    assert calls[0][:3] == ["tmux", "-L", "cloud-coder"]
-    assert calls[1] == [
-        "tmux",
-        "-L",
-        "cloud-coder",
-        "capture-pane",
-        "-p",
-        "-J",
-        "-t",
-        "%3",
-    ]
-    assert out == {
-        "session": "cc-a-1",
-        "tmux": "running",
-        "pane": "%3",
-        "claude": "running",
-        "claude_state": "READY",
-        "output": "old\n> fix it\n● Done.",
+    asking = {
+        "hook_event_name": "PermissionRequest",
+        "tool_name": "AskUserQuestion",
+        "tool_input": {
+            "questions": [
+                {
+                    "question": "Which one?",
+                    "header": "Pick",
+                    "multiSelect": False,
+                    "options": [{"label": "A", "description": "a"}, {"label": "B"}],
+                }
+            ]
+        },
     }
+    monkeypatch.setattr(session_status.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        session_status, "claude_pane", lambda panes: (Pane("cc-a-1", "%3", 100, "bash"), 200)
+    )
+    state = SessionState("pane-3", "s", "BUSY", tmux_pane="%3", claude_pid=200)
+    state.open_dialogs = [dialog(asking)]
+    monkeypatch.setattr(session_status.session_state, "load_all", lambda d: [state])
+    assert session_status.read("cc-a-1") == {
+        "tmux": "running",
+        "claude": "running",
+        "claude_state": "BUSY",
+        "waiting_for": [
+            {
+                "kind": "question",
+                "questions": [
+                    {"question": "Which one?", "options": ["A", "B"], "multi_select": False}
+                ],
+            }
+        ],
+    }
+    assert [c[3] for c in calls] == ["list-panes"]  # no capture-pane
 
 
 def test_session_without_tmux(monkeypatch):
     monkeypatch.setattr(
-        session_screen.subprocess,
+        session_status.subprocess,
         "run",
         lambda args, **kw: subprocess.CompletedProcess(args, 1, "", "can't find session"),
     )
-    assert session_screen.read("cc-a-1")["tmux"] == "absent"
+    assert session_status.read("cc-a-1") == {
+        "tmux": "absent",
+        "claude": "not running",
+        "claude_state": None,
+        "waiting_for": [],
+    }
 
 
 def test_cli_adds_the_latest_responses_from_the_transcript(home, monkeypatch, capsys):
@@ -74,7 +79,7 @@ def test_cli_adds_the_latest_responses_from_the_transcript(home, monkeypatch, ca
 
     monkeypatch.setattr(vm_cli.Path, "home", classmethod(lambda cls: home))
     monkeypatch.setattr(
-        session_screen.subprocess,
+        session_status.subprocess,
         "run",
         lambda args, **kw: subprocess.CompletedProcess(args, 1, "", "can't find session"),
     )
@@ -98,7 +103,7 @@ def test_cli_adds_the_latest_responses_from_the_transcript(home, monkeypatch, ca
     )
     assert vm_cli.main(["read-session", "--session", "cc-a-1", "--messages", "3"]) == 0
     out = json.loads(capsys.readouterr().out)
-    assert out["tmux"] == "absent"
+    assert set(out) == {"session", "tmux", "claude", "claude_state", "waiting_for", "messages"}
     assert out["messages"] == [{"text": "Done.", "timestamp": "2026-10-15T02:40:50.000Z"}]
 
     for count in ("0", "11"):

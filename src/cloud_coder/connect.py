@@ -146,8 +146,8 @@ def connect(
 
 
 def read_session(cfg: Config, session: str, messages: int = 1) -> dict:
-    """Claude Code's latest ``messages`` responses (from its transcript, oldest first), the
-    visible text of the session's Claude Code pane, and its state."""
+    """Claude Code's latest ``messages`` responses (from its transcript, oldest first),
+    whether it runs, its state and what it waits for (see session_status)."""
     command = ["python3", str(paths.AGENT_PYZ), "read-session", "--session", session]
     return agent_result(ssh.run(cfg, shlex.join([*command, "--messages", str(messages)])))
 

@@ -90,15 +90,16 @@ cloud-coder api                                     # HTTP API を 127.0.0.1:878
 - プロンプトが無い `connect` (attach して見るとき) は、従来どおり直近のセッションに戻ります。
 - 応答 (`connect` の JSON 出力、MCP `start_session` の結果) の `created` はセッションを新しく作ったか (`true` / `false`)、`conversation` は Claude Code の会話が新しいか続きか (`new` / `continued`) を示します。`conversation` は Claude Code を起動しないとき (`--no-claude`) にはありません。`--session` で指定したセッションでも、まだ会話の履歴が無ければ `new` になります。
 - Claude Code を新しく起動 / resume するときは、`claude ... --remote-control <名前> -- "<prompt>"` の位置引数として最初のプロンプトを渡します。プロンプトは base64 で VM に送り、一時ファイル経由で展開するので、複数行・引用符・`$` などもそのまま届きます。
-- 既に Claude Code が動いているセッションには、tmux の bracketed paste で入力欄に貼り付けて Enter を送ります。Claude Code が `BUSY` (作業中) かどうかで送り方は変えません。作業中の Claude Code は送られた入力を Claude Code 自身のキューに積み (画面に `Press up to edit queued messages`)、作業を止めずに次の区切り (tool の実行が終わったところ、またはターンの終わり) で同じ会話に取り込みます。cloud-coder はキューも配送の管理も持たず、いつ取り込まれるかは Claude Code に任せます。
+- 既に Claude Code が動いているセッションには、tmux の bracketed paste で入力欄に貼り付けて Enter を送ります。Claude Code が `BUSY` (作業中) かどうかで送り方は変えません。作業中の Claude Code は送られた入力を Claude Code 自身のキューに積み、作業を止めずに次の区切り (tool の実行が終わったところ、またはターンの終わり) で同じ会話に取り込みます。cloud-coder はキューも配送の管理も持たず、いつ取り込まれるかは Claude Code に任せます。
   - Claude Code 2.1.296 で確認した挙動 (tmux 経由。Remote Control は使っていない): foreground の tool の実行中に送った 6 つのプロンプト (複数行・日本語・絵文字・タブ・引用符・`$` を含むもの、同時に送った 2 つ、同じ文面の 2 つ) が、それぞれ 1 つのプロンプトとして送った順にキューへ入りました。`UserPromptSubmit` hook はキューに入った時点で発火し、transcript には `queue-operation` (`enqueue` / `remove`) が記録されます。tool は中断されずに最後まで実行され、その後同じターンの中で全部が取り込まれました。
-  - 応答の `prompt` が `submitted` なら、Claude Code の `UserPromptSubmit` hook が、送った文面と同じプロンプトを受け取ったと報告しています。Claude Code がプロンプトを受け取った (作業中ならキューに入れた) ことだけを意味し、実行が終わったことは意味しません。終わったかどうかは `status` の Claude Code の状態 (`READY` / `IDLE`) や `read_session` の画面で分かります。Claude Code を新しく起動 / resume したときの `passed-at-start` は、起動時の引数として渡したことを意味します。
-  - hook の報告は文面で照合します。Claude Code はタブを空白に変え、行末の空白を落とし、長い貼り付けをタグで囲むので、空白とそのタグを除いた文面が一致するかで判定します (一部だけ一致するものは数えない)。Claude Code が文面の変え方を変えると、受け取っていても確認できずにエラーになることがあります (安全側)。2.1.296 では background の task の完了通知も `UserPromptSubmit` を発火させるため、回数だけでは別のプロンプトを受け取りとみなしてしまいます。10 秒以内に確認できなければ、送れたことにはせずエラー (`prompt not confirmed`) にします (入力欄に残っているか失われている可能性があるので、画面を見てから送り直す)。
+  - 応答の `prompt` が `submitted` なら、Claude Code の `UserPromptSubmit` hook が、送った文面と同じプロンプトを受け取ったと報告しています。Claude Code がプロンプトを受け取った (作業中ならキューに入れた) ことだけを意味し、実行が終わったことは意味しません。終わったかどうかは `status` の Claude Code の状態 (`READY` / `IDLE`) や `read_session` の応答で分かります。Claude Code を新しく起動 / resume したときの `passed-at-start` は、起動時の引数として渡したことを意味します。
+  - hook の報告は文面で照合します。Claude Code はタブを空白に変え、行末の空白を落とし、長い貼り付けをタグで囲むので、空白とそのタグを除いた文面が一致するかで判定します (一部だけ一致するものは数えない)。Claude Code が文面の変え方を変えると、受け取っていても確認できずにエラーになることがあります (安全側)。2.1.296 では background の task の完了通知も `UserPromptSubmit` を発火させるため、回数だけでは別のプロンプトを受け取りとみなしてしまいます。10 秒以内に確認できなければ、送れたことにはせずエラー (`prompt not confirmed`) にします (失われたか、受け取ったのに hook で確かめられなかった可能性があるので、取り込まれたかを確かめてから送り直す)。
   - ダイアログ (権限の確認、`AskUserQuestion` の質問、MCP の elicitation) が出ている間は、何も入力せずにエラーにします。ダイアログに Enter を送ると選択肢が確定してしまうためです (2.1.294 で、権限の確認中に貼り付けて Enter を送ると `Write` が許可され、プロンプトは失われることを確認)。ダイアログの表示と終了は hook (`PermissionRequest` / `Elicitation` と `PostToolUse` / `PostToolUseFailure` / `ElicitationResult`) で記録します ([自動停止](#自動停止))。貼り付けと Enter の間にダイアログが出た場合も Enter を送らずにエラーにします。
-  - 入力欄に文字列があるとき (人が attach して打ちかけている、前に送ったプロンプトが送信されずに残っている) と、入力欄が画面に無いとき (hook で分からないメニューやダイアログ、シェルモード) も、何も入力せずにエラーにします。貼り付けたプロンプトが既存の文字列とつながったり、メニューの選択に使われたりしないためです。tmux のカーソルがある行が `❯` で始まる Claude Code の入力欄で、そこに薄く表示される案内 (`Try "..."` など) 以外の文字が無いことを確かめます。Claude Code の画面の作りが変わると、この確認で送れなくなることがあります (エラーにする側に倒れます)。
+  - 貼り付ける前に、入力欄に残っている文字列を消します (人が attach して打ちかけたもの、前に送って送信されなかったもの、シェルモード、複数行の入力)。消すのは `Ctrl+E` の後に `Ctrl+K` と `Ctrl+U` を繰り返すキーで ([Claude Code の docs](https://code.claude.com/docs/en/interactive-mode))、作業中のターンを止める `Esc`、終了につながる `Ctrl+C` / `Ctrl+D`、キューのプロンプトを入力欄に戻す `Up` は使いません。残っていた文字列は捨てます (戻せる保証はありません)。Claude Code 2.1.300 で、`READY` と `BUSY` (foreground の tool の実行中、キューにプロンプトがある状態) の両方で、tool が中断されず、キューのプロンプトもそのままで、入力欄だけが空になることを確かめています。入力欄に薄く表示される次のプロンプトの提案 (prompt suggestion) は入力ではないので、消えずに残っても送られません (空の入力欄で Enter を押しても提案は送信されない)。
+  - 消した後、tmux のカーソルがある行が空の入力欄 (`❯` で始まり、薄い表示以外の文字が無い) であることを確かめ、そうでなければ何も入力せずにエラーにします。attach した人が開いたメニュー (`/help`、`Ctrl+R` の履歴検索など) は hook で分からず、Enter を送るとメニューの選択に使われてプロンプトが失われるためです。消すためのキーはこの確認の前に送られるので、メニューにも届きます (`Ctrl+R` の検索では何も起きないことを確かめています。Enter は送りません)。この確認の結果は送るかどうかの判断にだけ使い、`read_session` などで返すことはありません。tmux の copy mode (attach した人がスクロールしている) のときは、キーが copy mode に渡るので、`#{pane_in_mode}` を見て何も送らずにエラーにします。
   - まだ状態を報告していない Claude Code (起動直後やログイン前、終了した後) には何も入力せずにエラーにします。
   - 同じ Claude Code への送信は 1 つずつ行います (`/run/cloud-coder/prompts/claude-<pid>.lock`)。同時に送っても貼り付けが混ざらず、送った分だけ別々のプロンプトになります。
-  - 防げないこと: 確認の直後に人が入力し始めると、その文字列とつながることがあります。入力欄の判定はカーソルのある行だけを見るので、1 行目が空で 2 行目以降に文字列がある入力とはつながります。vim mode の NORMAL モードでの貼り付けは確かめていません。`UserPromptSubmit` が発火しない入力 (組み込みのスラッシュコマンドなど) は、実行されても `prompt not confirmed` になります。確認を待つ間 (最長 10 秒) に、同じ文面 (空白と貼り付けのタグを除いて一致するもの) の別のプロンプトが送られると、そちらを受け取りとみなします。
+  - 防げないこと: 消した直後に人が入力し始めると、その文字列とつながることがあります。50 行を超えて手で打った入力は消しきれず、エラーになります。vim mode (`editorMode: vim`) での消し方と貼り付けは確かめていません。`UserPromptSubmit` が発火しない入力 (組み込みのスラッシュコマンドなど) は、実行されても `prompt not confirmed` になります。確認を待つ間 (最長 10 秒) に、同じ文面 (空白と貼り付けのタグを除いて一致するもの) の別のプロンプトが送られると、そちらを受け取りとみなします。
 - `--detach` と組み合わせると、タスクを投げて放置し、終わって idle になったら VM が自動停止する、という使い方が CLI だけでできます。
 - private repository の clone 方法は 2 通りあります。
   - SSH URL (`git@github.com:OWNER/REPO.git`): `connect` はローカルの ssh-agent を VM に転送します (`ssh -A`) ので、鍵を agent に登録しておけば clone できます。転送は `connect` の間だけなので、VM 上での後の `git push` などには使えません。
@@ -206,8 +207,8 @@ claude mcp add cloud-coder -- cloud-coder mcp
 | `status` | なし | VM の状態、セッション一覧、各 Claude Code の状態 (`BUSY` / `READY` / `IDLE`)、自動停止の状態 (`status --json` と同じ内容) |
 | `up` | なし | VM が止まっていれば起動を要求して**待たずに**返す。動いていれば agent を確認し、必要なら VM 上でインストール・更新を始める (`agent_installing: true`。インストールは VM 上の切り離したプロセスで進み、ログは VM の `~/cloud-coder-install.log`)。`ready: true` になるまで間をおいて呼び直す |
 | `start_session` | `repo?`, `new?`, `session?`, `prompt?` | `connect --detach` と同じ。repository の clone、tmux、Claude Code の起動 (または resume) を行い、セッション名と `accepted: true`、次の行動の指示 `next` を返す。`prompt` があって `session` が無ければ `repo` に新しいセッションと会話を作り、続きにするのは `session` を指定したときだけ ([プロンプトを渡す](#プロンプトを渡す))。応答の `created` / `conversation` で新規か継続かが分かる |
-| `send_prompt` | `session`, `text` | `connect --session <session> -p <text> --detach` と同じ。Claude Code が `BUSY` でも同じように入力して送信し、Claude Code が受け取ったことを hook で確かめて `prompt: submitted` を返す (作業中なら Claude Code 自身のキューに入り、次の区切りで取り込まれる。実行の完了は意味しない)。ダイアログの表示中や入力欄に文字列があるときは拒否する ([プロンプトを渡す](#プロンプトを渡す))。応答は `start_session` と同じく `accepted` と `next` を含む |
-| `read_session` | `session`, `messages?` (1〜10、既定 1) | セッションの Claude Code の最後の `messages` 個の応答 (`messages`、古い順) と、今の画面 (tmux pane) の文字列 (`output`) と状態。VM は起動しない ([最後の応答と画面](#最後の応答と画面)) |
+| `send_prompt` | `session`, `text` | `connect --session <session> -p <text> --detach` と同じ。Claude Code が `BUSY` でも同じように入力して送信し、Claude Code が受け取ったことを hook で確かめて `prompt: submitted` を返す (作業中なら Claude Code 自身のキューに入り、次の区切りで取り込まれる。実行の完了は意味しない)。入力欄に残っていた文字列は消してから入力する。ダイアログの表示中や、attach した人が開いたメニューがあるときは拒否する ([プロンプトを渡す](#プロンプトを渡す))。応答は `start_session` と同じく `accepted` と `next` を含む |
+| `read_session` | `session`, `messages?` (1〜10、既定 1) | セッションの Claude Code の最後の `messages` 個の応答 (`messages`、古い順)、動いているか (`claude`)、状態 (`claude_state`)、答えを待っているもの (`waiting_for`)。VM は起動しない ([read_session が返すもの](#read_session-が返すもの)) |
 | `resource_usage` | なし | VM の CPU (1 秒間の使用率、load average、コア数)・メモリ (使用量、available、合計)・ディスク (ファイルシステムごとの使用量) の今の値。VM は起動せず、止まっていれば VM の状態だけを返す (下の注意を参照) |
 | `close_session` | `session` | `close <session>` と同じ ([セッションを閉じる](how-to-use.md#複数のセッションを並行して使う))。tmux session を Claude Code ごと終了し (`BUSY` でも)、worktree と push 済みの branch を削除して、登録から外す。未コミット・未 push の変更や、キャッシュ以外の ignored のファイルがあれば何も変えずにエラーを返す。`--dry-run` と `--discard-ignored` は CLI だけ |
 | `stop` | なし | VM の停止を要求して待たずに返す (`status` で `stopped` を確認) |
@@ -216,7 +217,7 @@ claude mcp add cloud-coder -- cloud-coder mcp
 - `cloud-coder mcp --machine-type` などの VM 作成用のオプションは、VM を新しく作るときにだけ使われます。既存 VM の machine type は CLI で変えてください ([マシンスペックを変える](how-to-use.md#マシンスペックを変える))。
 - tool は長く待ちません。VM の起動・停止と agent のインストールは要求・開始だけ行い、呼び出し側が `up` / `status` で確認します。どの tool の呼び出しも 2 分 (120 秒) で打ち切り、エラーを返します。gcloud や SSH が応答しなくなっても、呼び出しがいつまでも返らないことはありません。打ち切られても VM 上の処理は続いていることがあるので、再実行の前に `status` で確かめてください。大きな repository の初回 clone のように時間のかかる `start_session` は、CLI の `connect` で済ませておくと確実です。
 - Claude Code の作業は数分〜数時間かかり、LLM の 1 ターンには収まりません。server の instructions と tool の説明は、作業を始めたらユーザーに報告してターンを終え、`BUSY` が終わるのを `status` / `read_session` のポーリングで待たないよう LLM に指示します。`start_session` / `send_prompt` の応答の `next`、`BUSY` のときの `status` / `read_session` の応答の `note` も同じ指示です。`send_prompt` は `BUSY` でも Claude Code のキューに入れるので、`BUSY` が終わるのを待つ必要はありません。拒否された `send_prompt` (ダイアログの表示中など) のエラーには、再送しないよう書き添えます。
-- `status` と `read_session` は呼ぶたびに VM に問い合わせ、最新の状態と画面を返します。
+- `status` と `read_session` は呼ぶたびに VM に問い合わせ、最新の状態を返します。
 - server は tool の呼び出しごとに、tool 名・成否・所要時間を stderr のログに出します (例: `cloud-coder: MCP tool read_session: ok in 6.4s`)。
 - `start_session` / `send_prompt` / `close_session` は VM が ready でなければ起動を要求したうえでエラーを返します (`up` で ready を待ってから再実行)。
 - MCP server は ssh-agent を VM に転送しません (`connect` は転送します)。private repository は HTTPS + `gh auth setup-git` で clone してください ([GitHub の認証](#github-の認証))。
@@ -226,17 +227,24 @@ claude mcp add cloud-coder -- cloud-coder mcp
   - ディスクは tmpfs・devtmpfs・squashfs・overlay (Docker)・efivarfs を除いたローカルのファイルシステムごとに返します。`used_percent` は `df` の Use% と同じく `used / (used + available)` です (root 用の予約領域は含まない)。
 - server は transport に依存しない作りです (`cloud_coder.mcp_server.build_server`)。`cloud-coder mcp` は stdio で、`cloud-coder api` は `/mcp` (Streamable HTTP) で同じ tool を提供します ([HTTP API](#http-api))。
 
-#### 最後の応答と画面
+#### read_session が返すもの
 
-`read_session` は Claude Code の最後の応答 (引数 `messages` で最大 10 個) を、画面ではなく Claude Code 自身の会話履歴 (transcript) から読みます。
+`read_session` は tmux の画面を返しません。応答は Claude Code 自身の会話履歴 (transcript) から、状態と答えを待っているものは hook の記録から、動いているかはプロセスから読みます。
 
-- Claude Code は画面全体を描き直す表示 (tmux の alternate screen) で動くので、pane には scrollback が残りません。読めるのは今の画面 (detach 中の既定で 80×24) だけで、入力欄や subagent の一覧の分だけ応答が欠けます。
+- 画面を返さない理由: Claude Code は画面全体を描き直す表示 (tmux の alternate screen) で動くので scrollback が無く、今の画面 (detach 中の既定で 80×24) では応答が欠けます。また、入力欄に薄く表示される次のプロンプトの提案 (例: 「P1を進めて」) が、文字の色を落とすと打ちかけの入力やキューに入った指示に見え、MCP クライアントが誤読していました。
 - transcript は `~/.claude/projects/<作業ディレクトリ>/<session ID>.jsonl` です。cloud-coder は Claude Code を `--session-id` / `--resume` で起動し、`/clear` などで ID が変われば `SessionStart` の hook で登録を更新するので、登録の session ID でファイルが決まります。ファイルの場所は Claude Code の [hooks の docs](https://code.claude.com/docs/en/hooks) の `transcript_path` の例と同じです。中の形式は公開されていないので、想定外の行は読み飛ばします。
 - `messages` は、文字列 (text) のある応答を新しいものから `messages` 個、古い順に並べたリストです。各要素は `text` と、書かれた時刻 `timestamp` です。1 回の応答 (API の 1 response、同じ `message.id`) の text が複数あればつなげます。thinking と tool の呼び出し、subagent (`isSidechain`) の行は含めません。ユーザーのプロンプトは含めません。
   - 作業中 (`BUSY`) で tool を呼んでいるだけの間は、最後の要素はその前に書いた text です。これは前のプロンプトへの応答のこともあります (`timestamp` で分かります)。
   - まだ応答が無い (transcript が無い) ときは空のリストです。tmux や Claude Code が動いていなくても読めます。
   - 範囲外の `messages` (0 や 11 以上) はエラーにします (黙って丸めると、頼んだ数が返ったと誤解させるため)。
-- 今の画面 (`output`) も返します。権限の確認や質問のダイアログ、作業中の進み具合は transcript に無く、画面にしか出ないからです。
+- `claude` は Claude Code のプロセスが動いているか (`running` / `not running`)、`claude_state` は hook が記録した状態 (`BUSY` / `READY` / `IDLE`) です。動いているのに `claude_state` が `null` なら、まだ状態を報告していません (ログイン画面や trust 画面のまま。attach して答える)。
+- `waiting_for` は、Claude Code が答えを待っているダイアログのリストです (無ければ空)。hook (`PermissionRequest` / `Elicitation`) が受け取った内容から、短くまとめたものだけを記録します ([hooks の docs](https://code.claude.com/docs/en/hooks))。
+  - `{"kind": "permission", "tool", "subject"}`: 権限の確認。`subject` は Bash のコマンドやファイルのパスなど (500 文字まで)。tool の入力全体 (`Write` の中身など) は記録しません。
+  - `{"kind": "question", "questions": [{"question", "options", "multi_select"}]}`: `AskUserQuestion` の質問と選択肢。
+  - `{"kind": "plan_approval", "plan"}`: plan mode の計画の承認 (500 文字まで)。
+  - `{"kind": "mcp_input", "server", "message"}`: MCP server の elicitation。
+  - `{"kind": "unknown"}`: agent を更新する前から出ているダイアログ (古い agent は内容を記録していない)。attach して確かめます。
+  - `Esc` や `No` で閉じたダイアログは hook が報告しないので、ターンが終わるまで残ります。答えるには attach します。
 
 ### HTTP API
 
@@ -283,7 +291,7 @@ OAuth の流れ: クライアントは `/.well-known/oauth-protected-resource/mc
 
 ### Claude Code のスキル
 
-このリポジトリには、cloud-coder を Claude Code から操作する project skill [`.claude/skills/cloud-coder/SKILL.md`](.claude/skills/cloud-coder/SKILL.md) が入っています。このリポジトリで起動した Claude Code で `/cloud-coder <依頼>` と打つと、Sonnet が `uv run cloud-coder` (このチェックアウトの CLI) と MCP Inspector CLI (`read_session`) を使って、状態確認・起動・タスクの投入・画面の読み取り・停止を行います。使い方は [how-to-use の Claude Code のスキルで操作する](how-to-use.md#claude-code-のスキルで操作する) を参照してください。
+このリポジトリには、cloud-coder を Claude Code から操作する project skill [`.claude/skills/cloud-coder/SKILL.md`](.claude/skills/cloud-coder/SKILL.md) が入っています。このリポジトリで起動した Claude Code で `/cloud-coder <依頼>` と打つと、Sonnet が `uv run cloud-coder` (このチェックアウトの CLI) と MCP Inspector CLI (`read_session`) を使って、状態確認・起動・タスクの投入・結果の読み取り・停止を行います。使い方は [how-to-use の Claude Code のスキルで操作する](how-to-use.md#claude-code-のスキルで操作する) を参照してください。
 
 ## 自動停止
 

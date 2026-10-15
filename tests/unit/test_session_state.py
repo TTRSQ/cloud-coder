@@ -173,3 +173,62 @@ def test_a_record_written_before_prompt_digests_confirms_the_next_prompt(tmp_pat
     after = session_state.load(tmp_path, "pane-3")
     session_state.record_prompt(after, "go")
     assert session_state.received_since(before, after, "go")
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        (
+            {"tool_name": "Bash", "tool_input": {"command": "rm -rf build", "description": "x"}},
+            {"kind": "permission", "tool": "Bash", "subject": "rm -rf build"},
+        ),
+        (
+            {"tool_name": "Write", "tool_input": {"file_path": "/w/a.txt", "content": "secret"}},
+            {"kind": "permission", "tool": "Write", "subject": "/w/a.txt"},
+        ),
+        (
+            {"tool_name": "mcp__x__y", "tool_input": {"anything": 1}},
+            {"kind": "permission", "tool": "mcp__x__y", "subject": None},
+        ),
+        (
+            {"tool_name": "ExitPlanMode", "tool_input": {"plan": "p" * 600}},
+            {"kind": "plan_approval", "plan": "p" * 500 + "…"},
+        ),
+    ],
+)
+def test_a_permission_dialog_keeps_what_it_asks_not_the_whole_input(payload, expected):
+    from cloud_coder_vm import session_state
+
+    shown = session_state.dialog({"hook_event_name": "PermissionRequest", **payload})
+    assert shown == {"id": session_state.dialog_id(payload | {"hook_event_name": "x"}), **expected}
+
+
+def test_an_elicitation_dialog_names_its_server():
+    from cloud_coder_vm import session_state
+
+    shown = session_state.dialog(
+        {"hook_event_name": "Elicitation", "mcp_server_name": "gh", "message": "Token?"}
+    )
+    assert {k: v for k, v in shown.items() if k != "id"} == {
+        "kind": "mcp_input",
+        "server": "gh",
+        "message": "Token?",
+    }
+
+
+def test_dialogs_close_by_id_and_old_records_keep_working(tmp_path):
+    """A record from an agent before dialog() holds bare ids."""
+    from cloud_coder_vm import session_state
+
+    write = {"tool_name": "Write", "tool_input": {"file_path": "/w/a.txt", "content": "x"}}
+    old_id = session_state.dialog_id({"hook_event_name": "PermissionRequest", **write})
+    (tmp_path / "pane-3.json").write_text(
+        json.dumps({"key": "pane-3", "session_id": "s", "state": "BUSY", "open_dialogs": [old_id]})
+    )
+    state = session_state.load(tmp_path, "pane-3")
+    assert state.open_dialogs == [{"id": old_id, "kind": "unknown"}]
+    assert session_state.waiting_for(state) == [{"kind": "unknown"}]
+    closed = session_state.next_dialogs(
+        state.open_dialogs, {"hook_event_name": "PostToolUse", **write}
+    )
+    assert closed == []

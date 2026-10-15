@@ -1,13 +1,11 @@
-"""Read what a cloud-coder session shows: the text of the tmux pane Claude Code runs in."""
+"""How a cloud-coder session's Claude Code is doing, from structured sources only: tmux
+(does the session exist), the process table (does Claude Code run) and the hook state
+(BUSY / READY / IDLE and the dialogs it shows). Nothing is read off the screen."""
 
 import subprocess
 
 from cloud_coder_vm import paths, process_table, session_state
 from cloud_coder_vm.tmux_panes import PANE_FORMAT, Pane, parse_list_panes, tmux_command
-
-
-class ScreenError(Exception):
-    pass
 
 
 def claude_pane(panes: list[Pane]) -> tuple[Pane, int | None]:
@@ -21,14 +19,10 @@ def claude_pane(panes: list[Pane]) -> tuple[Pane, int | None]:
     return panes[0], None
 
 
-def visible_text(captured: str) -> str:
-    """Pane text without the blank rows below the cursor."""
-    return "\n".join(line.rstrip() for line in captured.rstrip("\n").split("\n")).rstrip("\n")
-
-
 def read(session_name: str) -> dict:
-    """The visible text of the session's Claude Code pane. Claude Code draws in the
-    alternate screen, which keeps no scrollback; its responses are in its transcript."""
+    """``tmux`` (running / absent), ``claude`` (running / not running), ``claude_state``
+    (None while Claude Code runs but has not reported, as on its login or trust screen)
+    and ``waiting_for`` (what the dialogs it shows ask, see session_state.dialog)."""
     listed = subprocess.run(
         [*tmux_command(), "list-panes", "-s", "-t", f"={session_name}", "-F", PANE_FORMAT],
         capture_output=True,
@@ -36,27 +30,13 @@ def read(session_name: str) -> dict:
     )
     panes = parse_list_panes(listed.stdout) if listed.returncode == 0 else []
     if not panes:
-        return {
-            "session": session_name,
-            "tmux": "absent",
-            "pane": None,
-            "claude": "not running",
-            "claude_state": None,
-            "output": "",
-        }
+        return {"tmux": "absent", "claude": "not running", "claude_state": None, "waiting_for": []}
     pane, claude_pid = claude_pane(panes)
-    captured = subprocess.run(
-        [*tmux_command(), "capture-pane", "-p", "-J", "-t", pane.pane_id],
-        capture_output=True,
-        text=True,
-    )
-    if captured.returncode != 0:
-        raise ScreenError(f"tmux capture-pane failed: {captured.stderr.strip()}")
     state = None
     if claude_pid is not None:
         state = next(
             (
-                s.state
+                s
                 for s in session_state.load_all(paths.SESSION_STATE_DIR)
                 if s.claude_pid == claude_pid
                 or (s.claude_pid is None and s.tmux_pane == pane.pane_id)
@@ -64,10 +44,8 @@ def read(session_name: str) -> dict:
             None,
         )
     return {
-        "session": session_name,
         "tmux": "running",
-        "pane": pane.pane_id,
         "claude": "running" if claude_pid is not None else "not running",
-        "claude_state": state,
-        "output": visible_text(captured.stdout),
+        "claude_state": state.state if state else None,
+        "waiting_for": session_state.waiting_for(state) if state else [],
     }
