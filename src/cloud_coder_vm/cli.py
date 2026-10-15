@@ -106,15 +106,16 @@ def cmd_read_session(args) -> int:
     if not 1 <= args.messages <= transcript.MAX_MESSAGES:
         print(json.dumps({"error": f"messages must be 1 to {transcript.MAX_MESSAGES}"}))
         return 1
+    session = session_registry.load(paths.registry_path(home)).get(args.session)
+    if session is None:
+        print(json.dumps({"error": f"unknown session {args.session!r}"}))
+        return 1
     try:
-        screen = session_screen.read(home, args.session)
+        screen = session_screen.read(args.session)
     except session_screen.ScreenError as e:
         print(json.dumps({"error": str(e)}))
         return 1
-    session = session_registry.load(paths.registry_path(home)).get(args.session)
-    responses = (
-        transcript.messages(home, session.claude_session_id, args.messages) if session else []
-    )
+    responses = transcript.messages(home, session.claude_session_id, args.messages)
     print(json.dumps({**screen, "messages": responses}))
     return 0
 
@@ -172,9 +173,6 @@ def main(argv: list[str] | None = None) -> int:
         default=1,
         help=f"how many of the latest responses to return (1 to {transcript.MAX_MESSAGES})",
     )
-    # accepted and ignored: an MCP server or CLI from before its removal still passes it;
-    # remove once every client that installs this agent (Cloud Run, local CLI) is newer
-    p.add_argument("--lines", help=argparse.SUPPRESS)
     p.set_defaults(func=cmd_read_session)
 
     p = sub.add_parser(

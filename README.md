@@ -234,9 +234,6 @@ claude mcp add cloud-coder -- cloud-coder mcp
   - 作業中 (`BUSY`) で tool を呼んでいるだけの間は、最後の要素はその前に書いた text です。これは前のプロンプトへの応答のこともあります (`timestamp` で分かります)。
   - まだ応答が無い (transcript が無い) ときは空のリストです。tmux や Claude Code が動いていなくても読めます。
   - 範囲外の `messages` (0 や 11 以上) はエラーにします (黙って丸めると、頼んだ数が返ったと誤解させるため)。
-- MCP server と VM agent の版が違っても `read_session` は失敗しません。agent は MCP server ([HTTP API](#http-api) の Cloud Run を含む) や CLI の `up` / `connect` が入れ替えるので、配備の途中や古い CLI が `up` した後は、版がずれることがあります。
-  - 新しい server と古い agent: `--messages` を知らない agent に断られたら、付けずに読み直します。古い agent の `last_message` を 1 要素の `messages` にして、`agent_note` (agent が古く最後の応答しか読めない、`up` で更新される) を添えます。`messages` が 1 のときは最初から `--messages` を付けません。
-  - 古い server と新しい agent: 古い server は `--messages` を付けずに呼ぶので、agent は既定の 1 個を `messages` で返し、server はそれをそのまま返します。`last_message` の欄はありません。agent は、さらに古い server が付ける `--lines` も受け付けて無視します。
 - 今の画面 (`output`) も返します。権限の確認や質問のダイアログ、作業中の進み具合は transcript に無く、画面にしか出ないからです。
 
 ### HTTP API

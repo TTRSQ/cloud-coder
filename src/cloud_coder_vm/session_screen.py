@@ -1,9 +1,8 @@
 """Read what a cloud-coder session shows: the text of the tmux pane Claude Code runs in."""
 
 import subprocess
-from pathlib import Path
 
-from cloud_coder_vm import paths, process_table, session_registry, session_state
+from cloud_coder_vm import paths, process_table, session_state
 from cloud_coder_vm.tmux_panes import PANE_FORMAT, Pane, parse_list_panes, tmux_command
 
 
@@ -27,11 +26,9 @@ def visible_text(captured: str) -> str:
     return "\n".join(line.rstrip() for line in captured.rstrip("\n").split("\n")).rstrip("\n")
 
 
-def read(home: Path, session_name: str) -> dict:
+def read(session_name: str) -> dict:
     """The visible text of the session's Claude Code pane. Claude Code draws in the
     alternate screen, which keeps no scrollback; its responses are in its transcript."""
-    if session_name not in session_registry.load(paths.registry_path(home)):
-        raise ScreenError(f"unknown session {session_name!r}")
     listed = subprocess.run(
         [*tmux_command(), "list-panes", "-s", "-t", f"={session_name}", "-F", PANE_FORMAT],
         capture_output=True,
