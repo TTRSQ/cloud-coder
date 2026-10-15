@@ -70,6 +70,13 @@ BOOKKEEPING = [
 ]
 
 
+def last(path):
+    """The newest response, or None."""
+    responses = transcript.assistant_messages(path, 1)
+    assert len(responses) <= 1
+    return responses[0] if responses else None
+
+
 def write(tmp_path, entries, tail=""):
     path = tmp_path / f"{SID}.jsonl"
     path.write_text(
@@ -92,7 +99,7 @@ def test_last_response_text_after_thinking_and_bookkeeping(tmp_path):
             *BOOKKEEPING,
         ],
     )
-    assert transcript.last_assistant_message(path) == {
+    assert last(path) == {
         "text": "調査が終わりました。",
         "timestamp": "2026-10-15T02:40:50.000Z",
     }
@@ -111,7 +118,7 @@ def test_text_blocks_of_one_response_are_joined_in_order(tmp_path):
             text("msg_1", "second part", timestamp="t2"),
         ],
     )
-    assert transcript.last_assistant_message(path) == {
+    assert last(path) == {
         "text": "first part\n\nsecond part",
         "timestamp": "t2",
     }
@@ -130,7 +137,7 @@ def test_tool_only_responses_leave_the_text_written_before_them(tmp_path):
             tool_result(),
         ],
     )
-    assert transcript.last_assistant_message(path)["text"] == "Starting with the tests."
+    assert last(path)["text"] == "Starting with the tests."
 
 
 def test_blocks_of_one_response_around_a_tool_result_are_joined(tmp_path):
@@ -138,7 +145,7 @@ def test_blocks_of_one_response_around_a_tool_result_are_joined(tmp_path):
         tmp_path,
         [text("msg_1", "part 1"), tool_use("msg_1"), tool_result(), text("msg_1", "part 2")],
     )
-    assert transcript.last_assistant_message(path)["text"] == "part 1\n\npart 2"
+    assert last(path)["text"] == "part 1\n\npart 2"
 
 
 def test_a_text_of_another_response_before_a_tool_result_is_not_joined(tmp_path):
@@ -146,7 +153,7 @@ def test_a_text_of_another_response_before_a_tool_result_is_not_joined(tmp_path)
         tmp_path,
         [text("msg_1", "old"), tool_use("msg_1"), tool_result(), text("msg_2", "new")],
     )
-    assert transcript.last_assistant_message(path)["text"] == "new"
+    assert last(path)["text"] == "new"
 
 
 def test_subagent_lines_are_skipped(tmp_path):
@@ -158,7 +165,7 @@ def test_subagent_lines_are_skipped(tmp_path):
             text("msg_9", "subagent answer", isSidechain=True),
         ],
     )
-    assert transcript.last_assistant_message(path)["text"] == "main answer"
+    assert last(path)["text"] == "main answer"
 
 
 def test_partial_and_damaged_lines_are_skipped(tmp_path):
@@ -167,7 +174,7 @@ def test_partial_and_damaged_lines_are_skipped(tmp_path):
         [text("msg_1", "done")],
         tail='not json\n{"type": "assistant", "message": {"id": "msg_2", "content": [{"ty',
     )
-    assert transcript.last_assistant_message(path)["text"] == "done"
+    assert last(path)["text"] == "done"
 
 
 def test_string_content_and_missing_ids(tmp_path):
@@ -177,21 +184,50 @@ def test_string_content_and_missing_ids(tmp_path):
     del older["message"]["id"]
     string = text("msg_s", "")
     string["message"]["content"] = "plain string"
-    assert transcript.last_assistant_message(write(tmp_path, [older, no_id]))["text"] == (
-        "API Error: overloaded"
-    )
-    assert transcript.last_assistant_message(write(tmp_path, [string]))["text"] == "plain string"
+    assert last(write(tmp_path, [older, no_id]))["text"] == ("API Error: overloaded")
+    assert last(write(tmp_path, [string]))["text"] == "plain string"
 
 
 def test_no_response_yet(tmp_path):
-    assert transcript.last_assistant_message(write(tmp_path, [prompt("hi"), thinking("m")])) is None
-    assert transcript.last_assistant_message(write(tmp_path, [])) is None
+    assert last(write(tmp_path, [prompt("hi"), thinking("m")])) is None
+    assert last(write(tmp_path, [])) is None
 
 
-def test_find_and_last_message(tmp_path):
+def test_the_latest_responses_oldest_first(tmp_path):
+    path = write(
+        tmp_path,
+        [
+            prompt("one"),
+            text("msg_1", "answer 1", timestamp="t1"),
+            prompt("two"),
+            thinking("msg_2"),
+            text("msg_2", "answer 2a", timestamp="t2a"),
+            tool_use("msg_2"),
+            tool_result(),
+            thinking("msg_3"),
+            tool_use("msg_3", "Bash"),
+            tool_result(),
+            text("msg_4", "answer 2b", timestamp="t2b"),
+            text("msg_9", "subagent", isSidechain=True),
+            *BOOKKEEPING,
+        ],
+    )
+    assert transcript.assistant_messages(path, 2) == [
+        {"text": "answer 2a", "timestamp": "t2a"},
+        {"text": "answer 2b", "timestamp": "t2b"},
+    ]
+    assert [m["text"] for m in transcript.assistant_messages(path, 10)] == [
+        "answer 1",
+        "answer 2a",
+        "answer 2b",
+    ]
+    assert transcript.assistant_messages(write(tmp_path, [prompt("hi")]), 3) == []
+
+
+def test_find_and_messages(tmp_path):
     projects = tmp_path / ".claude/projects"
     assert transcript.find(tmp_path, SID) is None
-    assert transcript.last_message(tmp_path, SID) is None
+    assert transcript.messages(tmp_path, SID, 1) == []
 
     old = projects / "-home-coder-git-a" / f"{SID}.jsonl"
     new = projects / "-home-coder-git-wt-a-2" / f"{SID}.jsonl"
@@ -201,7 +237,9 @@ def test_find_and_last_message(tmp_path):
     os.utime(old, (1, 1))
     (projects / "-home-coder-git-a" / "other-session.jsonl").write_text("")
     assert transcript.find(tmp_path, SID) == new
-    assert transcript.last_message(tmp_path, SID)["text"] == "new"
+    assert transcript.messages(tmp_path, SID, 3) == [
+        {"text": "new", "timestamp": "2026-10-15T02:32:04.000Z"}
+    ]
 
 
 def test_an_unreadable_transcript_is_no_message(tmp_path, monkeypatch):
@@ -213,4 +251,4 @@ def test_an_unreadable_transcript_is_no_message(tmp_path, monkeypatch):
         raise FileNotFoundError(self)
 
     monkeypatch.setattr(transcript.Path, "read_bytes", removed)
-    assert transcript.last_message(tmp_path, SID) is None
+    assert transcript.messages(tmp_path, SID, 1) == []

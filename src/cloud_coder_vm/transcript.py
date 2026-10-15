@@ -14,6 +14,9 @@ transcript is on the Persistent Disk.
 import json
 from pathlib import Path
 
+# the most responses one read returns
+MAX_MESSAGES = 10
+
 
 def find(home: Path, claude_session_id: str) -> Path | None:
     """The transcript of a conversation; the most recently written one when a resume in
@@ -55,41 +58,42 @@ def _text(message: dict) -> str:
     )
 
 
-def last_assistant_message(path: Path) -> dict | None:
-    """The text of Claude Code's latest response that has text, with the time it was
-    written: the text blocks of one API response joined. Thinking and tool calls are left
-    out, so while a turn runs only tool calls this is the text written before them, which
-    may be the answer to an earlier prompt. None when the conversation has no such
-    response yet."""
-    texts: list[str] = []
-    message_id = timestamp = None
+def assistant_messages(path: Path, count: int) -> list[dict]:
+    """Claude Code's latest ``count`` responses that have text, oldest first, each with
+    the time it was written: the text blocks of one API response joined. Thinking and
+    tool calls are left out, so while a turn runs only tool calls the newest one is the
+    text written before them, which may be the answer to an earlier prompt."""
+    responses: list[dict] = []  # newest first
+    current: dict | None = None  # the response whose blocks are being collected
     for line in reversed(path.read_bytes().splitlines()):
         entry = _entry(line)
-        if entry is None:
-            continue
-        message = _assistant_message(entry)
+        message = _assistant_message(entry) if entry is not None else None
         if message is None:
             continue
-        if message_id is not None and message.get("id") != message_id:
-            break
+        message_id = message.get("id")
+        if current is not None and (message_id is None or message_id != current["id"]):
+            current = None  # a line without an id is a response of its own
         text = _text(message)
-        if message_id is None:
+        if current is None:
             if not text:
                 continue
-            message_id = message.get("id") or object()  # no id: this line alone
-            timestamp = entry.get("timestamp")
+            if len(responses) == count:
+                break
+            current = {"id": message_id, "texts": [], "timestamp": entry.get("timestamp")}
+            responses.append(current)
         if text:
-            texts.append(text)
-    if not texts:
-        return None
-    return {"text": "\n\n".join(reversed(texts)), "timestamp": timestamp}
+            current["texts"].append(text)
+    return [
+        {"text": "\n\n".join(reversed(r["texts"])), "timestamp": r["timestamp"]}
+        for r in reversed(responses)
+    ]
 
 
-def last_message(home: Path, claude_session_id: str) -> dict | None:
-    """``last_assistant_message`` of a conversation; None also when it has no transcript
+def messages(home: Path, claude_session_id: str, count: int) -> list[dict]:
+    """``assistant_messages`` of a conversation; [] also when it has no transcript
     (Claude Code writes it with the first prompt) or the transcript cannot be read."""
     try:
         path = find(home, claude_session_id)
-        return last_assistant_message(path) if path is not None else None
+        return assistant_messages(path, count) if path is not None else []
     except OSError:  # removed or unreadable while being read
-        return None
+        return []

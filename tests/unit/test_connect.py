@@ -162,3 +162,51 @@ def test_uncaptured_remote_output_goes_to_stderr_not_stdout(monkeypatch):
     monkeypatch.setattr(subprocess, "run", lambda args, **kw: seen.update(kw))
     ssh.run(Config(project="p"), "true", capture=False)
     assert seen["stdout"] == 2 and seen["stdin"] == subprocess.DEVNULL
+
+
+def fake_agent(monkeypatch, *, knows_messages: bool, out: dict):
+    """A VM agent that answers read-session; an old one rejects --messages like argparse."""
+    commands = []
+
+    def run(cfg, command, **kw):
+        commands.append(command)
+        if "--messages" in command and not knows_messages:
+            return subprocess.CompletedProcess(
+                command, 2, "", "cloud-coder-vm: error: unrecognized arguments: --messages 3\n"
+            )
+        return subprocess.CompletedProcess(command, 0, json.dumps(out) + "\n", "")
+
+    monkeypatch.setattr(ssh, "run", run)
+    return commands
+
+
+def test_read_session_asks_a_current_agent_for_the_responses(monkeypatch):
+    out = {"session": "cc-a-1", "output": "", "messages": [{"text": "a", "timestamp": "t"}]}
+    commands = fake_agent(monkeypatch, knows_messages=True, out=out)
+    assert connect.read_session(Config(), "cc-a-1") == out
+    assert connect.read_session(Config(), "cc-a-1", 3) == out
+    assert "--messages" not in commands[0] and commands[1].endswith("--messages 3")
+
+
+@pytest.mark.parametrize("count", [1, 3])
+@pytest.mark.parametrize(
+    ("old_out", "expected"),
+    [
+        ({"last_message": {"text": "a", "timestamp": "t"}}, [{"text": "a", "timestamp": "t"}]),
+        ({"last_message": None}, []),
+        ({}, []),  # an agent from before last_message
+    ],
+)
+def test_read_session_with_an_older_agent_gives_its_last_response(
+    monkeypatch, count, old_out, expected
+):
+    commands = fake_agent(
+        monkeypatch, knows_messages=False, out={"session": "cc-a-1", "output": "", **old_out}
+    )
+    assert connect.read_session(Config(), "cc-a-1", count) == {
+        "session": "cc-a-1",
+        "output": "",
+        "messages": expected,
+        "agent_note": connect.OLD_AGENT_NOTE,
+    }
+    assert "--messages" not in commands[-1]

@@ -145,11 +145,27 @@ def connect(
     return launched
 
 
-def read_session(cfg: Config, session: str) -> dict:
-    """Claude Code's last response (from its transcript), the visible text of the
-    session's Claude Code pane, and its state."""
-    command = shlex.join(["python3", str(paths.AGENT_PYZ), "read-session", "--session", session])
-    return agent_result(ssh.run(cfg, command))
+# An agent from before `--messages` rejects the option and has only `last_message`.
+OLD_AGENT_NOTE = (
+    "The VM agent is older than this server: only the last response is available. `up` updates it."
+)
+
+
+def read_session(cfg: Config, session: str, messages: int = 1) -> dict:
+    """Claude Code's latest ``messages`` responses (from its transcript, oldest first), the
+    visible text of the session's Claude Code pane, and its state. An older agent on the
+    VM gives the last response only, with ``agent_note`` saying so."""
+    command = ["python3", str(paths.AGENT_PYZ), "read-session", "--session", session]
+    if messages != 1:
+        command += ["--messages", str(messages)]
+    result = ssh.run(cfg, shlex.join(command))
+    if messages != 1 and "unrecognized arguments: --messages" in result.stderr:
+        result = ssh.run(cfg, shlex.join(command[:-2]))
+    out = agent_result(result)
+    if "messages" in out:
+        return out
+    last = out.pop("last_message", None)
+    return {**out, "messages": [last] if last else [], "agent_note": OLD_AGENT_NOTE}
 
 
 def close_session(

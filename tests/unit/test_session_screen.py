@@ -74,7 +74,7 @@ def test_session_without_tmux(home, monkeypatch):
     assert session_screen.read(home, "cc-a-1")["tmux"] == "absent"
 
 
-def test_cli_adds_the_last_message_from_the_transcript(home, monkeypatch, capsys):
+def test_cli_adds_the_latest_responses_from_the_transcript(home, monkeypatch, capsys):
     from cloud_coder_vm import cli as vm_cli
 
     monkeypatch.setattr(vm_cli.Path, "home", classmethod(lambda cls: home))
@@ -85,7 +85,7 @@ def test_cli_adds_the_last_message_from_the_transcript(home, monkeypatch, capsys
     )
     # an MCP server deployed before --lines was removed still passes it
     assert vm_cli.main(["read-session", "--session", "cc-a-1", "--lines", "200"]) == 0
-    assert json.loads(capsys.readouterr().out)["last_message"] is None
+    assert json.loads(capsys.readouterr().out)["messages"] == []
 
     path = home / ".claude/projects/-w-a/id.jsonl"
     path.parent.mkdir(parents=True)
@@ -99,7 +99,11 @@ def test_cli_adds_the_last_message_from_the_transcript(home, monkeypatch, capsys
         )
         + "\n"
     )
-    assert vm_cli.main(["read-session", "--session", "cc-a-1"]) == 0
+    assert vm_cli.main(["read-session", "--session", "cc-a-1", "--messages", "3"]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["tmux"] == "absent"
-    assert out["last_message"] == {"text": "Done.", "timestamp": "2026-10-15T02:40:50.000Z"}
+    assert out["messages"] == [{"text": "Done.", "timestamp": "2026-10-15T02:40:50.000Z"}]
+
+    for count in ("0", "11"):
+        assert vm_cli.main(["read-session", "--session", "cc-a-1", "--messages", count]) == 1
+        assert json.loads(capsys.readouterr().out) == {"error": "messages must be 1 to 10"}
