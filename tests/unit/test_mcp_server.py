@@ -183,13 +183,13 @@ def test_read_session_does_not_start_the_vm(monkeypatch):
     assert result.is_error and "the VM is stopped" in result.content[0].text
 
     monkeypatch.setattr(gce, "describe", lambda cfg: gce.Vm(gce.RUNNING))
-    monkeypatch.setattr(
-        connect, "read_session", lambda cfg, s, n: {"session": s, "output": f"{n} lines"}
-    )
-    assert result_json(call("read_session", {"session": "cc-a-1", "lines": 5}))["output"] == (
-        "5 lines"
-    )
-    assert call("read_session", {"session": "cc-a-1", "lines": 0}).is_error
+    monkeypatch.setattr(connect, "read_session", lambda cfg, s: {"session": s, "output": "x"})
+    assert result_json(call("read_session", {"session": "cc-a-1"})) == {
+        "session": "cc-a-1",
+        "output": "x",
+    }
+    # a client holding the tool's former schema may still pass `lines`
+    assert result_json(call("read_session", {"session": "cc-a-1", "lines": 5}))["output"] == "x"
 
 
 def test_resource_usage_does_not_start_or_reach_a_stopped_vm(monkeypatch):
@@ -277,7 +277,7 @@ def test_a_busy_session_is_read_from_the_vm_on_every_call(monkeypatch):
     states = iter(["BUSY", "BUSY", "READY"])
     reads = []
     monkeypatch.setattr(
-        connect, "read_session", lambda cfg, s, n: reads.append(s) or screen(next(states))
+        connect, "read_session", lambda cfg, s: reads.append(s) or screen(next(states))
     )
     first, second, third = (
         result_json(r)

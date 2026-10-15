@@ -232,26 +232,16 @@ def build_server(
     @server.tool(annotations=READ_ONLY)
     def read_session(
         session: Annotated[str, Field(description="session name from `status`")],
-        lines: Annotated[
-            int,
-            Field(
-                ge=1,
-                le=2000,
-                description="how many of the last screen lines to return; while Claude Code "
-                "runs only its visible screen (about 24 rows) exists, so read its response "
-                "from `last_message`",
-            ),
-        ] = 200,
     ) -> dict:
         """Claude Code's last response (`last_message`: its text and time, from Claude
         Code's transcript; null before the first response; while BUSY it can be the answer
-        to an earlier prompt, see its time), the recent text of the
-        session's screen (`output`) and Claude Code's state. Does not start the VM. Call it
+        to an earlier prompt, see its time), the text now on the session's screen
+        (`output`: dialogs, progress) and Claude Code's state. Does not start the VM. Call it
         when the user asks for progress or the result; never poll it to wait for a BUSY
         Claude Code."""
         with tool_call("read_session"):
             guards.require_running(cfg)
-            screen = connect.read_session(cfg, session, lines)
+            screen = connect.read_session(cfg, session)
             busy = screen.get("claude_state") == BUSY
             return {**screen, "note": BUSY_NOTE} if busy else screen
 

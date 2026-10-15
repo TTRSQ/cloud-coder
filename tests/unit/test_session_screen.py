@@ -20,11 +20,9 @@ def home(tmp_path):
     return tmp_path
 
 
-def test_unknown_session_and_bad_lines(home):
+def test_unknown_session(home):
     with pytest.raises(session_screen.ScreenError, match="unknown session"):
-        session_screen.read(home, "cc-x-1", 10)
-    with pytest.raises(session_screen.ScreenError, match="at least 1"):
-        session_screen.read(home, "cc-a-1", 0)
+        session_screen.read(home, "cc-x-1")
 
 
 def test_reads_the_claude_pane_and_its_state(home, monkeypatch):
@@ -45,7 +43,7 @@ def test_reads_the_claude_pane_and_its_state(home, monkeypatch):
         "load_all",
         lambda d: [SessionState("pane-3", "s", "READY", tmux_pane="%3", claude_pid=200)],
     )
-    out = session_screen.read(home, "cc-a-1", 2)
+    out = session_screen.read(home, "cc-a-1")
     assert calls[0][:3] == ["tmux", "-L", "cloud-coder"]
     assert calls[1] == [
         "tmux",
@@ -54,8 +52,6 @@ def test_reads_the_claude_pane_and_its_state(home, monkeypatch):
         "capture-pane",
         "-p",
         "-J",
-        "-S",
-        "-2",
         "-t",
         "%3",
     ]
@@ -65,7 +61,7 @@ def test_reads_the_claude_pane_and_its_state(home, monkeypatch):
         "pane": "%3",
         "claude": "running",
         "claude_state": "READY",
-        "output": "> fix it\n● Done.",
+        "output": "old\n> fix it\n● Done.",
     }
 
 
@@ -75,7 +71,7 @@ def test_session_without_tmux(home, monkeypatch):
         "run",
         lambda args, **kw: subprocess.CompletedProcess(args, 1, "", "can't find session"),
     )
-    assert session_screen.read(home, "cc-a-1", 5)["tmux"] == "absent"
+    assert session_screen.read(home, "cc-a-1")["tmux"] == "absent"
 
 
 def test_cli_adds_the_last_message_from_the_transcript(home, monkeypatch, capsys):
@@ -87,7 +83,8 @@ def test_cli_adds_the_last_message_from_the_transcript(home, monkeypatch, capsys
         "run",
         lambda args, **kw: subprocess.CompletedProcess(args, 1, "", "can't find session"),
     )
-    assert vm_cli.main(["read-session", "--session", "cc-a-1"]) == 0
+    # an MCP server deployed before --lines was removed still passes it
+    assert vm_cli.main(["read-session", "--session", "cc-a-1", "--lines", "200"]) == 0
     assert json.loads(capsys.readouterr().out)["last_message"] is None
 
     path = home / ".claude/projects/-w-a/id.jsonl"

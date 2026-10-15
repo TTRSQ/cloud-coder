@@ -101,7 +101,7 @@ CLOUD_CODER_PROMPT
 ### セッションの画面を読む
 
 ```bash
-npx -y @modelcontextprotocol/inspector@2.9.0 --cli uv run cloud-coder mcp --method tools/call --tool-name read_session --tool-arg session=<SESSION> --tool-arg lines=200
+npx -y @modelcontextprotocol/inspector@2.9.0 --cli uv run cloud-coder mcp --method tools/call --tool-name read_session --tool-arg session=<SESSION>
 ```
 
 - セッション名が分からなければ、先に `uv run cloud-coder status` で確認する。セッションが 1 つだけならそれを使い、複数あれば一覧を見せて聞く。

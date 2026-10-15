@@ -104,7 +104,7 @@ def cmd_close_session(args) -> int:
 def cmd_read_session(args) -> int:
     home = Path.home()
     try:
-        screen = session_screen.read(home, args.session, args.lines)
+        screen = session_screen.read(home, args.session)
     except session_screen.ScreenError as e:
         print(json.dumps({"error": str(e)}))
         return 1
@@ -161,12 +161,8 @@ def main(argv: list[str] | None = None) -> int:
         "read-session", help="print a session's last Claude Code response and pane as JSON"
     )
     p.add_argument("--session", required=True)
-    p.add_argument(
-        "--lines",
-        type=int,
-        default=200,
-        help="screen lines to return, scrollback (if any) included",
-    )
+    # accepted and ignored: an MCP server deployed before it was removed still passes it
+    p.add_argument("--lines", help=argparse.SUPPRESS)
     p.set_defaults(func=cmd_read_session)
 
     p = sub.add_parser(
