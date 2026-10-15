@@ -161,7 +161,8 @@ def main(argv: list[str] | None = None) -> int:
         "read-session", help="print a session's last Claude Code response and pane as JSON"
     )
     p.add_argument("--session", required=True)
-    # accepted and ignored: an MCP server deployed before it was removed still passes it
+    # accepted and ignored: an MCP server or CLI from before its removal still passes it;
+    # remove once every client that installs this agent (Cloud Run, local CLI) is newer
     p.add_argument("--lines", help=argparse.SUPPRESS)
     p.set_defaults(func=cmd_read_session)
 
