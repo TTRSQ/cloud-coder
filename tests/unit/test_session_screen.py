@@ -20,12 +20,7 @@ def home(tmp_path):
     return tmp_path
 
 
-def test_unknown_session(home):
-    with pytest.raises(session_screen.ScreenError, match="unknown session"):
-        session_screen.read(home, "cc-x-1")
-
-
-def test_reads_the_claude_pane_and_its_state(home, monkeypatch):
+def test_reads_the_claude_pane_and_its_state(monkeypatch):
     calls = []
 
     def fake_run(args, **kw):
@@ -43,7 +38,7 @@ def test_reads_the_claude_pane_and_its_state(home, monkeypatch):
         "load_all",
         lambda d: [SessionState("pane-3", "s", "READY", tmux_pane="%3", claude_pid=200)],
     )
-    out = session_screen.read(home, "cc-a-1")
+    out = session_screen.read("cc-a-1")
     assert calls[0][:3] == ["tmux", "-L", "cloud-coder"]
     assert calls[1] == [
         "tmux",
@@ -65,13 +60,13 @@ def test_reads_the_claude_pane_and_its_state(home, monkeypatch):
     }
 
 
-def test_session_without_tmux(home, monkeypatch):
+def test_session_without_tmux(monkeypatch):
     monkeypatch.setattr(
         session_screen.subprocess,
         "run",
         lambda args, **kw: subprocess.CompletedProcess(args, 1, "", "can't find session"),
     )
-    assert session_screen.read(home, "cc-a-1")["tmux"] == "absent"
+    assert session_screen.read("cc-a-1")["tmux"] == "absent"
 
 
 def test_cli_adds_the_latest_responses_from_the_transcript(home, monkeypatch, capsys):
@@ -83,8 +78,10 @@ def test_cli_adds_the_latest_responses_from_the_transcript(home, monkeypatch, ca
         "run",
         lambda args, **kw: subprocess.CompletedProcess(args, 1, "", "can't find session"),
     )
-    # an MCP server deployed before --lines was removed still passes it
-    assert vm_cli.main(["read-session", "--session", "cc-a-1", "--lines", "200"]) == 0
+    assert vm_cli.main(["read-session", "--session", "cc-x-1"]) == 1
+    assert json.loads(capsys.readouterr().out) == {"error": "unknown session 'cc-x-1'"}
+
+    assert vm_cli.main(["read-session", "--session", "cc-a-1"]) == 0
     assert json.loads(capsys.readouterr().out)["messages"] == []
 
     path = home / ".claude/projects/-w-a/id.jsonl"
