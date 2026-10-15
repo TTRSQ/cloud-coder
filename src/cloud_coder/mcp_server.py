@@ -50,10 +50,12 @@ refused, do not resend it; tell the user.
   instead, pass its `session` (name from `status`); ask the user when it is unclear
   which they want. Without a prompt it opens the repository's latest session.
   The result's `conversation` says whether it is `new` or `continued`.
-  `send_prompt` gives an existing session a new instruction. While Claude Code is BUSY
-  it queues the instruction and takes it in at its next step, without stopping its
-  work (`prompt` in the result is `queued`, else `sent`); it is refused while Claude
-  Code waits for an answer to a permission prompt or a question. `read_session`
+  `send_prompt` types a new instruction into an existing session's Claude Code and
+  submits it, also while Claude Code is BUSY: Claude Code then holds it in its own
+  queue and takes it in at its next step, without stopping its work. `prompt:
+  submitted` in the result means Claude Code has the instruction, not that it has done
+  it. It is refused while Claude Code shows a permission prompt or a question, or text
+  is already in its input box. `read_session`
   returns Claude Code's latest responses (`messages`, from its transcript; the last one
   unless you ask for more) and the session's screen text (`output`): its progress, or a
   question it is waiting on.
@@ -66,14 +68,10 @@ refused, do not resend it; tell the user.
 
 # The result fields that tell the client what to do next.
 STARTED_NEXT = (
-    "Claude Code is working on the prompt; this takes minutes to hours. Tell the user it "
-    "has started and end your turn. Do not call status or read_session to wait for it; "
-    "call them only when the user asks."
-)
-QUEUED_NEXT = (
-    "Claude Code was working: it queued the instruction and takes it in at its next step, "
-    "in the same conversation. Tell the user it was queued and end your turn. Do not call "
-    "status or read_session to wait for it; call them only when the user asks."
+    "Claude Code has the prompt, but has not done it yet: if it was still working, it takes "
+    "the prompt in at its next step. The work takes minutes to hours. Tell the user it "
+    "was handed over and end your turn. Do not call status or read_session to wait for "
+    "it; call them only when the user asks."
 )
 SESSION_READY_NEXT = (
     "The session is ready and Claude Code has no new work. Tell the user; give it work "
@@ -142,10 +140,7 @@ def build_server(
     )
 
     def started(result: dict) -> dict:
-        if result.get("prompt") == "queued":
-            next_step = QUEUED_NEXT
-        else:
-            next_step = STARTED_NEXT if "prompt" in result else SESSION_READY_NEXT
+        next_step = STARTED_NEXT if "prompt" in result else SESSION_READY_NEXT
         return {**result, "accepted": True, "next": next_step}
 
     @server.tool(annotations=READ_ONLY)
@@ -193,7 +188,7 @@ def build_server(
             str | None,
             Field(
                 description="instruction for Claude Code. Without `session` it starts a "
-                "new session and conversation; with `session` it continues that one (queued "
+                "new session and conversation; with `session` it continues that one (also "
                 "while Claude Code is BUSY)"
             ),
         ] = None,
@@ -218,12 +213,14 @@ def build_server(
         session: Annotated[str, Field(description="session name from `status`")],
         text: Annotated[str, Field(description="the instruction for Claude Code")],
     ) -> dict:
-        """Type an instruction into the session's Claude Code and submit it. While Claude
-        Code is BUSY it queues the instruction and takes it in at its next step (`prompt`
-        is `queued`); otherwise `prompt` is `sent`. Refused while Claude Code waits for an
-        answer to a permission prompt or a question (do not resend it then); if Claude Code
-        is not running it is started (or resumed) with this instruction. Claude Code works
-        on it for minutes to hours: tell the user and end your turn."""
+        """Type an instruction into the session's Claude Code and submit it, also while
+        Claude Code is BUSY (Claude Code then holds it in its own queue and takes it in at
+        its next step). `prompt: submitted` means Claude Code has the instruction, not that
+        it has done it. Refused while Claude Code shows a permission prompt or a question,
+        or text is already in its input box (do not resend it then); if Claude Code is not
+        running it is started (or resumed) with this instruction (`prompt:
+        passed-at-start`). Claude Code works on it for minutes to hours: tell the user and
+        end your turn."""
         with tool_call("send_prompt"):
             guards.checked_prompt(text)
             guards.require_ready(cfg)

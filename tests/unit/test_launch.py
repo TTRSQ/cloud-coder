@@ -341,7 +341,7 @@ def fake_tmux(monkeypatch, *, claude_running: bool, transcript: bool):
         lambda pid, procs, children: ([claude], []) if claude_running else ([], [shell]),
     )
     monkeypatch.setattr(launch_mod, "_cmdline", lambda pid: ["claude", "--remote-control"])
-    monkeypatch.setattr(launch_mod, "send_prompt_to_running", lambda *a: sent.append(a) or "queued")
+    monkeypatch.setattr(launch_mod, "send_prompt_to_running", lambda *a: sent.append(a))
     monkeypatch.setattr(
         launch_mod.transcript, "find", lambda home, sid: Path("t.jsonl") if transcript else None
     )
@@ -365,7 +365,7 @@ def test_result_says_whether_the_conversation_is_new_or_continued(
     fake_tmux(monkeypatch, claude_running=claude_running, transcript=transcript)
     result = ensure_claude(entry("cc-app-1", "app", 1), Path("/home/coder"), "go", True)
     assert (result["claude"], result["conversation"]) == (claude, conversation)
-    assert result["prompt"] == ("queued" if claude_running else "passed-at-start")
+    assert result["prompt"] == ("submitted" if claude_running else "passed-at-start")
 
 
 def test_claude_runs_without_tmux_but_keeps_its_pane(tmp_path):
@@ -402,13 +402,19 @@ def test_a_session_left_on_the_default_tmux_server_is_not_started_twice(monkeypa
     assert calls[0][:3] == ["tmux", "-L", "cloud-coder"]
 
 
-# Prompts for a Claude Code that already runs (issue #35): typed while READY / IDLE, queued
-# by Claude Code itself while BUSY, never typed into a dialog, and confirmed by the hook.
+# Prompts for a Claude Code that already runs (issues #35, #45): typed and submitted
+# whether it waits or works (BUSY; Claude Code then queues the prompt itself), never into a
+# dialog or onto text in the input box, and confirmed by the hook.
+
+INPUT_BOX = "\x1b[39m❯\xa0"
+PLACEHOLDER = "\x1b[2m\x1b[39mPress up to edit queued messages\x1b[0m"
 
 
 class FakeClaude:
     """tmux and a Claude Code behind it: Enter submits what was pasted, which fires the
-    real hook (UserPromptSubmit) unless a dialog is shown or ``confirms`` is off."""
+    real hook (UserPromptSubmit) unless a dialog is shown or ``confirms`` is off. The
+    screen line under the cursor is the input box, or a dialog's option while one is
+    shown, or ``cursor_line`` when a test sets it."""
 
     PANE = "%7"
     PID = 700
@@ -432,6 +438,11 @@ class FakeClaude:
         self.submitted: list[str] = []
         self.confirms = True
         self.on_paste = None
+        self.on_enter = None
+        self.cursor_line: str | None = None
+        self.in_copy_mode = False
+        self.paste_lost = False
+        self.as_submitted = lambda text: text  # how Claude Code rewrites a pasted prompt
 
     def event(self, payload):
         from cloud_coder_vm.hook import apply_event
@@ -445,6 +456,14 @@ class FakeClaude:
 
         return session_state.load(self.states, "pane-7")
 
+    def screen_line(self):
+        if self.cursor_line is not None:
+            return self.cursor_line
+        state = self.state()
+        if state is not None and state.open_dialogs:
+            return " \x1b[38;5;153m❯\x1b[39m \x1b[38;5;246m1. \x1b[38;5;153mYes\x1b[39m"
+        return INPUT_BOX + (self.input or PLACEHOLDER)
+
     def run(self, args, input=None, text=None, check=None):
         import subprocess
 
@@ -453,17 +472,28 @@ class FakeClaude:
         return subprocess.CompletedProcess(args, 0, "", "")
 
     def check(self, args, cwd=None):
+        if "display-message" in args:
+            assert args[-1] == "#{pane_in_mode} #{cursor_y}"
+            return f"{int(self.in_copy_mode)} 47\n"
+        if "capture-pane" in args:
+            assert "-e" in args and args[-4:] == ["-S", "47", "-E", "47"]
+            return self.screen_line() + "\n"
         if "paste-buffer" in args:
             assert "-p" in args  # bracketed paste: newlines stay in the prompt
             self.ops.append("paste")
-            self.input += self.buffers.pop(args[args.index("-b") + 1])
+            pasted = self.buffers.pop(args[args.index("-b") + 1])
+            if not self.paste_lost:
+                self.input += pasted
             if self.on_paste:
                 self.on_paste()
         elif args[-1] == "Enter":
             self.ops.append("enter")
-            if self.confirms and not self.state().open_dialogs:
+            if self.on_enter:
+                self.on_enter()
+            elif self.confirms and not self.state().open_dialogs:
                 self.submitted.append(self.input)
-                self.event({"hook_event_name": "UserPromptSubmit", "prompt": self.input})
+                prompt = self.as_submitted(self.input)
+                self.event({"hook_event_name": "UserPromptSubmit", "prompt": prompt})
             self.input = ""
         return ""
 
@@ -480,41 +510,80 @@ def claude(tmp_path, monkeypatch):
 
 STOP = {"hook_event_name": "Stop", "background_tasks": [], "session_crons": []}
 WRITE = {"tool_name": "Write", "tool_input": {"file_path": "/w/a.txt", "content": "x"}}
+BUSY_EVENT = {"hook_event_name": "UserPromptSubmit", "prompt": "earlier work"}
 
 
-def test_prompt_to_a_waiting_claude_is_sent(claude):
+def test_prompt_to_a_waiting_claude_is_submitted(claude):
     claude.event({"hook_event_name": "SessionStart", "source": "startup"})  # IDLE
-    assert claude.send("first") == "sent"
+    claude.send("first")
     claude.event(STOP)  # READY
-    assert claude.send("second") == "sent"
+    claude.send("second")
     assert claude.submitted == ["first", "second"]
 
 
-def test_prompt_to_a_busy_claude_is_queued_in_order(claude):
-    claude.event({"hook_event_name": "UserPromptSubmit"})  # BUSY
+def test_prompt_to_a_busy_claude_is_submitted_the_same_way_in_order(claude):
+    """No queue of cloud-coder's: the prompt is typed and submitted at once, and Claude
+    Code queues it (seen with Claude Code 2.1.296)."""
+    claude.event(BUSY_EVENT)
     prompt = "日本語の追加指示 🚀\nline 2 with $HOME `id` \"dq\" 'sq' <tag> & | ;\n\tindented"
-    assert claude.send(prompt) == "queued"
-    assert claude.send("then this") == "queued"
+    claude.send(prompt)
+    claude.send("then this")
     assert claude.submitted == [prompt, "then this"]
+    assert claude.ops == ["paste", "enter"] * 2
     assert claude.state().prompts_submitted == 3
 
 
 def test_concurrent_prompts_are_not_merged(claude):
     from concurrent.futures import ThreadPoolExecutor
 
-    claude.event({"hook_event_name": "UserPromptSubmit"})
+    claude.event(BUSY_EVENT)
     prompts = [f"prompt {i}" for i in range(4)]
     with ThreadPoolExecutor(4) as pool:
-        results = list(pool.map(claude.send, prompts))
-    assert results == ["queued"] * 4
+        list(pool.map(claude.send, prompts))
     assert sorted(claude.submitted) == prompts  # each one whole, none twice
     assert claude.ops == ["paste", "enter"] * 4
+
+
+def test_the_same_prompt_twice_is_submitted_twice(claude):
+    claude.event(BUSY_EVENT)
+    claude.send("again")
+    claude.send("again")
+    assert claude.submitted == ["again", "again"]
+
+
+def test_a_prompt_rewritten_by_claude_code_is_confirmed(claude):
+    """Claude Code turns tabs into spaces, drops trailing spaces and wraps a long paste in
+    tags (seen with 2.1.296)."""
+    claude.event(BUSY_EVENT)
+    claude.as_submitted = lambda text: (
+        '\n\n<pasted_content id="f916">\n'
+        + text.replace("\t", "    ")
+        + '\n</pasted_content id="f916">'
+    )
+    claude.send("line 1  \n\tline 2\n" * 40)
+    assert len(claude.submitted) == 1
 
 
 def test_nothing_is_typed_before_claude_reports_its_state(claude):
     with pytest.raises(LaunchError, match="not reported its state yet; prompt not sent"):
         claude.send("go")
     assert claude.ops == []
+
+
+def test_nothing_is_typed_after_claude_ended(claude):
+    claude.event(BUSY_EVENT)
+    claude.event({"hook_event_name": "SessionEnd"})
+    with pytest.raises(LaunchError, match="not reported its state yet; prompt not sent"):
+        claude.send("go")
+    assert claude.ops == []
+
+
+def test_no_enter_when_claude_ends_while_typing(claude):
+    claude.event(BUSY_EVENT)
+    claude.on_paste = lambda: claude.event({"hook_event_name": "SessionEnd"})
+    with pytest.raises(LaunchError, match="prompt not submitted"):
+        claude.send("go")
+    assert claude.ops == ["paste"]
 
 
 @pytest.mark.parametrize(
@@ -531,27 +600,62 @@ def test_nothing_is_typed_before_claude_reports_its_state(claude):
 )
 def test_nothing_is_typed_into_a_dialog(claude, shown):
     """Enter would answer the dialog (seen with Claude Code 2.1.294: it approved a Write)."""
-    claude.event({"hook_event_name": "UserPromptSubmit"})
+    claude.event(BUSY_EVENT)
     claude.event(shown)
     with pytest.raises(LaunchError, match="permission prompt or a question, or one"):
         claude.send("go")
     assert claude.ops == []
 
 
-def test_prompt_is_queued_once_the_dialog_is_answered(claude):
-    claude.event({"hook_event_name": "UserPromptSubmit"})
+@pytest.mark.parametrize(
+    "line",
+    [
+        INPUT_BOX + "half typ",  # a person typing
+        INPUT_BOX + "[Pasted text #1 +40 lines]",  # an earlier paste never submitted
+        INPUT_BOX + "\x1b[2mTry \x1b[0mtyped",  # typed text after a dimmed part
+    ],
+)
+def test_nothing_is_typed_onto_text_in_the_input_box(claude, line):
+    claude.event(BUSY_EVENT)
+    claude.cursor_line = line
+    with pytest.raises(LaunchError, match="already holds text.*; prompt not sent"):
+        claude.send("go")
+    assert claude.ops == []
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        " \x1b[38;5;153m❯\x1b[39m 1. Opus",  # a menu (/model) no hook reports
+        "\x1b[38;5;211m!\xa0\x1b[39m",  # shell mode
+        "  \x1b[38;5;246m⏸ manual mode on\x1b[39m",
+        "",
+    ],
+)
+def test_nothing_is_typed_when_the_input_box_is_not_shown(claude, line):
+    claude.event(BUSY_EVENT)
+    claude.cursor_line = line
+    with pytest.raises(LaunchError, match="does not show its input box.*; prompt not sent"):
+        claude.send("go")
+    assert claude.ops == []
+
+
+def test_prompt_is_submitted_once_the_dialog_is_answered(claude):
+    claude.event(BUSY_EVENT)
     claude.event({"hook_event_name": "PermissionRequest", **WRITE})
     other = {"tool_name": "Write", "tool_input": {"file_path": "/w/b.txt", "content": "y"}}
     claude.event({"hook_event_name": "PostToolUse", **other})  # a parallel call, no dialog
     with pytest.raises(LaunchError, match="prompt not sent"):
         claude.send("go")
     claude.event({"hook_event_name": "PostToolUse", **WRITE, "tool_response": {}})
-    assert claude.send("go") == "queued"
+    claude.send("go")
+    assert claude.submitted == ["go"]
 
 
 def test_a_dialog_denied_without_an_event_blocks_until_all_work_ends(claude):
-    claude.event({"hook_event_name": "UserPromptSubmit"})
+    claude.event(BUSY_EVENT)
     claude.event({"hook_event_name": "PermissionRequest", **WRITE})  # then Esc: no event
+    claude.cursor_line = INPUT_BOX  # the dialog is gone from the screen
     with pytest.raises(LaunchError, match="prompt not sent"):
         claude.send("go")
     # the turn ends while a background agent, which may be the one asking, still runs
@@ -559,19 +663,72 @@ def test_a_dialog_denied_without_an_event_blocks_until_all_work_ends(claude):
     with pytest.raises(LaunchError, match="prompt not sent"):
         claude.send("go")
     claude.event(STOP)
-    assert claude.send("go") == "sent"
+    claude.cursor_line = None
+    claude.send("go")
+    assert claude.submitted == ["go"]
 
 
 def test_no_enter_when_a_dialog_opens_while_typing(claude):
-    claude.event({"hook_event_name": "UserPromptSubmit"})
+    claude.event(BUSY_EVENT)
     claude.on_paste = lambda: claude.event({"hook_event_name": "PermissionRequest", **WRITE})
     with pytest.raises(LaunchError, match="prompt not submitted"):
         claude.send("go")
     assert claude.ops == ["paste"]
 
 
-def test_unconfirmed_prompt_is_not_reported_as_sent(claude):
-    claude.event({"hook_event_name": "UserPromptSubmit"})
+def test_nothing_is_typed_while_the_pane_is_in_copy_mode(claude):
+    claude.event(BUSY_EVENT)
+    claude.in_copy_mode = True
+    with pytest.raises(LaunchError, match="copy mode.*; prompt not sent"):
+        claude.send("go")
+    assert claude.ops == []
+
+
+def test_no_enter_when_the_paste_did_not_arrive(claude):
+    """Enter on an empty input box would submit the dimmed suggestion shown there."""
+    claude.event(BUSY_EVENT)
+    claude.paste_lost = True
+    with pytest.raises(LaunchError, match="did not reach.*prompt not submitted"):
+        claude.send("go")
+    assert claude.ops == ["paste"]
+
+
+def test_unconfirmed_prompt_is_not_reported_as_submitted(claude):
+    claude.event(BUSY_EVENT)
     claude.confirms = False
     with pytest.raises(LaunchError, match="prompt not confirmed"):
         claude.send("go")
+
+
+def test_another_prompt_does_not_confirm_a_lost_one(claude):
+    """A background task's notification fires UserPromptSubmit too (seen with 2.1.296)."""
+    claude.event(BUSY_EVENT)
+    notification = (
+        "<task-notification>\n<status>completed</status>\n"
+        '<summary>Background command "go" completed</summary>\n</task-notification>'
+    )
+    claude.on_enter = lambda: claude.event(
+        {"hook_event_name": "UserPromptSubmit", "prompt": notification}
+    )
+    with pytest.raises(LaunchError, match="prompt not confirmed"):
+        claude.send("go")
+
+
+@pytest.mark.parametrize(
+    ("line", "text"),
+    [
+        (INPUT_BOX, ""),
+        (INPUT_BOX + PLACEHOLDER, ""),
+        (INPUT_BOX + '\x1b[2mTry "fix typecheck errors"\x1b[0m', ""),
+        ("❯\xa0\x1b[2m進めて\x1b[0m", ""),  # a suggestion, seen with 2.1.300
+        (INPUT_BOX + "\x1b[2;3mTry x\x1b[0m", ""),  # dimmed and italic
+        (INPUT_BOX + "half typed", "half typed"),
+        ("\x1b[38;5;246m❯ \x1b[38;5;231mQ2: an earlier prompt\x1b[39m", "Q2: an earlier prompt"),
+        (" \x1b[38;5;153m❯\x1b[39m 1. Yes", None),
+        ("\x1b[39m!\xa0", None),
+    ],
+)
+def test_input_box_text(line, text):
+    from cloud_coder_vm.launch import input_box_text
+
+    assert input_box_text(line) == text

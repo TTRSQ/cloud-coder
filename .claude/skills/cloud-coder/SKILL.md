@@ -94,7 +94,7 @@ CLOUD_CODER_PROMPT
   - どちらか分からなければ、送る前にユーザーに聞く。
 - 指示はユーザーの言葉をそのまま渡す。勝手に要約したり書き足したりしない。
 - 成功すると、標準出力の最後に JSON が 1 行出る。`session` (セッション名、例 `cc-REPO-1`) と、新しい会話か続きか (`conversation` が `new` / `continued`) をユーザーに伝え、結果は後で `/cloud-coder read <session>` で読めると案内する。
-- `prompt not sent` で失敗したら、送り直さずにユーザーに伝える。`is BUSY` なら前の作業がまだ終わっていない。`has not reported its state yet` なら Claude Code がログイン画面か trust 画面で止まっている可能性があるので、下の attach を案内する。
+- `prompt not sent` で失敗したら、送り直さずにユーザーに伝える。`permission prompt or a question` ならダイアログへの回答待ち、`already holds text` なら入力欄に文字列が残っている、`does not show its input box` ならメニューやシェルモードが開いている (どちらも下の attach で画面を直すよう案内する)。`has not reported its state yet` なら Claude Code がログイン画面か trust 画面で止まっている可能性があるので、下の attach を案内する。
 - 標準エラーに `workspace trust skipped` が出たら、Claude Code が trust 画面で止まっている。ユーザー自身のターミナルで、このリポジトリから `uv run cloud-coder connect --session <SESSION>` で attach して答えるよう伝える (attach は対話操作なので、このスキルからは実行しない)。
 - 結果を待たない。渡したら報告して終わる。
 

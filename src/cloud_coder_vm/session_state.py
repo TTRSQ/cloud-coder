@@ -9,6 +9,7 @@ shares the record of the one in %N of cloud-coder's. That only errs towards busy
 
 import hashlib
 import json
+import re
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -25,6 +26,12 @@ IDLE = "IDLE"
 DIALOG_SHOWN = ("PermissionRequest", "Elicitation")
 DIALOG_CLOSED = ("PostToolUse", "PostToolUseFailure", "ElicitationResult")
 
+# How many of the latest submitted prompts a record keeps, to confirm that a typed prompt
+# was received. Prompts Claude Code makes itself (a background task's notification) fire
+# UserPromptSubmit too, so a count alone could confirm a prompt that was lost.
+RECENT_PROMPTS = 8
+_PASTE_TAG = re.compile(r"</?pasted_content\b[^>]*>")
+
 
 @dataclass
 class SessionState:
@@ -39,7 +46,8 @@ class SessionState:
     last_event: str | None = None
     updated_at: float = 0.0
     open_dialogs: list[str] = field(default_factory=list)
-    prompts_submitted: int = 0  # UserPromptSubmit events: a typed prompt was received
+    prompts_submitted: int = 0  # UserPromptSubmit events
+    recent_prompt_digests: list[str] = field(default_factory=list)  # prompt_digest()s, newest last
 
 
 def next_state(current: str | None, payload: dict, last_event: str | None = None) -> str | None:
@@ -79,6 +87,29 @@ def next_state(current: str | None, payload: dict, last_event: str | None = None
     if event == "SessionEnd":
         return None
     return current
+
+
+def prompt_digest(prompt: str) -> str:
+    """Digest of a prompt without whitespace and without the tags Claude Code wraps a long
+    paste in: Claude Code turns tabs into spaces, drops trailing spaces and adds those tags."""
+    typed = "".join(_PASTE_TAG.sub("", prompt).split())
+    return hashlib.sha256(typed.encode()).hexdigest()[:16]
+
+
+def record_prompt(state: SessionState, prompt: str) -> None:
+    state.prompts_submitted += 1
+    digests = [*state.recent_prompt_digests, prompt_digest(prompt)]
+    state.recent_prompt_digests = digests[-RECENT_PROMPTS:]
+
+
+def received_since(before: SessionState, after: SessionState, prompt: str) -> bool:
+    """Whether a prompt submitted after ``before`` is ``prompt``, up to what Claude Code
+    changes (see prompt_digest). The whole text must match: a short prompt may well occur
+    inside another one, such as a background task's notification."""
+    new = after.prompts_submitted - before.prompts_submitted
+    if new <= 0:
+        return False
+    return prompt_digest(prompt) in after.recent_prompt_digests[-new:]
 
 
 def dialog_id(payload: dict) -> str:
