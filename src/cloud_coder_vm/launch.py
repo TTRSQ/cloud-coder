@@ -314,37 +314,52 @@ def write_prompt_file(session: LogicalSession, prompt: str) -> Path:
 PROMPT_CONFIRM_SECONDS = 10.0
 
 # Claude Code's input box: the screen line the cursor is on starts with this sign. In
-# shell mode the sign is "!", and a dialog, a menu or a second line of a multi-line input
-# moves the cursor off such a line.
+# shell mode the sign is "!", and a dialog or a menu moves the cursor off such a line.
 INPUT_BOX_SIGN = "\u276f"
 _SGR = re.compile(r"\x1b\[[0-9;]*m")
 # a dimmed placeholder or suggestion ("Try ..."): SGR 2, alone or with other attributes
 _DIM = re.compile(r"\x1b\[(?:[0-9;]*;)?2(?:;[0-9;]*)?m.*?(?:\x1b\[(?:0|22)?m|$)")
+# Keys that empty Claude Code's input box, in shell mode too, without Esc (interrupts a
+# turn), Ctrl+C (interrupts, or exits) or Up (takes queued prompts back): to the end of
+# the line, delete to the end of each line below, then to the start of each line above.
+# https://code.claude.com/docs/en/interactive-mode#text-editing
+CLEAR_INPUT_KEYS = ["C-e", *["C-k"] * 50, *["C-u"] * 50]
 
 
 def input_box_text(cursor_line: str) -> str | None:
     """What Claude Code's input box holds, given the screen line the cursor is on with its
-    colours (``capture-pane -e``): "" when it is empty or shows a dimmed placeholder, None
-    when the cursor is not in the input box."""
+    colours (``capture-pane -e``): "" when it is empty or shows a dimmed placeholder or
+    suggestion, None when the cursor is not in the input box."""
     if not _SGR.sub("", cursor_line).startswith(INPUT_BOX_SIGN):
         return None
     rest = cursor_line.split(INPUT_BOX_SIGN, 1)[1]
     return _SGR.sub("", _DIM.sub("", rest)).strip()
 
 
-def _input_box(pane_id: str) -> str | None:
-    """``input_box_text`` of the pane; None also while someone scrolls it in tmux's copy
-    mode, where keys sent to the pane would go to the mode, not to Claude Code."""
-    shown = _check(
-        [*tmux_command(), "display-message", "-p", "-t", pane_id, "#{pane_in_mode} #{cursor_y}"]
-    ).split()
-    if len(shown) != 2 or shown[0] != "0" or not shown[1].isdigit():
-        return None
-    row = shown[1]
+def _in_copy_mode(pane_id: str) -> bool:
+    """Whether someone scrolls the pane in tmux's copy mode, where keys go to the mode."""
+    return (
+        _check([*tmux_command(), "display-message", "-p", "-t", pane_id, "#{pane_in_mode}"]).strip()
+        != "0"
+    )
+
+
+def _clear_input(pane_id: str) -> None:
+    """Empty Claude Code's input box (what someone left typed there is dropped) and check
+    that the cursor is back in an empty input box: a menu someone opened (/help, Ctrl+R)
+    fires no hook, and Enter would answer it instead of submitting the prompt."""
+    _check([*tmux_command(), "send-keys", "-t", pane_id, *CLEAR_INPUT_KEYS])
+    time.sleep(0.2)
+    row = _check([*tmux_command(), "display-message", "-p", "-t", pane_id, "#{cursor_y}"]).strip()
     line = _check(
         [*tmux_command(), "capture-pane", "-p", "-e", "-t", pane_id, "-S", row, "-E", row]
     )
-    return input_box_text(line.rstrip("\n"))
+    if input_box_text(line.rstrip("\n")) != "":
+        raise LaunchError(
+            "Claude Code in this session shows a menu or another prompt that hooks do not "
+            "report (someone attached may have opened it); prompt not sent. Attach to the "
+            "session to close it"
+        )
 
 
 def _reported_state(pane_id: str, claude_pid: int) -> session_state.SessionState | None:
@@ -360,9 +375,8 @@ def _reported_state(pane_id: str, claude_pid: int) -> session_state.SessionState
 
 def _typeable_state(pane_id: str, claude_pid: int) -> session_state.SessionState:
     """The state of a Claude Code that a prompt may be typed into: one that reported its
-    state, shows no dialog (Enter would answer the dialog, and the text would be lost) and
-    has an empty input box (the prompt would join the text there). Whether it is BUSY does
-    not matter."""
+    state and shows no dialog (Enter would answer the dialog, and the text would be lost).
+    Whether it is BUSY does not matter."""
     state = _reported_state(pane_id, claude_pid)
     if state is None:
         raise LaunchError(
@@ -373,16 +387,10 @@ def _typeable_state(pane_id: str, claude_pid: int) -> session_state.SessionState
             "Claude Code in this session shows a permission prompt or a question, or one "
             "was dismissed and Claude Code has not finished its work since; prompt not sent"
         )
-    box = _input_box(pane_id)
-    if box is None:
+    if _in_copy_mode(pane_id):
         raise LaunchError(
-            "Claude Code in this session does not show its input box (a dialog, a menu, "
-            "shell mode, a multi-line input or tmux's copy mode may be open); prompt not sent"
-        )
-    if box:
-        raise LaunchError(
-            "Claude Code's input box in this session already holds text (someone is typing, "
-            "or an earlier prompt was not submitted); prompt not sent"
+            "the session's tmux pane is in copy mode (someone attached is scrolling it); "
+            "prompt not sent"
         )
     return state
 
@@ -398,6 +406,7 @@ def send_prompt_to_running(pane_id: str, claude_pid: int, prompt: str) -> None:
     # One prompt at a time per Claude Code: interleaved pastes would merge into one prompt.
     with state_lock(paths.PROMPT_DIR / f"claude-{claude_pid}.lock"):
         before = _typeable_state(pane_id, claude_pid)
+        _clear_input(pane_id)
         buffer = f"cloud-coder-{os.getpid()}"
         subprocess.run(
             [*tmux_command(), "load-buffer", "-b", buffer, "-"],
@@ -412,14 +421,7 @@ def send_prompt_to_running(pane_id: str, claude_pid: int, prompt: str) -> None:
         if typed is None or typed.open_dialogs:
             raise LaunchError(
                 "Claude Code in this session showed a dialog or ended while the prompt was "
-                "typed; prompt not submitted, and it may be left in the input box. Check the "
-                "session's screen"
-            )
-        if _input_box(pane_id) == "":
-            # Enter on an empty input box would submit its suggestion, not the prompt.
-            raise LaunchError(
-                "the prompt did not reach Claude Code's input box; prompt not submitted. "
-                "Check the session's screen"
+                "typed; prompt not submitted, and it may be left in the input box"
             )
         _check([*tmux_command(), "send-keys", "-t", pane_id, "Enter"])
         deadline = time.monotonic() + PROMPT_CONFIRM_SECONDS
@@ -430,8 +432,9 @@ def send_prompt_to_running(pane_id: str, claude_pid: int, prompt: str) -> None:
                 return
     raise LaunchError(
         "Claude Code in this session did not confirm receiving the prompt within "
-        f"{PROMPT_CONFIRM_SECONDS:.0f} s; prompt not confirmed, and it may be left in the "
-        "input box or lost. Check the session's screen before sending it again"
+        f"{PROMPT_CONFIRM_SECONDS:.0f} s; prompt not confirmed: it may be lost, or Claude "
+        "Code may have it without the hook having said so. Check whether Claude Code took it "
+        "up before sending it again"
     )
 
 

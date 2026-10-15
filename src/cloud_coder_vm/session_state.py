@@ -45,9 +45,15 @@ class SessionState:
     cwd: str | None = None
     last_event: str | None = None
     updated_at: float = 0.0
-    open_dialogs: list[str] = field(default_factory=list)
+    open_dialogs: list[dict] = field(default_factory=list)  # dialog()s, oldest first
     prompts_submitted: int = 0  # UserPromptSubmit events
     recent_prompt_digests: list[str] = field(default_factory=list)  # prompt_digest()s, newest last
+
+    def __post_init__(self):
+        # an agent from before dialog() kept only the ids
+        self.open_dialogs = [
+            d if isinstance(d, dict) else {"id": d, "kind": "unknown"} for d in self.open_dialogs
+        ]
 
 
 def next_state(current: str | None, payload: dict, last_event: str | None = None) -> str | None:
@@ -123,25 +129,71 @@ def dialog_id(payload: dict) -> str:
     return hashlib.sha256(encoded.encode()).hexdigest()[:16]
 
 
+# Longest text a dialog keeps from what it asks, so the state on tmpfs stays small.
+DIALOG_TEXT_LIMIT = 500
+# Inputs of common tools that say what a permission prompt is about, best first.
+_SUBJECT_KEYS = ("command", "file_path", "notebook_path", "path", "url", "pattern", "query")
+
+
+def _clip(value: object) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    return value if len(value) <= DIALOG_TEXT_LIMIT else value[:DIALOG_TEXT_LIMIT] + "…"
+
+
+def dialog(payload: dict) -> dict:
+    """A dialog Claude Code shows, from the hook event that shows it: its ``id`` and what
+    it waits for, short enough to keep. Never the whole tool input (a Write's content)."""
+    found: dict = {"id": dialog_id(payload)}
+    if payload.get("hook_event_name") == "Elicitation":
+        return {**found, "kind": "mcp_input", "server": payload.get("mcp_server_name")}
+    tool = payload.get("tool_name")
+    tool_input = payload.get("tool_input")
+    tool_input = tool_input if isinstance(tool_input, dict) else {}
+    if tool == "AskUserQuestion":
+        questions = [
+            {
+                "question": _clip(q.get("question")),
+                "options": [
+                    _clip(o.get("label")) for o in q.get("options") or [] if isinstance(o, dict)
+                ],
+                "multi_select": bool(q.get("multiSelect")),
+            }
+            for q in tool_input.get("questions") or []
+            if isinstance(q, dict)
+        ]
+        return {**found, "kind": "question", "questions": questions}
+    if tool == "ExitPlanMode":
+        return {**found, "kind": "plan_approval", "plan": _clip(tool_input.get("plan"))}
+    subject = next(
+        (tool_input[k] for k in _SUBJECT_KEYS if isinstance(tool_input.get(k), str)), None
+    )
+    return {**found, "kind": "permission", "tool": tool, "subject": _clip(subject)}
+
+
+def waiting_for(state: "SessionState") -> list[dict]:
+    """What the dialogs Claude Code shows wait for, without their ids."""
+    return [{k: v for k, v in d.items() if k != "id"} for d in state.open_dialogs]
+
+
 def _is_shell(task: object) -> bool:
     return isinstance(task, dict) and task.get("type") == "shell"
 
 
-def next_dialogs(dialogs: list[str], payload: dict) -> list[str]:
+def next_dialogs(dialogs: list[dict], payload: dict) -> list[dict]:
     """The dialogs still shown after a hook event. A dialog denied with Esc or "No" fires
     no event: it counts as shown until a turn ends with no background task left that may
     ask for a permission (any but a shell) or Claude Code restarts, which errs towards
     not typing."""
     event = payload.get("hook_event_name")
     if event in DIALOG_SHOWN:
-        return [*dialogs, dialog_id(payload)]
+        return [*dialogs, dialog(payload)]
     if event in DIALOG_CLOSED:
         closed = dialog_id(payload)
-        if closed in dialogs:
-            remaining = list(dialogs)
-            remaining.remove(closed)
-            return remaining
-        return dialogs
+        index = next((i for i, d in enumerate(dialogs) if d.get("id") == closed), None)
+        if index is None:
+            return dialogs
+        return dialogs[:index] + dialogs[index + 1 :]
     tasks = payload.get("background_tasks")
     if event == "Stop" and isinstance(tasks, list) and all(_is_shell(t) for t in tasks):
         return []

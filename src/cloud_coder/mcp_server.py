@@ -54,11 +54,11 @@ refused, do not resend it; tell the user.
   submits it, also while Claude Code is BUSY: Claude Code then holds it in its own
   queue and takes it in at its next step, without stopping its work. `prompt:
   submitted` in the result means Claude Code has the instruction, not that it has done
-  it. It is refused while Claude Code shows a permission prompt or a question, or text
-  is already in its input box. `read_session`
+  it. Anything left typed in its input box is discarded first. It is refused while
+  Claude Code waits for an answer to a permission prompt or a question. `read_session`
   returns Claude Code's latest responses (`messages`, from its transcript; the last one
-  unless you ask for more) and the session's screen text (`output`): its progress, or a
-  question it is waiting on.
+  unless you ask for more), its state, and what it waits for (`waiting_for`: permission
+  prompts and questions with their options).
 - `resource_usage` shows the VM's CPU, memory and disk usage now; it does not start
   the VM.
 - `close_session` ends a session for good, even while Claude Code is BUSY; call it only
@@ -216,8 +216,9 @@ def build_server(
         """Type an instruction into the session's Claude Code and submit it, also while
         Claude Code is BUSY (Claude Code then holds it in its own queue and takes it in at
         its next step). `prompt: submitted` means Claude Code has the instruction, not that
-        it has done it. Refused while Claude Code shows a permission prompt or a question,
-        or text is already in its input box (do not resend it then); if Claude Code is not
+        it has done it. Anything left typed in its input box is discarded first. Refused
+        while Claude Code waits for an answer to a permission prompt or a question, or
+        shows a menu someone opened (do not resend it then); if Claude Code is not
         running it is started (or resumed) with this instruction (`prompt:
         passed-at-start`). Claude Code works on it for minutes to hours: tell the user and
         end your turn."""
@@ -243,15 +244,18 @@ def build_server(
     ) -> dict:
         """Claude Code's latest responses (`messages`: oldest first, each its text and
         time, from Claude Code's transcript; empty before the first response; while BUSY
-        the newest can be the answer to an earlier prompt, see its time), the text now on
-        the session's screen (`output`: dialogs, progress) and Claude Code's state. Does
-        not start the VM. Call it when the user asks for progress or the result; never poll
-        it to wait for a BUSY Claude Code."""
+        the newest can be the answer to an earlier prompt, see its time), whether it runs
+        (`claude`) and its state (`claude_state`: BUSY / READY / IDLE, null while it has
+        not reported, as on its login or trust screen), and what it waits for
+        (`waiting_for`: a permission prompt with the tool and its subject, a question with
+        its options, a plan to approve, or an MCP server's input; one dismissed with Esc
+        is listed until the turn ends). Does not start the VM. Call it when the user asks
+        for progress or the result; never poll it to wait for a BUSY Claude Code."""
         with tool_call("read_session"):
             guards.require_running(cfg)
-            screen = connect.read_session(cfg, session, messages)
-            busy = screen.get("claude_state") == BUSY
-            return {**screen, "note": BUSY_NOTE} if busy else screen
+            result = connect.read_session(cfg, session, messages)
+            busy = result.get("claude_state") == BUSY
+            return {**result, "note": BUSY_NOTE} if busy else result
 
     @server.tool(annotations=READ_ONLY)
     def resource_usage() -> dict:

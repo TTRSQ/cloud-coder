@@ -182,8 +182,9 @@ cloud-coder connect --session cc-REPO-2 -p "..." --detach   # その会話の続
 
 - Claude Code が作業中 (`BUSY`) でも送れます。入力待ちのときと同じように入力して送信し、作業中なら Claude Code 自身がキューに入れ、作業を止めずに次の区切り (tool の実行が終わったところ) で同じ会話に取り込みます。終わるのを待ってから送り直す必要はありません。
 - 出力の `prompt` が `submitted` なら、Claude Code がプロンプトを受け取ったことを hook で確認できています。実行が終わったという意味ではありません。結果は後で `status` や `read` で確認してください。
-- 権限の確認や Claude Code からの質問 (ダイアログ) が出ている間、入力欄に文字列があるとき (attach して打ちかけている、前のプロンプトが残っている)、入力欄が画面に無いとき (メニューやシェルモード)、まだ状態を報告していないときは何も入力せず、`... prompt not sent` のエラーで終了します。attach してダイアログに答えるか、入力欄を空にしてから送り直してください。ダイアログを `Esc` や `No` で断った後は、画面にダイアログが無くても、Claude Code が作業を終える (ターンが終わる) までは拒否されます。止まったままなら、attach してプロンプトを送り、そのターンが終わってから送り直してください。
-- Claude Code が受け取ったことを hook で確認できなかったときは `... prompt not confirmed` のエラーになります。入力欄に残っているか失われているので、画面を見てから送り直してください。
+- 入力欄に残っている文字列 (attach して打ちかけたもの、前のプロンプトの残り) は消してから入力します。消したものは attach して `Ctrl+Y` で戻せます。
+- 権限の確認や Claude Code からの質問 (ダイアログ) が出ている間、attach した人がメニューを開いているとき、まだ状態を報告していないときは何も入力せず、`... prompt not sent` のエラーで終了します。attach してダイアログに答えるかメニューを閉じてから送り直してください。ダイアログを `Esc` や `No` で断った後は、ダイアログが閉じていても、Claude Code が作業を終える (ターンが終わる) までは拒否されます。止まったままなら、attach してプロンプトを送り、そのターンが終わってから送り直してください。
+- Claude Code が受け取ったことを hook で確認できなかったときは `... prompt not confirmed` のエラーになります。失われたか、受け取ったのに確かめられなかったかのどちらかなので、取り込まれたかを確かめてから送り直してください (入力欄に残っていても、次の送信で消えます)。
 - Claude Code が止まっていたセッション (VM 停止後など) では、Claude Code を起動 / resume するときの最初のプロンプトとして渡します。
 
 ## 複数のセッションを並行して使う
@@ -252,10 +253,10 @@ cloud-coder が起動する Claude Code は、すべて Remote Control 付き (`
 
 - 対象の VM は `config.yaml` (と `cloud-coder mcp` に付けたオプション) で決まります。`gcp.project` が無いと server は起動せず、エラーになります。
 - 典型的な流れは `up` (ready になるまで間をおいて呼び直す) → `start_session` (`repo` と `prompt`) → 開始したことをユーザーに報告してターンを終える → 後でユーザーが進み具合や結果を尋ねたら `read_session` / `status` で確認する → 必要なら `send_prompt` で追加の指示、です。作業が終われば VM は自動停止するので、`stop` を呼ぶ必要は普段ありません。
-- Claude Code の作業は数分〜数時間かかります。server は LLM に、作業を始めたらターンを終え、`BUSY` が終わるのをポーリングで待たないよう指示します (`start_session` / `send_prompt` の応答の `next`、`BUSY` のときの応答の `note`)。`status` / `read_session` は呼ぶたびに VM に問い合わせ、最新の状態と画面を返します ([README の MCP server](README.md#mcp-server))。
+- Claude Code の作業は数分〜数時間かかります。server は LLM に、作業を始めたらターンを終え、`BUSY` が終わるのをポーリングで待たないよう指示します (`start_session` / `send_prompt` の応答の `next`、`BUSY` のときの応答の `note`)。`status` / `read_session` は呼ぶたびに VM に問い合わせ、最新の状態を返します ([README の MCP server](README.md#mcp-server))。
 - `up` は agent のインストール・更新を VM 上で始めてすぐに返り、終わるまでは `ready: false` (`agent_installing: true`) を返します。初回は数分かかります。失敗すると、次の `up` がエラーを返すと同時にインストールをやり直します (失敗したときのログは VM の `~/cloud-coder-install.log.prev`)。CLI の `up` / `connect` は、VM 上で動いているインストールの終了を待ってから続けます。
-- `read_session` は Claude Code の最後の応答 (`messages`、Claude Code の会話履歴から読む。既定は 1 個、`messages` 引数で最大 10 個まで古い順に) と、tmux の画面の文字列 (`output`) を返します。権限の確認や trust 画面など入力を待っている表示は画面で読めます。画面は今見えている範囲 (既定で 24 行) だけです。応答は `messages` で読みます ([README の最後の応答と画面](README.md#最後の応答と画面))。
-- `send_prompt` は Claude Code が `BUSY` でも送れます。Claude Code 自身のキューに入り、次の区切りで取り込まれます。応答の `prompt: submitted` は Claude Code が受け取ったことを示し、実行が終わったことは示しません。ダイアログの表示中や入力欄に文字列があるときはエラーになります (CLI の `-p` と同じ)。
+- `read_session` は Claude Code の最後の応答 (`messages`、Claude Code の会話履歴から読む。既定は 1 個、`messages` 引数で最大 10 個まで古い順に)、状態 (`claude` / `claude_state`)、答えを待っている権限の確認や質問 (`waiting_for`、選択肢つき) を返します。tmux の画面は返しません ([README の read_session が返すもの](README.md#read_session-が返すもの))。
+- `send_prompt` は Claude Code が `BUSY` でも送れます。Claude Code 自身のキューに入り、次の区切りで取り込まれます。応答の `prompt: submitted` は Claude Code が受け取ったことを示し、実行が終わったことは示しません。入力欄に残っていた文字列は消してから入力し、ダイアログの表示中はエラーになります (CLI の `-p` と同じ)。
 - VM 上で行う初回の Claude Code のログイン (`/login`) と `gh auth login` は MCP からはできません。[初回セットアップ](#初回セットアップ)を CLI で済ませてから使ってください。
 
 ### MCP Inspector で tool を直接呼ぶ
@@ -351,13 +352,13 @@ Cloud Run に置いた API は `/mcp` で MCP server も提供しているので
 /cloud-coder stop
 ```
 
-- [初回セットアップ](#初回セットアップ)の 2〜5 (gcloud の認証、config.yaml、`gh auth login`、Claude Code の `/login`) を済ませてから使います。CLI は `uv run cloud-coder` で、このチェックアウトのものが使われます (`uv tool install` は不要です)。画面の読み取りには MCP Inspector (バージョン固定) を `npx` で使うので、Node.js 22.19 以上が必要です。
+- [初回セットアップ](#初回セットアップ)の 2〜5 (gcloud の認証、config.yaml、`gh auth login`、Claude Code の `/login`) を済ませてから使います。CLI は `uv run cloud-coder` で、このチェックアウトのものが使われます (`uv tool install` は不要です)。結果の読み取りには MCP Inspector (バージョン固定) を `npx` で使うので、Node.js 22.19 以上が必要です。
 - スキルは Sonnet で動きます (frontmatter の `model: sonnet`)。モデルの切り替えはそのターンだけで、次に入力したときは元のモデルに戻ります。
 - `/cloud-coder` と打ったときだけ動きます (`disable-model-invocation: true`)。このリポジトリでは cloud-coder 自体の開発で status や stop の話が頻繁に出るため、Claude が会話から判断して VM を起動・停止しないようにしています。
-- タスクは `connect --detach` で渡すだけで、結果は待ちません。後で `/cloud-coder read <セッション名>` で画面を読みます。VM が止まっていれば、読む前に起動するかを聞きます。
+- タスクは `connect --detach` で渡すだけで、結果は待ちません。後で `/cloud-coder read <セッション名>` で結果を読みます。VM が止まっていれば、読む前に起動するかを聞きます。
 - 感嘆符で始まる指示 (Claude Code の shell モード) は送りません。対象の VM を変えるオプション (`--project` など) も付けません。
 - VM を止めるのは `stop` を頼んだときだけです。作業を渡した後は自動停止に任せます。`stop` のときは先に status を見て、作業中 (`BUSY`) のセッションがあれば止めずに確認を求めます。
-- status・起動・タスクの投入・画面の読み取りのコマンドは、スキルを呼んだターンの間だけ許可なしで実行されます (frontmatter の `allowed-tools`)。`stop` は許可を求めます。許可ルールはコマンドの先頭部分だけを見るので、オプションの追加 (`--project`、Inspector の `--tool-name` の上書きなど) までは防げません。それらはスキルの指示で禁じています。
+- status・起動・タスクの投入・結果の読み取りのコマンドは、スキルを呼んだターンの間だけ許可なしで実行されます (frontmatter の `allowed-tools`)。`stop` は許可を求めます。許可ルールはコマンドの先頭部分だけを見るので、オプションの追加 (`--project`、Inspector の `--tool-name` の上書きなど) までは防げません。それらはスキルの指示で禁じています。
 
 ## 自動停止を使いこなす
 
