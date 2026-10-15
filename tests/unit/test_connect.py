@@ -173,5 +173,7 @@ def test_read_session_asks_the_agent_for_the_responses(monkeypatch):
         return subprocess.CompletedProcess(command, 0, json.dumps(out) + "\n", "")
 
     monkeypatch.setattr(ssh, "run", run)
+    assert connect.read_session(Config(), "cc-a-1") == out
     assert connect.read_session(Config(), "cc-a-1", 3) == out
-    assert commands[0].endswith("read-session --session cc-a-1 --messages 3")
+    assert commands[0].endswith("read-session --session cc-a-1 --messages 1")
+    assert commands[1].endswith("read-session --session cc-a-1 --messages 3")
