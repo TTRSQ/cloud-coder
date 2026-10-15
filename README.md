@@ -95,8 +95,8 @@ cloud-coder api                                     # HTTP API を 127.0.0.1:878
   - 応答の `prompt` が `submitted` なら、Claude Code の `UserPromptSubmit` hook が、送った文面と同じプロンプトを受け取ったと報告しています。Claude Code がプロンプトを受け取った (作業中ならキューに入れた) ことだけを意味し、実行が終わったことは意味しません。終わったかどうかは `status` の Claude Code の状態 (`READY` / `IDLE`) や `read_session` の応答で分かります。Claude Code を新しく起動 / resume したときの `passed-at-start` は、起動時の引数として渡したことを意味します。
   - hook の報告は文面で照合します。Claude Code はタブを空白に変え、行末の空白を落とし、長い貼り付けをタグで囲むので、空白とそのタグを除いた文面が一致するかで判定します (一部だけ一致するものは数えない)。Claude Code が文面の変え方を変えると、受け取っていても確認できずにエラーになることがあります (安全側)。2.1.296 では background の task の完了通知も `UserPromptSubmit` を発火させるため、回数だけでは別のプロンプトを受け取りとみなしてしまいます。10 秒以内に確認できなければ、送れたことにはせずエラー (`prompt not confirmed`) にします (失われたか、受け取ったのに hook で確かめられなかった可能性があるので、取り込まれたかを確かめてから送り直す)。
   - ダイアログ (権限の確認、`AskUserQuestion` の質問、MCP の elicitation) が出ている間は、何も入力せずにエラーにします。ダイアログに Enter を送ると選択肢が確定してしまうためです (2.1.294 で、権限の確認中に貼り付けて Enter を送ると `Write` が許可され、プロンプトは失われることを確認)。ダイアログの表示と終了は hook (`PermissionRequest` / `Elicitation` と `PostToolUse` / `PostToolUseFailure` / `ElicitationResult`) で記録します ([自動停止](#自動停止))。貼り付けと Enter の間にダイアログが出た場合も Enter を送らずにエラーにします。
-  - 貼り付ける前に、入力欄に残っている文字列を消します (人が attach して打ちかけたもの、前に送って送信されなかったもの、シェルモード、複数行の入力)。消すのは `Ctrl+E` の後に `Ctrl+K` と `Ctrl+U` を繰り返すキーで ([Claude Code の docs](https://code.claude.com/docs/en/interactive-mode))、作業中のターンを止める `Esc`、終了につながる `Ctrl+C` / `Ctrl+D`、キューのプロンプトを入力欄に戻す `Up` は使いません。消した文字列は Claude Code の `Ctrl+Y` で戻せます。Claude Code 2.1.300 で、`READY` と `BUSY` (foreground の tool の実行中、キューにプロンプトがある状態) の両方で、tool が中断されず、キューのプロンプトもそのままで、入力欄だけが空になることを確かめています。入力欄に薄く表示される次のプロンプトの提案 (prompt suggestion) は入力ではないので、消えずに残っても送られません (空の入力欄で Enter を押しても提案は送信されない)。
-  - 消した後、tmux のカーソルがある行が空の入力欄 (`❯` で始まり、薄い表示以外の文字が無い) であることを確かめ、そうでなければ何も入力せずにエラーにします。attach した人が開いたメニュー (`/help`、`Ctrl+R` の履歴検索など) は hook で分からず、Enter を送るとメニューの選択に使われてプロンプトが失われるためです。この確認の結果は送るかどうかの判断にだけ使い、`read_session` などで返すことはありません。tmux の copy mode (attach した人がスクロールしている) のときは、キーが copy mode に渡るので、`#{pane_in_mode}` を見て何も送らずにエラーにします。
+  - 貼り付ける前に、入力欄に残っている文字列を消します (人が attach して打ちかけたもの、前に送って送信されなかったもの、シェルモード、複数行の入力)。消すのは `Ctrl+E` の後に `Ctrl+K` と `Ctrl+U` を繰り返すキーで ([Claude Code の docs](https://code.claude.com/docs/en/interactive-mode))、作業中のターンを止める `Esc`、終了につながる `Ctrl+C` / `Ctrl+D`、キューのプロンプトを入力欄に戻す `Up` は使いません。残っていた文字列は捨てます (戻せる保証はありません)。Claude Code 2.1.300 で、`READY` と `BUSY` (foreground の tool の実行中、キューにプロンプトがある状態) の両方で、tool が中断されず、キューのプロンプトもそのままで、入力欄だけが空になることを確かめています。入力欄に薄く表示される次のプロンプトの提案 (prompt suggestion) は入力ではないので、消えずに残っても送られません (空の入力欄で Enter を押しても提案は送信されない)。
+  - 消した後、tmux のカーソルがある行が空の入力欄 (`❯` で始まり、薄い表示以外の文字が無い) であることを確かめ、そうでなければ何も入力せずにエラーにします。attach した人が開いたメニュー (`/help`、`Ctrl+R` の履歴検索など) は hook で分からず、Enter を送るとメニューの選択に使われてプロンプトが失われるためです。消すためのキーはこの確認の前に送られるので、メニューにも届きます (`Ctrl+R` の検索では何も起きないことを確かめています。Enter は送りません)。この確認の結果は送るかどうかの判断にだけ使い、`read_session` などで返すことはありません。tmux の copy mode (attach した人がスクロールしている) のときは、キーが copy mode に渡るので、`#{pane_in_mode}` を見て何も送らずにエラーにします。
   - まだ状態を報告していない Claude Code (起動直後やログイン前、終了した後) には何も入力せずにエラーにします。
   - 同じ Claude Code への送信は 1 つずつ行います (`/run/cloud-coder/prompts/claude-<pid>.lock`)。同時に送っても貼り付けが混ざらず、送った分だけ別々のプロンプトになります。
   - 防げないこと: 消した直後に人が入力し始めると、その文字列とつながることがあります。50 行を超えて手で打った入力は消しきれず、エラーになります。vim mode (`editorMode: vim`) での消し方と貼り付けは確かめていません。`UserPromptSubmit` が発火しない入力 (組み込みのスラッシュコマンドなど) は、実行されても `prompt not confirmed` になります。確認を待つ間 (最長 10 秒) に、同じ文面 (空白と貼り付けのタグを除いて一致するもの) の別のプロンプトが送られると、そちらを受け取りとみなします。
@@ -242,7 +242,8 @@ claude mcp add cloud-coder -- cloud-coder mcp
   - `{"kind": "permission", "tool", "subject"}`: 権限の確認。`subject` は Bash のコマンドやファイルのパスなど (500 文字まで)。tool の入力全体 (`Write` の中身など) は記録しません。
   - `{"kind": "question", "questions": [{"question", "options", "multi_select"}]}`: `AskUserQuestion` の質問と選択肢。
   - `{"kind": "plan_approval", "plan"}`: plan mode の計画の承認 (500 文字まで)。
-  - `{"kind": "mcp_input", "server"}`: MCP server の elicitation。
+  - `{"kind": "mcp_input", "server", "message"}`: MCP server の elicitation。
+  - `{"kind": "unknown"}`: agent を更新する前から出ているダイアログ (古い agent は内容を記録していない)。attach して確かめます。
   - `Esc` や `No` で閉じたダイアログは hook が報告しないので、ターンが終わるまで残ります。答えるには attach します。
 
 ### HTTP API

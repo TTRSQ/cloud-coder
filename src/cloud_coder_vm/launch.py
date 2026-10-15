@@ -358,11 +358,17 @@ def _clear_input(pane_id: str) -> None:
     line = _check(
         [*tmux_command(), "capture-pane", "-p", "-e", "-t", pane_id, "-S", row, "-E", row]
     )
-    if input_box_text(line.rstrip("\n")) != "":
+    left = input_box_text(line.rstrip("\n"))
+    if left is None:
         raise LaunchError(
             "Claude Code in this session shows a menu or another prompt that hooks do not "
             "report (someone attached may have opened it); prompt not sent. Attach to the "
             "session to close it"
+        )
+    if left:
+        raise LaunchError(
+            "Claude Code's input box in this session still holds text after clearing it; "
+            "prompt not sent. Attach to the session to empty it"
         )
 
 

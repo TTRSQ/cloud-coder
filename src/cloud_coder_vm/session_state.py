@@ -146,7 +146,12 @@ def dialog(payload: dict) -> dict:
     it waits for, short enough to keep. Never the whole tool input (a Write's content)."""
     found: dict = {"id": dialog_id(payload)}
     if payload.get("hook_event_name") == "Elicitation":
-        return {**found, "kind": "mcp_input", "server": payload.get("mcp_server_name")}
+        return {
+            **found,
+            "kind": "mcp_input",
+            "server": payload.get("mcp_server_name"),
+            "message": _clip(payload.get("message")),
+        }
     tool = payload.get("tool_name")
     tool_input = payload.get("tool_input")
     tool_input = tool_input if isinstance(tool_input, dict) else {}

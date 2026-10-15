@@ -206,8 +206,14 @@ def test_a_permission_dialog_keeps_what_it_asks_not_the_whole_input(payload, exp
 def test_an_elicitation_dialog_names_its_server():
     from cloud_coder_vm import session_state
 
-    shown = session_state.dialog({"hook_event_name": "Elicitation", "mcp_server_name": "gh"})
-    assert {k: v for k, v in shown.items() if k != "id"} == {"kind": "mcp_input", "server": "gh"}
+    shown = session_state.dialog(
+        {"hook_event_name": "Elicitation", "mcp_server_name": "gh", "message": "Token?"}
+    )
+    assert {k: v for k, v in shown.items() if k != "id"} == {
+        "kind": "mcp_input",
+        "server": "gh",
+        "message": "Token?",
+    }
 
 
 def test_dialogs_close_by_id_and_old_records_keep_working(tmp_path):

@@ -665,6 +665,14 @@ def test_prompt_is_submitted_once_the_dialog_is_answered(claude):
     assert claude.submitted == ["go"]
 
 
+def test_nothing_is_typed_when_the_input_box_cannot_be_emptied(claude):
+    claude.event(BUSY_EVENT)
+    claude.menu = INPUT_BOX + "text the keys did not remove"
+    with pytest.raises(LaunchError, match="still holds text after clearing.*; prompt not sent"):
+        claude.send("go")
+    assert claude.ops == ["clear"]
+
+
 def test_a_dialog_denied_without_an_event_blocks_until_all_work_ends(claude):
     claude.event(BUSY_EVENT)
     claude.event({"hook_event_name": "PermissionRequest", **WRITE})  # then Esc: no event

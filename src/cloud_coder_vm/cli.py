@@ -19,6 +19,7 @@ from cloud_coder_vm import (
     paths,
     session_close,
     session_registry,
+    session_state,
     session_status,
     system_files,
     transcript,
@@ -28,6 +29,11 @@ from cloud_coder_vm.tmux_panes import tmux_command
 
 def _load_config() -> system_files.VmConfig:
     return system_files.parse_config(paths.CONFIG_PATH.read_text())
+
+
+# Hook state kept for the agent's own checks: the dialogs' ids (status shows waiting_for
+# instead) and the digests that confirm a typed prompt.
+_INTERNAL_STATE = ("open_dialogs", "recent_prompt_digests")
 
 
 def cmd_status(_args) -> int:
@@ -60,7 +66,13 @@ def cmd_status(_args) -> int:
             }
             for s in sorted(sessions.values(), key=lambda s: s.last_connected_at, reverse=True)
         ],
-        "claude_processes": [asdict(s) for s in ev.live_states],
+        "claude_processes": [
+            {
+                **{k: v for k, v in asdict(s).items() if k not in _INTERNAL_STATE},
+                "waiting_for": session_state.waiting_for(s),
+            }
+            for s in ev.live_states
+        ],
     }
     print(json.dumps(out, indent=2))
     return 0
