@@ -188,6 +188,19 @@ def test_read_session_asks_a_current_agent_for_the_responses(monkeypatch):
     assert "--messages" not in commands[0] and commands[1].endswith("--messages 3")
 
 
+def test_read_session_retries_only_for_an_agent_without_messages(monkeypatch):
+    commands = []
+
+    def run(cfg, command, **kw):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 1, "", "python3: can't open file")
+
+    monkeypatch.setattr(ssh, "run", run)
+    with pytest.raises(connect.AgentError, match="can't open file"):
+        connect.read_session(Config(), "cc-a-1", 3)
+    assert len(commands) == 1
+
+
 @pytest.mark.parametrize("count", [1, 3])
 @pytest.mark.parametrize(
     ("old_out", "expected"),

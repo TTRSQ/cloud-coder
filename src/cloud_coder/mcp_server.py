@@ -239,7 +239,8 @@ def build_server(
             Field(
                 ge=1,
                 le=MAX_MESSAGES,
-                description="how many of Claude Code's latest responses to return",
+                description="how many of Claude Code's latest responses to return; each is one "
+                "API response with text, and one turn can have several",
             ),
         ] = 1,
     ) -> dict:

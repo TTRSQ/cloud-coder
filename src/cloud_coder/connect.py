@@ -145,7 +145,8 @@ def connect(
     return launched
 
 
-# An agent from before `--messages` rejects the option and has only `last_message`.
+# An agent from before `--messages` rejects the option and has only `last_message`. Remove
+# the fallback once no VM runs such an agent (every server and CLI that installs it is newer).
 OLD_AGENT_NOTE = (
     "The VM agent is older than this server: only the last response is available. `up` updates it."
 )

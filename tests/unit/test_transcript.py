@@ -224,6 +224,29 @@ def test_the_latest_responses_oldest_first(tmp_path):
     assert transcript.assistant_messages(write(tmp_path, [prompt("hi")]), 3) == []
 
 
+def test_lines_without_an_id_are_responses_of_their_own(tmp_path):
+    first, second = text("x", "e1"), text("x", "e2")
+    del first["message"]["id"], second["message"]["id"]
+    path = write(
+        tmp_path,
+        [
+            first,
+            second,
+            text("m1", "x1"),
+            prompt("go"),
+            text("m1", "x2"),
+            tool_use("m2"),
+            text("m1", "x3"),
+        ],
+    )
+    assert [m["text"] for m in transcript.assistant_messages(path, 5)] == [
+        "e1",
+        "e2",
+        "x1\n\nx2",
+        "x3",
+    ]
+
+
 def test_find_and_messages(tmp_path):
     projects = tmp_path / ".claude/projects"
     assert transcript.find(tmp_path, SID) is None

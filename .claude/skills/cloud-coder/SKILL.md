@@ -105,7 +105,7 @@ npx -y @modelcontextprotocol/inspector@2.9.0 --cli uv run cloud-coder mcp --meth
 ```
 
 - セッション名が分からなければ、先に `uv run cloud-coder status` で確認する。セッションが 1 つだけならそれを使い、複数あれば一覧を見せて聞く。
-- ユーザーが直近の複数の応答を求めたときだけ `--tool-arg messages=<N>` (1〜10) を足す。
+- ユーザーが直近の複数の応答を求めたときだけ `--tool-arg messages=<N>` (1〜10) を足す。1 要素は Claude Code の 1 回の API 応答で、1 回の指示の作業中に複数の要素が出ることもある (指示ごとの回答とは限らない)。
 - 出力は JSON。`content[0].text` が JSON 文字列で、`messages` (Claude Code の最後の応答のリスト。古い順で、各要素は `text` と `timestamp`。まだ無ければ空)、`output` (画面の文字列) と `claude_state` (Claude Code の状態) が入っている。
 - `READY` / `IDLE` なら `messages` の最後の要素の `text` (Claude Code の最後の応答) を要約し、必要なら該当部分を引用する。`BUSY` ならまだ作業中なので、画面の最後の部分から途中経過を要約する。`BUSY` の間の `messages` の最後の要素は前の指示への応答のこともあるので (`timestamp` で分かる)、今の作業の結果として伝えない。
 - `agent_note` があれば VM の agent が古く、最後の応答しか返っていない。そのことを伝える。
