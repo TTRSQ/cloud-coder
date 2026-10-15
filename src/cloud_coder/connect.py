@@ -146,7 +146,8 @@ def connect(
 
 
 def read_session(cfg: Config, session: str, lines: int = 200) -> dict:
-    """The last ``lines`` lines of the session's Claude Code pane, and its state."""
+    """Claude Code's last response (from its transcript), the last ``lines`` lines of the
+    session's Claude Code pane, and its state."""
     command = shlex.join(
         [
             "python3",

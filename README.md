@@ -230,7 +230,7 @@ claude mcp add cloud-coder -- cloud-coder mcp
 
 - Claude Code は画面全体を描き直す表示 (tmux の alternate screen) で動くので、pane には scrollback が残りません。読めるのは今の画面 (detach 中の既定で 80×24) だけで、入力欄や subagent の一覧の分だけ応答が欠けます。
 - transcript は `~/.claude/projects/<作業ディレクトリ>/<session ID>.jsonl` です。cloud-coder は Claude Code を `--session-id` / `--resume` で起動し、`/clear` などで ID が変われば `SessionStart` の hook で登録を更新するので、登録の session ID でファイルが決まります。ファイルの場所は Claude Code の [hooks の docs](https://code.claude.com/docs/en/hooks) の `transcript_path` の例と同じです。中の形式は公開されていないので、想定外の行は読み飛ばします。
-- `last_message` は、最後の応答のうち文字列 (text) のあるもの (`text` と、書かれた時刻 `timestamp`) です。1 回の応答の text が複数あればつなげます。thinking と tool の呼び出し、subagent (`isSidechain`) の行は含めません。作業中 (`BUSY`) で tool を呼んでいるだけの間は、その前に書いた text が返ります。まだ応答が無い (transcript が無い) ときは `null` です。tmux や Claude Code が動いていなくても読めます。
+- `last_message` は、最後の応答のうち文字列 (text) のあるもの (`text` と、書かれた時刻 `timestamp`) です。1 回の応答の text が複数あればつなげます。thinking と tool の呼び出し、subagent (`isSidechain`) の行は含めません。作業中 (`BUSY`) で tool を呼んでいるだけの間は、その前に書いた text が返ります。これは前のプロンプトへの応答のこともあります (`timestamp` で分かります)。まだ応答が無い (transcript が無い) ときは `null` です。tmux や Claude Code が動いていなくても読めます。
 - 画面 (`output`) も返します。権限の確認や質問のダイアログ、作業中の進み具合は transcript に無く、画面にしか出ないからです。
 
 ### HTTP API

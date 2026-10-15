@@ -5,6 +5,10 @@ bookkeeping entries, and one ``assistant`` line per content block of each API re
 (thinking, text and tool_use blocks of one response share ``message.id``). The format is
 Claude Code's own and undocumented beyond the file's location, so anything unexpected in
 a line is skipped rather than failed on.
+
+The Stop hook's ``last_assistant_message`` is not used instead: it comes only at the end
+of a turn, and the hook's state lives on tmpfs, gone once the VM stops by itself; the
+transcript is on the Persistent Disk.
 """
 
 import json
@@ -54,16 +58,15 @@ def _text(message: dict) -> str:
 def last_assistant_message(path: Path) -> dict | None:
     """The text of Claude Code's latest response that has text, with the time it was
     written: the text blocks of one API response joined. Thinking and tool calls are left
-    out, so while a turn runs only tool calls this is the text written before them. None
-    when the conversation has no such response yet."""
+    out, so while a turn runs only tool calls this is the text written before them, which
+    may be the answer to an earlier prompt. None when the conversation has no such
+    response yet."""
     texts: list[str] = []
     message_id = timestamp = None
     for line in reversed(path.read_bytes().splitlines()):
         entry = _entry(line)
         if entry is None:
             continue
-        if entry.get("type") == "user" and not entry.get("isSidechain") and message_id:
-            break  # the response's blocks all come before the next prompt or tool result
         message = _assistant_message(entry)
         if message is None:
             continue
@@ -84,6 +87,9 @@ def last_assistant_message(path: Path) -> dict | None:
 
 def last_message(home: Path, claude_session_id: str) -> dict | None:
     """``last_assistant_message`` of a conversation; None also when it has no transcript
-    (Claude Code writes it with the first prompt)."""
-    path = find(home, claude_session_id)
-    return last_assistant_message(path) if path is not None else None
+    (Claude Code writes it with the first prompt) or the transcript cannot be read."""
+    try:
+        path = find(home, claude_session_id)
+        return last_assistant_message(path) if path is not None else None
+    except OSError:  # removed or unreadable while being read
+        return None

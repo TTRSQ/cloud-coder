@@ -233,11 +233,19 @@ def build_server(
     def read_session(
         session: Annotated[str, Field(description="session name from `status`")],
         lines: Annotated[
-            int, Field(ge=1, le=2000, description="how many of the last lines to return")
+            int,
+            Field(
+                ge=1,
+                le=2000,
+                description="how many of the last screen lines to return; while Claude Code "
+                "runs only its visible screen (about 24 rows) exists, so read its response "
+                "from `last_message`",
+            ),
         ] = 200,
     ) -> dict:
         """Claude Code's last response (`last_message`: its text and time, from Claude
-        Code's transcript; null before the first response), the recent text of the
+        Code's transcript; null before the first response; while BUSY it can be the answer
+        to an earlier prompt, see its time), the recent text of the
         session's screen (`output`) and Claude Code's state. Does not start the VM. Call it
         when the user asks for progress or the result; never poll it to wait for a BUSY
         Claude Code."""

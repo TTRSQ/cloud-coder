@@ -133,6 +133,14 @@ def test_tool_only_responses_leave_the_text_written_before_them(tmp_path):
     assert transcript.last_assistant_message(path)["text"] == "Starting with the tests."
 
 
+def test_blocks_of_one_response_around_a_tool_result_are_joined(tmp_path):
+    path = write(
+        tmp_path,
+        [text("msg_1", "part 1"), tool_use("msg_1"), tool_result(), text("msg_1", "part 2")],
+    )
+    assert transcript.last_assistant_message(path)["text"] == "part 1\n\npart 2"
+
+
 def test_a_text_of_another_response_before_a_tool_result_is_not_joined(tmp_path):
     path = write(
         tmp_path,
@@ -194,3 +202,15 @@ def test_find_and_last_message(tmp_path):
     (projects / "-home-coder-git-a" / "other-session.jsonl").write_text("")
     assert transcript.find(tmp_path, SID) == new
     assert transcript.last_message(tmp_path, SID)["text"] == "new"
+
+
+def test_an_unreadable_transcript_is_no_message(tmp_path, monkeypatch):
+    path = tmp_path / ".claude/projects/-w" / f"{SID}.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(text("m", "answer")) + "\n")
+
+    def removed(self):
+        raise FileNotFoundError(self)
+
+    monkeypatch.setattr(transcript.Path, "read_bytes", removed)
+    assert transcript.last_message(tmp_path, SID) is None

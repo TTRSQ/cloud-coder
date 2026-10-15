@@ -28,7 +28,8 @@ def visible_text(captured: str) -> str:
 
 
 def read(home: Path, session_name: str, lines: int) -> dict:
-    """The last ``lines`` lines (scrollback included) of the session's Claude Code pane."""
+    """The last ``lines`` lines of the session's Claude Code pane, scrollback included (Claude
+    Code itself draws in the alternate screen, which has none)."""
     if lines < 1:
         raise ScreenError("lines must be at least 1")
     if session_name not in session_registry.load(paths.registry_path(home)):

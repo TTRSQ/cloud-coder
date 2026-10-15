@@ -108,8 +108,8 @@ def cmd_read_session(args) -> int:
     except session_screen.ScreenError as e:
         print(json.dumps({"error": str(e)}))
         return 1
-    session = session_registry.load(paths.registry_path(home))[args.session]
-    last = transcript.last_message(home, session.claude_session_id)
+    session = session_registry.load(paths.registry_path(home)).get(args.session)
+    last = transcript.last_message(home, session.claude_session_id) if session else None
     print(json.dumps({**screen, "last_message": last}))
     return 0
 
@@ -161,7 +161,12 @@ def main(argv: list[str] | None = None) -> int:
         "read-session", help="print a session's last Claude Code response and pane as JSON"
     )
     p.add_argument("--session", required=True)
-    p.add_argument("--lines", type=int, default=200, help="lines to return, scrollback included")
+    p.add_argument(
+        "--lines",
+        type=int,
+        default=200,
+        help="screen lines to return, scrollback (if any) included",
+    )
     p.set_defaults(func=cmd_read_session)
 
     p = sub.add_parser(
